@@ -9,6 +9,28 @@ def planszozwracacz():
         yield input().split()
 
 
+def wierszoformater(wiersz, litery):
+    wiersz = "-" + wiersz
+    byla_litera_og = False
+
+    for i in range(1, 16):
+        byla_litera = False
+        pop_znak = ""
+        bufor = ""
+        if not byla_litera_og or (wiersz[i] == "-" and wiersz[i - 1] == "-"):
+            for znak in wiersz[i:]:
+                if znak.isalpha():
+                    byla_litera = True
+                elif znak == pop_znak and byla_litera:
+                    yield (bufor.replace("-", f"[{litery}{{0,1}}]"), len(bufor))
+                bufor += znak
+                pop_znak = znak
+        if wiersz[i] != "-":
+            byla_litera_og = True
+        if bufor and byla_litera:
+            yield (bufor.replace("-", f"[{litery}{{0,1}}]"), len(bufor))
+
+
 def slowyceniacz(plansza, slowo, start_x, start_y, pion, il_uzytych_liter):
     wartosc_slowa = 0
     mnoznik_slowa = 1
@@ -69,7 +91,11 @@ def main():
     ]
     litery_gracza = input()
     plansza = list(planszozwracacz())
-    planszoprzejezdzacz(plansza)
+    for wiersz in plansza:
+        wyjscie = wierszoformater("".join(wiersz), litery_gracza)
+        for wyrazenie, dl_wyrazenia in wyjscie:
+            re.findall(wyrazenie, slowa[dl_wyrazenia - 2])
+    # planszoprzejezdzacz(plansza)
 
 
 if __name__ == "__main__":
