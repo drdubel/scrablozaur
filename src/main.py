@@ -1,7 +1,7 @@
-from pprint import pprint
 import re
+from pprint import pprint
 
-from slowniki import pkt_za_litere, premie_slowne, premie_literowe
+from slowniki import pkt_za_litere, premie_literowe, premie_slowne
 
 
 def planszozwracacz():
