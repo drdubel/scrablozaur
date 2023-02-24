@@ -1,12 +1,44 @@
 import re
-from pprint import pprint
+import sys
 
 from slowniki import pkt_za_litere, premie_literowe, premie_slowne
 
+slowa = [
+    open("words/dwuliterowki.txt", "r").read(),
+    open("words/trzyliterowki.txt", "r").read(),
+    open("words/czteroliterowki.txt", "r").read(),
+    open("words/piecioliterowki.txt", "r").read(),
+    open("words/szescioliterowki.txt", "r").read(),
+    open("words/siedmioliterowki.txt", "r").read(),
+    open("words/osmioliterowki.txt", "r").read(),
+    open("words/dziewiecioliterowki.txt", "r").read(),
+    open("words/dziesiecioliterowki.txt", "r").read(),
+    open("words/jedenastoliterowki.txt", "r").read(),
+    open("words/dwunastoliterowki.txt", "r").read(),
+    open("words/trzynastoliterowki.txt", "r").read(),
+    open("words/czternastoliterowki.txt", "r").read(),
+    open("words/pietnastoliterowki.txt", "r").read(),
+]
 
-def planszozwracacz():
-    for _ in range(15):
-        yield input().split()
+
+def planszozwracacz(indata):
+    return [next(indata).split() for _ in range(15)]
+
+
+def pustowypelniacz(wyrazenie, litery):
+    i = 0
+    nowe_wyrazenie = ""
+    for pop, akt in zip(" " + wyrazenie[:-1], wyrazenie):
+        if akt == "-":
+            i += 1
+            continue
+        if pop == "-":
+            nowe_wyrazenie += f"[{litery}]{{{i}}}"
+            i = 0
+        nowe_wyrazenie += akt
+    if akt == "-":
+        nowe_wyrazenie += f"[{litery}]{{{i}}}"
+    return nowe_wyrazenie
 
 
 def wierszoformater(wiersz, litery):
@@ -16,19 +48,22 @@ def wierszoformater(wiersz, litery):
     for i in range(1, 16):
         byla_litera = False
         pop_znak = ""
-        bufor = ""
+        wyrazenie = "^("
         if not byla_litera_og or (wiersz[i] == "-" and wiersz[i - 1] == "-"):
             for znak in wiersz[i:]:
                 if znak.isalpha():
                     byla_litera = True
                 elif znak == pop_znak and byla_litera:
-                    yield (bufor.replace("-", f"[{litery}{{0,1}}]"), len(bufor))
-                bufor += znak
+                    yield (
+                        pustowypelniacz(wyrazenie, litery) + ")$",
+                        len(wyrazenie) - 2,
+                    )
+                wyrazenie += znak
                 pop_znak = znak
         if wiersz[i] != "-":
             byla_litera_og = True
-        if bufor and byla_litera:
-            yield (bufor.replace("-", f"[{litery}{{0,1}}]"), len(bufor))
+        if wyrazenie and byla_litera:
+            yield (pustowypelniacz(wyrazenie, litery) + ")$", len(wyrazenie) - 2)
 
 
 def slowyceniacz(plansza, slowo, start_x, start_y, pion, il_uzytych_liter):
@@ -60,43 +95,42 @@ def slowyceniacz(plansza, slowo, start_x, start_y, pion, il_uzytych_liter):
 
 def planszoprzejezdzacz(plansza):
     slobufor = ""
-    pusty_wiersz = ["#" for _ in range(15)]
+    pusty_wiersz = ["-" for _ in range(15)]
     plansza_w_dol = plansza[1:] + [pusty_wiersz]
     plansza_w_gore = [pusty_wiersz] + plansza[:14]
     for wiersz, wiersz_nad, wiersz_pod in zip(plansza, plansza_w_gore, plansza_w_dol):
-        wiersz_lewo = ["#"] + wiersz[:14]
-        wiersz_prawo = wiersz[1:] + ["#"]
+        wiersz_lewo = ["-"] + wiersz[:14]
+        wiersz_prawo = wiersz[1:] + ["-"]
         for litera, litera_pop, litera_po, litera_nad, litera_pod in zip(
             wiersz, wiersz_lewo, wiersz_prawo, wiersz_nad, wiersz_pod
         ):
             slobufor += litera
 
 
-def main():
-    slowa = [
-        open("words/dwuliterowki.txt", "r").read(),
-        open("words/trzyliterowki.txt", "r").read(),
-        open("words/czteroliterowki.txt", "r").read(),
-        open("words/piecioliterowki.txt", "r").read(),
-        open("words/szescioliterowki.txt", "r").read(),
-        open("words/siedmioliterowki.txt", "r").read(),
-        open("words/osmioliterowki.txt", "r").read(),
-        open("words/dziewiecioliterowki.txt", "r").read(),
-        open("words/dziesiecioliterowki.txt", "r").read(),
-        open("words/jedenastoliterowki.txt", "r").read(),
-        open("words/dwunastoliterowki.txt", "r").read(),
-        open("words/trzynastoliterowki.txt", "r").read(),
-        open("words/czternastoliterowki.txt", "r").read(),
-        open("words/pietnastoliterowki.txt", "r").read(),
-    ]
-    litery_gracza = input()
-    plansza = list(planszozwracacz())
+def main(indata):
+    litery_gracza = next(indata)
+    plansza = planszozwracacz(indata)
+    mozliwe_slowa = []
     for wiersz in plansza:
         wyjscie = wierszoformater("".join(wiersz), litery_gracza)
         for wyrazenie, dl_wyrazenia in wyjscie:
-            re.findall(wyrazenie, slowa[dl_wyrazenia - 2])
+            mozliwe_slowa.extend(
+                re.findall(wyrazenie, slowa[dl_wyrazenia - 2], re.MULTILINE)
+            )
+    for wiersz in zip(*plansza[::-1]):
+        wyjscie = wierszoformater("".join(wiersz), litery_gracza)
+        for wyrazenie, dl_wyrazenia in wyjscie:
+            mozliwe_slowa.extend(
+                re.findall(wyrazenie, slowa[dl_wyrazenia - 2], re.MULTILINE)
+            )
+    print(mozliwe_slowa)
     # planszoprzejezdzacz(plansza)
 
 
+def run():
+    for line in main((line[:-1] for line in sys.stdin)):
+        print(line)
+
+
 if __name__ == "__main__":
-    main()
+    run()
