@@ -1,136 +1,61 @@
-import re
-import sys
-
-from slowniki import pkt_za_litere, premie_literowe, premie_slowne
-
-slowa = [
-    open("words/dwuliterowki.txt", "r").read(),
-    open("words/trzyliterowki.txt", "r").read(),
-    open("words/czteroliterowki.txt", "r").read(),
-    open("words/piecioliterowki.txt", "r").read(),
-    open("words/szescioliterowki.txt", "r").read(),
-    open("words/siedmioliterowki.txt", "r").read(),
-    open("words/osmioliterowki.txt", "r").read(),
-    open("words/dziewiecioliterowki.txt", "r").read(),
-    open("words/dziesiecioliterowki.txt", "r").read(),
-    open("words/jedenastoliterowki.txt", "r").read(),
-    open("words/dwunastoliterowki.txt", "r").read(),
-    open("words/trzynastoliterowki.txt", "r").read(),
-    open("words/czternastoliterowki.txt", "r").read(),
-    open("words/pietnastoliterowki.txt", "r").read(),
-]
+import pickle
 
 
-def planszozwracacz(indata):
-    return [next(indata).split() for _ in range(15)]
+class Node:
+    next_id = 0
+
+    def __init__(self):
+        self.is_terminal = False
+        self.id = Node.next_id
+        Node.next_id += 1
+        self.children = {}
+
+    def __repr__(self):
+        out = []
+        if self.is_terminal:
+            out.append("1")
+        else:
+            out.append("0")
+        for key, val in self.children.items():
+            out.append(key)
+            out.append(str(val.id))
+        return "_".join(out)
+
+    def __hash__(self):
+        return hash(self.__repr__())
+
+    def __eq__(self, other):
+        return self.__repr__() == other.__repr__()
 
 
-def pustowypelniacz(wyrazenie, litery):
-    i = 0
-    nowe_wyrazenie = ""
-    for pop, akt in zip(" " + wyrazenie[:-1], wyrazenie):
-        if akt == "-":
-            i += 1
-            continue
-        if pop == "-":
-            nowe_wyrazenie += f"[{litery}]{{{i}}}"
-            i = 0
-        nowe_wyrazenie += akt
-    if akt == "-":
-        nowe_wyrazenie += f"[{litery}]{{{i}}}"
-    return nowe_wyrazenie
-
-
-def wierszoformater(wiersz, litery):
-    wiersz = "-" + wiersz
-    byla_litera_og = False
-
-    for i in range(1, 16):
-        byla_litera = False
-        pop_znak = ""
-        wyrazenie = "^("
-        if not byla_litera_og or (wiersz[i] == "-" and wiersz[i - 1] == "-"):
-            for znak in wiersz[i:]:
-                if znak.isalpha():
-                    byla_litera = True
-                elif znak == pop_znak and byla_litera:
-                    yield (
-                        pustowypelniacz(wyrazenie, litery) + ")$",
-                        len(wyrazenie) - 2,
-                    )
-                wyrazenie += znak
-                pop_znak = znak
-        if wiersz[i] != "-":
-            byla_litera_og = True
-        if wyrazenie and byla_litera:
-            yield (pustowypelniacz(wyrazenie, litery) + ")$", len(wyrazenie) - 2)
-
-
-def slowyceniacz(plansza, slowo, start_x, start_y, pion, il_uzytych_liter):
-    wartosc_slowa = 0
-    mnoznik_slowa = 1
-    if pion:
-        for litera, y in zip(slowo, range(start_y, start_y + len(slowo))):
-            if plansza[start_x][y] == "-":
-                if (start_x, y) in premie_slowne:
-                    mnoznik_slowa *= premie_slowne[(start_x, y)]
-                wartosc_litery = pkt_za_litere[litera]
-                if (start_x, y) in premie_literowe:
-                    wartosc_litery *= premie_literowe[(start_x, y)]
-            wartosc_slowa += wartosc_litery
-    else:
-        for litera, x in zip(slowo, range(start_x, start_x + len(slowo))):
-            if plansza[x][start_y] == "-":
-                if (start_y, x) in premie_slowne:
-                    mnoznik_slowa *= premie_slowne[(start_y, x)]
-                wartosc_litery = pkt_za_litere[litera]
-                if (start_y, x) in premie_literowe:
-                    wartosc_litery *= premie_literowe[(start_y, x)]
-            wartosc_slowa += wartosc_litery
-    wartosc_slowa *= mnoznik_slowa
-    if il_uzytych_liter == 7:
-        wartosc_slowa += 50
-    return wartosc_slowa
-
-
-def planszoprzejezdzacz(plansza):
-    slobufor = ""
-    pusty_wiersz = ["-" for _ in range(15)]
-    plansza_w_dol = plansza[1:] + [pusty_wiersz]
-    plansza_w_gore = [pusty_wiersz] + plansza[:14]
-    for wiersz, wiersz_nad, wiersz_pod in zip(plansza, plansza_w_gore, plansza_w_dol):
-        wiersz_lewo = ["-"] + wiersz[:14]
-        wiersz_prawo = wiersz[1:] + ["-"]
-        for litera, litera_pop, litera_po, litera_nad, litera_pod in zip(
-            wiersz, wiersz_lewo, wiersz_prawo, wiersz_nad, wiersz_pod
-        ):
-            slobufor += litera
-
-
-def main(indata):
-    litery_gracza = next(indata)
-    plansza = planszozwracacz(indata)
-    mozliwe_slowa = []
-    for wiersz in plansza:
-        wyjscie = wierszoformater("".join(wiersz), litery_gracza)
-        for wyrazenie, dl_wyrazenia in wyjscie:
-            mozliwe_slowa.extend(
-                re.findall(wyrazenie, slowa[dl_wyrazenia - 2], re.MULTILINE)
+def count_words(
+    node: Node,
+    substr: str,
+    av_letters: str,
+    words: list = [],
+    word: str = "",
+    nwords: int = 0,
+):
+    if node.is_terminal and substr in word:
+        nwords += 1
+        words.append(word)
+    for letter, child in node.children.items():
+        if letter in av_letters:
+            nwords, words = count_words(
+                child,
+                substr,
+                av_letters.replace(letter, "", 1),
+                words,
+                word + letter,
+                nwords,
             )
-    for wiersz in zip(*plansza[::-1]):
-        wyjscie = wierszoformater("".join(wiersz), litery_gracza)
-        for wyrazenie, dl_wyrazenia in wyjscie:
-            mozliwe_slowa.extend(
-                re.findall(wyrazenie, slowa[dl_wyrazenia - 2], re.MULTILINE)
-            )
-    print(mozliwe_slowa)
-    # planszoprzejezdzacz(plansza)
+    return nwords, words
 
 
-def run():
-    for line in main((line[:-1] for line in sys.stdin)):
-        print(line)
+def main():
+    dawg = pickle.loads(open("words/dawg.pickle", "rb").read())
+    print(count_words(dawg, "tak", "takakakta"))
 
 
 if __name__ == "__main__":
-    run()
+    main()
