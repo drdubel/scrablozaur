@@ -28,33 +28,60 @@ class Node:
         return self.__repr__() == other.__repr__()
 
 
+def get_word_end(node: Node, word: str, i: int = 0):
+    if i == len(word):
+        if node.is_terminal:
+            return node
+        return False
+    if word[i] in node.children:
+        return get_word_end(node.children[word[i]], word, i + 1)
+    return False
+
+
 def count_words(
     node: Node,
-    substr: str,
+    pattern: dict,
     av_letters: str,
-    words: list = [],
+    words: list,
     word: str = "",
     nwords: int = 0,
+    i: int = 0,
 ):
-    if node.is_terminal and substr in word:
-        nwords += 1
-        words.append(word)
-    for letter, child in node.children.items():
-        if letter in av_letters:
-            nwords, words = count_words(
-                child,
-                substr,
-                av_letters.replace(letter, "", 1),
-                words,
-                word + letter,
-                nwords,
-            )
+    if i + 1 in pattern:
+        for letter, child in node.children.items():
+            if letter in av_letters:
+                new_node = get_word_end(child, pattern[i + 1])
+                if new_node:
+                    nwords, words = count_words(
+                        new_node,
+                        pattern,
+                        av_letters.replace(letter, "", 1),
+                        words,
+                        word + letter + pattern[i + 1],
+                        nwords,
+                        i + 1 + len(pattern[i + 1]),
+                    )
+    else:
+        if node.is_terminal and i >= max(pattern.keys()):
+            nwords += 1
+            words.append(word)
+        for letter, child in node.children.items():
+            if letter in av_letters:
+                nwords, words = count_words(
+                    child,
+                    pattern,
+                    av_letters.replace(letter, "", 1),
+                    words,
+                    word + letter,
+                    nwords,
+                    i + 1,
+                )
     return nwords, words
 
 
 def main():
     dawg = pickle.loads(open("words/dawg.pickle", "rb").read())
-    print(count_words(dawg, "tak", "takakakta"))
+    print(count_words(dawg, {2: "tak"}, "takakakta"))
 
 
 if __name__ == "__main__":
