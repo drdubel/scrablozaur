@@ -30,58 +30,121 @@ class Node:
 
 def get_word_end(node: Node, word: str, i: int = 0):
     if i == len(word):
-        if node.is_terminal:
-            return node
-        return False
+        return node
     if word[i] in node.children:
         return get_word_end(node.children[word[i]], word, i + 1)
     return False
 
 
-def count_words(
+def find_words_from(
     node: Node,
     pattern: dict,
     av_letters: str,
     words: list,
     word: str = "",
     nwords: int = 0,
+    liczone: bool = False,
     i: int = 0,
 ):
-    if i + 1 in pattern:
-        for letter, child in node.children.items():
-            if letter in av_letters:
-                new_node = get_word_end(child, pattern[i + 1])
-                if new_node:
-                    nwords, words = count_words(
-                        new_node,
-                        pattern,
-                        av_letters.replace(letter, "", 1),
-                        words,
-                        word + letter + pattern[i + 1],
-                        nwords,
-                        i + 1 + len(pattern[i + 1]),
-                    )
-    else:
-        if node.is_terminal and i >= max(pattern.keys()):
+    if i == 15:
+        if node.is_terminal and liczone:
             nwords += 1
-            words.append(word)
+            words.append((i - len(word), word))
+        return nwords, words
+    if i in pattern[1]:
+        new_node = get_word_end(node, pattern[1][i])
+        if new_node:
+            nwords, words = find_words_from(
+                new_node,
+                pattern,
+                av_letters,
+                words=words,
+                word=word + pattern[1][i],
+                nwords=nwords,
+                liczone=True,
+                i=i + len(pattern[1][i]),
+            )
+        if not word:
+            nwords, words = find_words_from(
+                node,
+                pattern,
+                av_letters,
+                words=words,
+                word=word,
+                nwords=nwords,
+                i=i + 1 + len(pattern[1][i]),
+            )
+    elif i + 1 in pattern[1]:
         for letter, child in node.children.items():
-            if letter in av_letters:
-                nwords, words = count_words(
-                    child,
-                    pattern,
-                    av_letters.replace(letter, "", 1),
-                    words,
-                    word + letter,
-                    nwords,
-                    i + 1,
-                )
+            if letter not in av_letters:
+                continue
+
+            new_node = get_word_end(child, pattern[1][i + 1])
+            if not new_node:
+                continue
+            nwords, words = find_words_from(
+                new_node,
+                pattern,
+                av_letters.replace(letter, "", 1),
+                words=words,
+                word=word + letter + pattern[1][i + 1],
+                nwords=nwords,
+                liczone=True,
+                i=i + 1 + len(pattern[1][i + 1]),
+            )
+        if not word:
+            nwords, words = find_words_from(
+                node,
+                pattern,
+                av_letters,
+                words=words,
+                word=word,
+                nwords=nwords,
+                i=i + 1,
+            )
+
+    else:
+        if node.is_terminal and liczone:
+            nwords += 1
+            words.append((i - len(word), word))
+        for letter, child in node.children.items():
+            if letter not in av_letters:
+                continue
+
+            nwords, words = find_words_from(
+                child,
+                pattern,
+                av_letters.replace(letter, "", 1),
+                words=words,
+                word=word + letter,
+                nwords=nwords,
+                liczone=liczone,
+                i=i + 1,
+            )
+        if not word:
+            nwords, words = find_words_from(
+                node,
+                pattern,
+                av_letters,
+                words=words,
+                word=word,
+                nwords=nwords,
+                liczone=liczone,
+                i=i + 1,
+            )
     return nwords, words
 
 
 def main():
     dawg = pickle.loads(open("words/dawg.pickle", "rb").read())
-    print(count_words(dawg, {2: "tak"}, "takakakta"))
+    print(
+        find_words_from(
+            dawg,
+            [{}, {0: "t", 5: "w", 10: "a"}, {}],
+            "abcdefg",
+            [],
+        )
+    )
 
 
 if __name__ == "__main__":
