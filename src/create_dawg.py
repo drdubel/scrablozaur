@@ -1,4 +1,6 @@
 import pickle
+import os
+from tqdm import tqdm
 
 
 class Node:
@@ -28,7 +30,7 @@ class Node:
         return self.__repr__() == other.__repr__()
 
 
-def length_common_prefix(prev_word, word):
+def get_pref_len(prev_word, word):
     pref_len = 0
     for char1, char2 in zip(prev_word, word):
         if char1 != char2:
@@ -37,8 +39,8 @@ def length_common_prefix(prev_word, word):
     return pref_len
 
 
-def minimize(curr_node, common_prefix_length, minimized_nodes, non_minimized_nodes):
-    for _ in range(len(non_minimized_nodes) - common_prefix_length):
+def minimize(curr_node, pref_len, minimized_nodes, non_minimized_nodes):
+    for _ in range(len(non_minimized_nodes) - pref_len):
         parent, letter, child = non_minimized_nodes.pop()
         if child in minimized_nodes:
             parent.children[letter] = minimized_nodes[child]
@@ -48,21 +50,22 @@ def minimize(curr_node, common_prefix_length, minimized_nodes, non_minimized_nod
     return curr_node
 
 
-def build_dawg(lexicon):
+def build_dawg(word_list):
+    Node.next_id = 0
     root = Node()
     minimized_nodes = {root: root}
     non_minimized_nodes = []
     curr_node = root
     prev_word = ""
-    for word in lexicon:
-        common_prefix_length = length_common_prefix(prev_word, word)
+    for word in tqdm(word_list):
+        pref_len = get_pref_len(prev_word, word)
 
         if non_minimized_nodes:
             curr_node = minimize(
-                curr_node, common_prefix_length, minimized_nodes, non_minimized_nodes
+                curr_node, pref_len, minimized_nodes, non_minimized_nodes
             )
 
-        for letter in word[common_prefix_length:]:
+        for letter in word[pref_len:]:
             next_node = Node()
             curr_node.children[letter] = next_node
             non_minimized_nodes.append((curr_node, letter, next_node))
@@ -81,6 +84,7 @@ def main():
     dawg = build_dawg(word_list)
     with open("words/dawg.pickle", "wb") as f:
         pickle.dump(dawg, f)
+    print(round(os.path.getsize("words/dawg.pickle") / 1024**2, 3), "MB")
 
 
 if __name__ == "__main__":
