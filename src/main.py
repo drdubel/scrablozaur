@@ -38,73 +38,78 @@ def get_word_end(node: Node, word: str, i: int = 0):
 
 def find_words_from(
     node: Node,
-    pattern: dict,
+    board: tuple,
     av_letters: str,
     words: list,
+    orientation: int,
     word: str = "",
     nwords: int = 0,
-    liczone: bool = False,
+    can_be: bool = False,
     i: int = 0,
 ):
     if i == 15:
-        if node.is_terminal and liczone:
+        if node.is_terminal and can_be:
             nwords += 1
             words.append((i - len(word), word))
         return nwords, words
-    if i in pattern[1]:
-        new_node = get_word_end(node, pattern[1][i])
+    if i in board[1]:
+        new_node = get_word_end(node, board[1][i])
         if new_node:
             nwords, words = find_words_from(
                 new_node,
-                pattern,
+                board,
                 av_letters,
-                words=words,
-                word=word + pattern[1][i],
+                words,
+                orientation,
+                word=word + board[1][i],
                 nwords=nwords,
-                liczone=True,
-                i=i + len(pattern[1][i]),
+                can_be=True,
+                i=i + len(board[1][i]),
             )
         if not word:
             nwords, words = find_words_from(
                 node,
-                pattern,
+                board,
                 av_letters,
-                words=words,
+                words,
+                orientation,
                 word=word,
                 nwords=nwords,
-                i=i + 1 + len(pattern[1][i]),
+                i=i + 1 + len(board[1][i]),
             )
-    elif i + 1 in pattern[1]:
+    elif i + 1 in board[1]:
         for letter, child in node.children.items():
             if letter not in av_letters:
                 continue
 
-            new_node = get_word_end(child, pattern[1][i + 1])
+            new_node = get_word_end(child, board[1][i + 1])
             if not new_node:
                 continue
             nwords, words = find_words_from(
                 new_node,
-                pattern,
+                board,
                 av_letters.replace(letter, "", 1),
-                words=words,
-                word=word + letter + pattern[1][i + 1],
+                words,
+                orientation,
+                word=word + letter + board[1][i + 1],
                 nwords=nwords,
-                liczone=True,
-                i=i + 1 + len(pattern[1][i + 1]),
+                can_be=True,
+                i=i + 1 + len(board[1][i + 1]),
             )
         if not word:
             nwords, words = find_words_from(
                 node,
-                pattern,
+                board,
                 av_letters,
-                words=words,
+                words,
+                orientation,
                 word=word,
                 nwords=nwords,
                 i=i + 1,
             )
 
     else:
-        if node.is_terminal and liczone:
+        if node.is_terminal and can_be:
             nwords += 1
             words.append((i - len(word), word))
         for letter, child in node.children.items():
@@ -113,23 +118,25 @@ def find_words_from(
 
             nwords, words = find_words_from(
                 child,
-                pattern,
+                board,
                 av_letters.replace(letter, "", 1),
-                words=words,
+                words,
+                orientation,
                 word=word + letter,
                 nwords=nwords,
-                liczone=liczone,
+                can_be=can_be,
                 i=i + 1,
             )
         if not word:
             nwords, words = find_words_from(
                 node,
-                pattern,
+                board,
                 av_letters,
-                words=words,
+                words,
+                orientation,
                 word=word,
                 nwords=nwords,
-                liczone=liczone,
+                can_be=can_be,
                 i=i + 1,
             )
     return nwords, words
@@ -140,8 +147,44 @@ def main():
     print(
         find_words_from(
             dawg,
-            [{}, {0: "t", 5: "w", 10: "a"}, {}],
-            "abcdefg",
+            (
+                (
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {0: "t", 5: "w", 10: "a"},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                ),
+                (
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {0: "t", 5: "w", 10: "a"},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                ),
+            ),
+            "abcdadhjosuibnuidfhbnuwrgawtjwegjoszgnmefg",
+            0,
             [],
         )
     )
