@@ -1,3 +1,4 @@
 /target
 words/dawg.pickle
-src/dawgpyrust/.github/workflows/CI.yml
+*.pyc
+*.yml
