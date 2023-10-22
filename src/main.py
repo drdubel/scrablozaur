@@ -1,6 +1,7 @@
 # TODO
 # alternative move
 
+import time
 import pickle
 import re
 from operator import itemgetter
@@ -23,7 +24,7 @@ class Game:
 
     def __str__(self) -> str:
         pretty_board = "\n".join([" ".join(x) for x in self.board])
-        return pretty_board
+        return pretty_board.upper()
 
     def get_new_letters(self):
         new_letters = sample(
@@ -157,7 +158,7 @@ class Game:
         if x == 15:
             return words
 
-        if self.board[y][x] in node.children:
+        if self.board[y][x] != "-" and self.board[y][x] in node.children:
             words = self.find_words(
                 node.children[self.board[y][x]],
                 av_letters,
@@ -174,10 +175,18 @@ class Game:
                 x=x + 1,
             )
 
-        elif not word and x > 0 and self.board[y][x - 1] != "-":
-            pass
-
-        elif self.board[y][x] == "-":
+        elif (
+            word
+            and self.board[y][x] == "-"
+            or (
+                not word
+                and (x == 0 or self.board[y][x - 1] == "-")
+                and self.board[y][x] == "-"
+            )
+        ):
+            if self.board[y][x] != "-":
+                print(self.board[y][x])
+                time.sleep(10)
             for letter, child in node.children.items():
                 new_points = 0
                 new_addit_word = ""
@@ -213,7 +222,7 @@ class Game:
                     x=x + 1,
                 )
 
-        if not word and self.board[y][x] not in node.children:
+        if not word:
             words = self.find_words(
                 node,
                 av_letters,
@@ -274,8 +283,8 @@ def main():
     game = Game()
     game.letters += game.get_new_letters()
     print(game.letters)
-    print(game)
     print(game.place_best_first_word())
+    print(game)
     while True:
         print(game.tile_bag)
         game.letters += game.get_new_letters()
