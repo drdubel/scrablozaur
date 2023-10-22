@@ -2,3 +2,4 @@
 words/dawg.pickle
 *.pyc
 *.yml
+*.old
