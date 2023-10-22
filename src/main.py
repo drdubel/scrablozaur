@@ -1,247 +1,177 @@
 import pickle
+import re
+from operator import itemgetter
 from pprint import pprint
 
-from create_dawg import Node
+from src.create_dawg import Node
+from src.points import bonuses, letter_points
 
 dawg = pickle.loads(open("words/dawg.pickle", "rb").read())
 
 
-def get_word_end(node: Node, word: str, i: int = 0):
-    if i == len(word):
-        return node
-    if word[i] in node.children:
-        return get_word_end(node.children[word[i]], word, i + 1)
-    return False
+class Board:
+    def __init__(self):
+        self.letters = input()
+        self.board = [input().split() for _ in range(15)]
+        self.possible_words = []
+        self.best_word = ()
 
-
-def find_words_from(
-    node: Node,
-    board: tuple,
-    av_letters: str,
-    words: list,
-    orientation: int,
-    line: int,
-    addit_words: list,
-    word: str = "",
-    nwords: int = 0,
-    can_be: bool = False,
-    i: int = 0,
-):
-    if i == 15:
-        if node.is_terminal and can_be:
-            nwords += 1
-            words.append(((line, i - len(word)), word, addit_words))
-        return nwords, words
-    wrong_letters = ""
-    new_addit_words = []
-    above = list(
-        filter(lambda x: x[0] + len(x[1]) == line, board[orientation ^ 1][i].items())
-    )
-    below = (
-        board[orientation ^ 1][i][line + 1]
-        if line + 1 in board[orientation ^ 1][i]
-        else False
-    )
-
-    if i in board[orientation][line]:
+    def insert_word(self):
         pass
 
-    elif above and below:
-        for letter in node.children.keys():
-            if letter not in av_letters:
-                continue
+    def validate_word(self, node: Node, word: str, x: int = 0):
+        if x == len(word):
+            if node.is_terminal:
+                return word
+            return False
+        if word[x] in node.children:
+            return self.validate_word(node.children[word[x]], word, x + 1)
+        return False
 
-            new_node = get_word_end(dawg, above[0][1] + letter + below)
-            if not new_node:
-                wrong_letters += letter
-            elif not new_node.is_terminal:
-                wrong_letters += letter
-            else:
-                new_addit_words.append(
-                    ((line, i), above[0][1] + letter + below, letter)
+    def check_crossword(self, column, new_letter, y, x) -> tuple:
+        points = 0
+        for result in re.finditer(r"\w+", column):
+            if result.start() <= y and y <= result.end():
+                if self.validate_word(dawg, column[result.start() : result.end()]):
+                    points += sum(
+                        map(
+                            lambda letter: letter_points[letter],
+                            column[result.start() : result.end()],
+                        )
+                    )
+                    if (y, x) in bonuses:
+                        points += letter_points[new_letter] * (bonuses[(y, x)][0] - 1)
+                        points *= bonuses[(y, x)][1]
+                    return column[result.start() : result.end()], points
+        return False, 0
+
+    def find_words(
+        self,
+        node: Node,
+        av_letters: tuple,
+        words: list,
+        y: int,
+        addit_words: list,
+        orientation: int = 0,
+        word: str = "",
+        can_be: tuple = (False, False),
+        points: tuple = (0, 0, 1),
+        x: int = 0,
+    ) -> list:
+        if (
+            node.is_terminal
+            and can_be[0]
+            and can_be[1]
+            and (x >= 14 or self.board[y][x] == "-" and self.board[y][x + 1] == "-")
+        ):
+            pos = (y, x - len(word))
+            score = points[0] * points[2] + points[1]
+            if orientation:
+                pos = pos[::-1]
+
+            if av_letters[0] == 7:
+                score += 50
+
+            words.append((orientation, pos, word, addit_words, score))
+
+        if x == 15:
+            return words
+
+        if self.board[y][x] in node.children:
+            words = self.find_words(
+                node.children[self.board[y][x]],
+                av_letters,
+                words,
+                y,
+                addit_words,
+                orientation=orientation,
+                word=word + self.board[y][x],
+                can_be=(True, can_be[1]),
+                points=(
+                    points[0] + letter_points[self.board[y][x]],
+                    points[1],
+                    points[2],
+                ),
+                x=x + 1,
+            )
+
+        elif not word and x > 0 and self.board[y][x - 1] != "-":
+            pass
+
+        elif self.board[y][x] == "-":
+            for letter, child in node.children.items():
+                new_points = 0
+                new_addit_word = ""
+                if letter not in av_letters[1]:
+                    continue
+
+                if (y > 0 and self.board[y - 1][x] != "-") or (
+                    y < 14 and self.board[y + 1][x] != "-"
+                ):
+                    column = list(list(zip(*self.board))[x]).copy()
+                    column[y] = letter
+                    new_addit_word, new_points = self.check_crossword(
+                        "".join(column), letter, y, x
+                    )
+                    if not new_addit_word:
+                        continue
+
+                words = self.find_words(
+                    child,
+                    (av_letters[0] + 1, av_letters[1].replace(letter, "", 1)),
+                    words,
+                    y,
+                    addit_words + [new_addit_word] if new_addit_word else addit_words,
+                    orientation=orientation,
+                    word=word + letter,
+                    can_be=(True, True) if new_addit_word else (can_be[0], True),
+                    points=(
+                        points[0]
+                        + letter_points[letter]
+                        * (bonuses[(y, x)][0] if (y, x) in bonuses else 1),
+                        points[1] + new_points,
+                        points[2] * (bonuses[(y, x)][1] if (y, x) in bonuses else 1),
+                    ),
+                    x=x + 1,
                 )
 
-    elif above:
-        for letter in node.children.keys():
-            if letter not in av_letters:
-                continue
-
-            new_node = get_word_end(dawg, above[0][1] + letter)
-            if not new_node:
-                wrong_letters += letter
-            elif not new_node.is_terminal:
-                wrong_letters += letter
-            else:
-                new_addit_words.append(((line, i), above[0][1] + letter, letter))
-
-    elif below:
-        for letter in node.children.keys():
-            if letter not in av_letters:
-                continue
-
-            new_node = get_word_end(dawg, letter + below)
-            if not new_node:
-                wrong_letters += letter
-            elif not new_node.is_terminal:
-                wrong_letters += letter
-            else:
-                new_addit_words.append(((line, i), letter + below, letter))
-
-    if i in board[orientation][line]:
-        new_node = get_word_end(node, board[orientation][line][i])
-        if new_node:
-            nwords, words = find_words_from(
-                new_node,
-                board,
-                av_letters,
-                words,
-                orientation,
-                line,
-                addit_words + new_addit_words,
-                word=word + board[orientation][line][i],
-                nwords=nwords,
-                can_be=True,
-                i=i + len(board[orientation][line][i]),
-            )
-
         if not word:
-            nwords, words = find_words_from(
+            words = self.find_words(
                 node,
-                board,
                 av_letters,
                 words,
-                orientation,
-                line,
-                addit_words + new_addit_words,
-                word=word,
-                nwords=nwords,
-                i=i + 1 + len(board[orientation][line][i]),
+                y,
+                addit_words,
+                orientation=orientation,
+                x=x + 1,
             )
 
-    elif i + 1 in board[orientation][line]:
-        for letter, child in node.children.items():
-            if letter not in av_letters or letter in wrong_letters:
-                continue
+        return words
 
-            new_node = get_word_end(child, board[orientation][line][i + 1])
-            if not new_node:
-                continue
-            nwords, words = find_words_from(
-                new_node,
-                board,
-                av_letters.replace(letter, "", 1),
-                words,
-                orientation,
-                line,
-                addit_words + new_addit_words,
-                word=word + letter + board[orientation][line][i + 1],
-                nwords=nwords,
-                can_be=True,
-                i=i + 1 + len(board[orientation][line][i + 1]),
-            )
-
-        if not word:
-            nwords, words = find_words_from(
-                node,
-                board,
-                av_letters,
-                words,
-                orientation,
-                line,
-                addit_words + new_addit_words,
-                word=word,
-                nwords=nwords,
-                i=i + 1,
-            )
-
-    else:
-        if node.is_terminal and can_be:
-            nwords += 1
-            words.append(((line, i - len(word)), word, addit_words))
-        for letter, child in node.children.items():
-            if letter not in av_letters or letter in wrong_letters:
-                continue
-
-            nwords, words = find_words_from(
-                child,
-                board,
-                av_letters.replace(letter, "", 1),
-                words,
-                orientation,
-                line,
-                addit_words + new_addit_words,
-                word=word + letter,
-                nwords=nwords,
-                can_be=can_be,
-                i=i + 1,
-            )
-
-        if not word:
-            nwords, words = find_words_from(
-                node,
-                board,
-                av_letters,
-                words,
-                orientation,
-                line,
-                addit_words + new_addit_words,
-                word=word,
-                nwords=nwords,
-                can_be=can_be,
-                i=i + 1,
-            )
-
-    return nwords, words
-
-
-def main():
-    for i in range(15):
-        pprint(
-            find_words_from(
+    def find_all_words(self):
+        for i in range(15):
+            self.possible_words = self.find_words(
                 dawg,
-                (
-                    (
-                        {},
-                        {},
-                        {},
-                        {},
-                        {4: "t", 6: "m"},
-                        {4: "c", 6: "a"},
-                        {4: "hamulec"},
-                        {4: "ó", 6: "a", 8: "o", 10: "i"},
-                        {1: "gwar", 8: "d", 10: "a"},
-                        {4: "z", 7: "mydło"},
-                        {10: "o"},
-                        {},
-                        {},
-                        {},
-                        {},
-                    ),
-                    (
-                        {},
-                        {8: "g"},
-                        {8: "w"},
-                        {8: "a"},
-                        {4: "tchórz"},
-                        {6: "a"},
-                        {4: "mama"},
-                        {6: "u", 9: "m"},
-                        {6: "lody"},
-                        {6: "e", 9: "d"},
-                        {6: "ciało"},
-                        {9: "m"},
-                        {},
-                        {},
-                        {},
-                    ),
-                ),
-                "qwertyu",
+                (0, self.letters),
                 [],
-                0,
                 i,
                 [],
             )
-        )
+        print(self.possible_words)
+        self.board = list(zip(*self.board))
+        for i in range(15):
+            self.possible_words.extend(
+                self.find_words(dawg, (0, self.letters), [], i, [], orientation=1)
+            )
+        self.board = list(zip(*self.board))
+        # pprint(self.possible_words)
+        self.best_word = max(self.possible_words, key=itemgetter(4))
+        print(self.best_word)
+
+
+def main():
+    board = Board()
+    board.find_all_words()
 
 
 if __name__ == "__main__":
