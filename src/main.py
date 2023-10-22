@@ -1,19 +1,35 @@
 import pickle
 import re
 from operator import itemgetter
+from random import sample
 
+from data import bonuses, letter_points, tile_bag
 from src.create_dawg import Node
-from src.points import bonuses, letter_points
 
 dawg = pickle.loads(open("words/dawg.pickle", "rb").read())
 
 
 class Game:
-    def __init__(self, board=[["-" for i in range(15)] for _ in range(15)]):
-        self.letters = input()
+    def __init__(self, board=[["-" for _ in range(15)] for _ in range(15)]):
+        self.letters = ""
         self.board = board
         self.possible_words = []
         self.best_word = ()
+        self.tile_bag = tile_bag
+        self.score = 0
+
+    def __str__(self) -> str:
+        pretty_board = "\n".join([" ".join(x) for x in self.board])
+        return pretty_board
+
+    def get_new_letters(self):
+        new_letters = sample(
+            self.tile_bag,
+            min(len(self.tile_bag), 7 - len(self.letters)),
+        )
+        for letter in new_letters:
+            self.tile_bag.remove(letter)
+        return "".join(new_letters)
 
     def insert_word(self, orientation, pos, word):
         if orientation:
@@ -194,7 +210,7 @@ class Game:
                     x=x + 1,
                 )
 
-        if not word:
+        if not word and self.board[y][x] not in node.children:
             words = self.find_words(
                 node,
                 av_letters,
@@ -211,6 +227,7 @@ class Game:
         self.best_word = max(self.possible_words, key=itemgetter(2))
         self.insert_word(0, *self.best_word[:2])
         self.letters = self.best_word[3]
+        self.score += self.best_word[2]
         return self.best_word
 
     def place_best_word(self):
@@ -246,16 +263,24 @@ class Game:
         self.best_word = max(self.possible_words, key=itemgetter(3))
         self.insert_word(*self.best_word[:3])
         self.letters = self.best_word[4]
+        self.score += self.best_word[3]
         return self.best_word
 
 
 def main():
     game = Game()
+    game.letters += game.get_new_letters()
+    print(game.letters)
+    print(game)
     print(game.place_best_first_word())
     while True:
-        game.letters += input()
+        game.letters += game.get_new_letters()
+        print(game.letters)
         print(game.place_best_word())
-        print(game.board)
+        print(game.score)
+        print(game)
+        if not game.tile_bag:
+            break
 
 
 if __name__ == "__main__":
