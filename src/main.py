@@ -1,3 +1,6 @@
+# TODO
+# alternative move
+
 import pickle
 import re
 from operator import itemgetter
@@ -162,7 +165,7 @@ class Game:
                 y,
                 orientation=orientation,
                 word=word + self.board[y][x],
-                can_be=(True, True),
+                can_be=(True, can_be[1]),
                 points=(
                     points[0] + letter_points[self.board[y][x]],
                     points[1],
@@ -274,6 +277,7 @@ def main():
     print(game)
     print(game.place_best_first_word())
     while True:
+        print(game.tile_bag)
         game.letters += game.get_new_letters()
         print(game.letters)
         print(game.place_best_word())
