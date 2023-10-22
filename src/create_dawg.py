@@ -1,5 +1,6 @@
-import pickle
 import os
+import pickle
+
 from tqdm import tqdm
 
 
