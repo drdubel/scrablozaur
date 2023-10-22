@@ -1,8 +1,6 @@
 import pickle
 import re
-import time
 from operator import itemgetter
-from pprint import pprint
 
 from src.create_dawg import Node
 from src.points import bonuses, letter_points
@@ -78,7 +76,7 @@ class Game:
             if av_letters[0] == 7:
                 score += 50
 
-            words.append((orientation, pos, word, addit_words, score))
+            words.append((orientation, pos, word, score))
 
         if x == 15:
             return words
@@ -158,6 +156,12 @@ class Game:
         self.possible_words = []
 
         for i in range(15):
+            if (
+                self.board[i].count("-") == 15
+                and (i == 0 or self.board[i - 1].count("-") == 15)
+                and (i == 14 or self.board[i + 1].count("-") == 15)
+            ):
+                continue
             self.possible_words.extend(
                 self.find_words(
                     dawg,
@@ -169,21 +173,23 @@ class Game:
             )
         self.board = list(zip(*self.board))
         for i in range(15):
+            if (
+                self.board[i].count("-") == 15
+                and (i == 0 or self.board[i - 1].count("-") == 15)
+                and (i == 14 or self.board[i + 1].count("-") == 15)
+            ):
+                continue
             self.possible_words.extend(
                 self.find_words(dawg, (0, self.letters), [], i, [], orientation=1)
             )
         self.board = list(zip(*self.board))
-        pprint(self.possible_words)
-        self.best_word = max(self.possible_words, key=itemgetter(4))
+        self.best_word = max(self.possible_words, key=itemgetter(3))
         print(self.best_word)
 
 
 def main():
     game = Game()
-    start = time.time()
     game.find_all_words()
-    end = time.time()
-    print(end - start)
 
 
 if __name__ == "__main__":
