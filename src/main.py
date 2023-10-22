@@ -9,15 +9,19 @@ dawg = pickle.loads(open("words/dawg.pickle", "rb").read())
 
 
 class Game:
-    def __init__(self):
+    def __init__(self, board=[["-" for i in range(15)] for _ in range(15)]):
         self.letters = input()
-        self.board = [input().split() for _ in range(15)]
+        self.board = board
         self.possible_words = []
         self.best_word = ()
 
-    def insert_best_word(self):
-        if self.best_word[0]:
-            self.board = list(zip(*self.board))
+    def insert_word(self, orientation, pos, word):
+        if orientation:
+            self.board = list(list(x) for x in zip(*self.board))
+            pos = pos[::-1]
+        self.board[pos[0]][pos[1] : pos[1] + len(word)] = word
+        if orientation:
+            self.board = list(list(x) for x in zip(*self.board))
 
     def validate_word(self, node: Node, word: str, x: int = 0):
         if x == len(word):
@@ -45,13 +49,66 @@ class Game:
                     return column[result.start() : result.end()], points
         return False, 0
 
+    def find_first_words(
+        self,
+        node: Node,
+        av_letters: tuple,
+        words: list,
+        can_be=False,
+        word: str = "",
+        points: tuple = (0, 1),
+        x: int = 0,
+    ) -> list:
+        if node.is_terminal and can_be:
+            pos = (7, x - len(word))
+            score = points[0] * points[1]
+
+            if av_letters[0] == 7:
+                score += 50
+
+            words.append((pos, word, score, av_letters[1]))
+
+        if x == 15:
+            return words
+
+        for letter, child in node.children.items():
+            if letter not in av_letters[1]:
+                continue
+
+            if x == 7:
+                can_be = True
+
+            bonus = bonuses[(7, x)] if (7, x) in bonuses else (1, 1)
+
+            words = self.find_first_words(
+                child,
+                (av_letters[0] + 1, av_letters[1].replace(letter, "", 1)),
+                words,
+                can_be=can_be,
+                word=word + letter,
+                points=(
+                    points[0] + letter_points[letter] * bonus[0],
+                    points[1] * bonus[1],
+                ),
+                x=x + 1,
+            )
+
+        if not word:
+            words = self.find_first_words(
+                node,
+                av_letters,
+                words,
+                x=x + 1,
+            )
+
+        return words
+
     def find_words(
         self,
         node: Node,
         av_letters: tuple,
         words: list,
         y: int,
-        addit_words: list,
         orientation: int = 0,
         word: str = "",
         can_be: tuple = (False, False),
@@ -76,7 +133,7 @@ class Game:
             if av_letters[0] == 7:
                 score += 50
 
-            words.append((orientation, pos, word, score))
+            words.append((orientation, pos, word, score, av_letters[1]))
 
         if x == 15:
             return words
@@ -87,7 +144,6 @@ class Game:
                 av_letters,
                 words,
                 y,
-                addit_words,
                 orientation=orientation,
                 word=word + self.board[y][x],
                 can_be=(True, True),
@@ -112,7 +168,7 @@ class Game:
                 if (y > 0 and self.board[y - 1][x] != "-") or (
                     y < 14 and self.board[y + 1][x] != "-"
                 ):
-                    column = list(list(zip(*self.board))[x])
+                    column = list(list(list(x) for x in zip(*self.board))[x])
                     column[y] = letter
                     new_addit_word, new_points = self.check_crossword(
                         "".join(column), letter, y, x
@@ -127,7 +183,6 @@ class Game:
                     (av_letters[0] + 1, av_letters[1].replace(letter, "", 1)),
                     words,
                     y,
-                    addit_words + [new_addit_word] if new_addit_word else addit_words,
                     orientation=orientation,
                     word=word + letter,
                     can_be=(True, True) if new_addit_word else (can_be[0], True),
@@ -145,14 +200,20 @@ class Game:
                 av_letters,
                 words,
                 y,
-                addit_words,
                 orientation=orientation,
                 x=x + 1,
             )
 
         return words
 
-    def find_all_words(self):
+    def place_best_first_word(self):
+        self.possible_words = self.find_first_words(dawg, (0, self.letters), [])
+        self.best_word = max(self.possible_words, key=itemgetter(2))
+        self.insert_word(0, *self.best_word[:2])
+        self.letters = self.best_word[3]
+        return self.best_word
+
+    def place_best_word(self):
         self.possible_words = []
 
         for i in range(15):
@@ -168,10 +229,9 @@ class Game:
                     (0, self.letters),
                     [],
                     i,
-                    [],
                 )
             )
-        self.board = list(zip(*self.board))
+        self.board = list(list(x) for x in zip(*self.board))
         for i in range(15):
             if (
                 self.board[i].count("-") == 15
@@ -180,16 +240,22 @@ class Game:
             ):
                 continue
             self.possible_words.extend(
-                self.find_words(dawg, (0, self.letters), [], i, [], orientation=1)
+                self.find_words(dawg, (0, self.letters), [], i, orientation=1)
             )
-        self.board = list(zip(*self.board))
+        self.board = list(list(x) for x in zip(*self.board))
         self.best_word = max(self.possible_words, key=itemgetter(3))
-        print(self.best_word)
+        self.insert_word(*self.best_word[:3])
+        self.letters = self.best_word[4]
+        return self.best_word
 
 
 def main():
     game = Game()
-    game.find_all_words()
+    print(game.place_best_first_word())
+    while True:
+        game.letters += input()
+        print(game.place_best_word())
+        print(game.board)
 
 
 if __name__ == "__main__":
