@@ -1,5 +1,6 @@
 import pickle
 import re
+import time
 from operator import itemgetter
 from pprint import pprint
 
@@ -9,15 +10,16 @@ from src.points import bonuses, letter_points
 dawg = pickle.loads(open("words/dawg.pickle", "rb").read())
 
 
-class Board:
+class Game:
     def __init__(self):
         self.letters = input()
         self.board = [input().split() for _ in range(15)]
         self.possible_words = []
         self.best_word = ()
 
-    def insert_word(self):
-        pass
+    def insert_best_word(self):
+        if self.best_word[0]:
+            self.board = list(zip(*self.board))
 
     def validate_word(self, node: Node, word: str, x: int = 0):
         if x == len(word):
@@ -62,7 +64,11 @@ class Board:
             node.is_terminal
             and can_be[0]
             and can_be[1]
-            and (x >= 14 or self.board[y][x] == "-" and self.board[y][x + 1] == "-")
+            and (
+                x == 15
+                or (x <= 14 and self.board[y][x] == "-")
+                or (x <= 13 and self.board[y][x] == "-" and self.board[y][x + 1] == "-")
+            )
         ):
             pos = (y, x - len(word))
             score = points[0] * points[2] + points[1]
@@ -86,7 +92,7 @@ class Board:
                 addit_words,
                 orientation=orientation,
                 word=word + self.board[y][x],
-                can_be=(True, can_be[1]),
+                can_be=(True, True),
                 points=(
                     points[0] + letter_points[self.board[y][x]],
                     points[1],
@@ -108,13 +114,15 @@ class Board:
                 if (y > 0 and self.board[y - 1][x] != "-") or (
                     y < 14 and self.board[y + 1][x] != "-"
                 ):
-                    column = list(list(zip(*self.board))[x]).copy()
+                    column = list(list(zip(*self.board))[x])
                     column[y] = letter
                     new_addit_word, new_points = self.check_crossword(
                         "".join(column), letter, y, x
                     )
                     if not new_addit_word:
                         continue
+
+                bonus = bonuses[(y, x)] if (y, x) in bonuses else (1, 1)
 
                 words = self.find_words(
                     child,
@@ -126,11 +134,9 @@ class Board:
                     word=word + letter,
                     can_be=(True, True) if new_addit_word else (can_be[0], True),
                     points=(
-                        points[0]
-                        + letter_points[letter]
-                        * (bonuses[(y, x)][0] if (y, x) in bonuses else 1),
+                        points[0] + letter_points[letter] * bonus[0],
                         points[1] + new_points,
-                        points[2] * (bonuses[(y, x)][1] if (y, x) in bonuses else 1),
+                        points[2] * bonus[1],
                     ),
                     x=x + 1,
                 )
@@ -149,29 +155,35 @@ class Board:
         return words
 
     def find_all_words(self):
+        self.possible_words = []
+
         for i in range(15):
-            self.possible_words = self.find_words(
-                dawg,
-                (0, self.letters),
-                [],
-                i,
-                [],
+            self.possible_words.extend(
+                self.find_words(
+                    dawg,
+                    (0, self.letters),
+                    [],
+                    i,
+                    [],
+                )
             )
-        print(self.possible_words)
         self.board = list(zip(*self.board))
         for i in range(15):
             self.possible_words.extend(
                 self.find_words(dawg, (0, self.letters), [], i, [], orientation=1)
             )
         self.board = list(zip(*self.board))
-        # pprint(self.possible_words)
+        pprint(self.possible_words)
         self.best_word = max(self.possible_words, key=itemgetter(4))
         print(self.best_word)
 
 
 def main():
-    board = Board()
-    board.find_all_words()
+    game = Game()
+    start = time.time()
+    game.find_all_words()
+    end = time.time()
+    print(end - start)
 
 
 if __name__ == "__main__":
