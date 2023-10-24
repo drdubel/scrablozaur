@@ -6,6 +6,8 @@ import re
 from operator import itemgetter
 from random import sample
 
+from tqdm import tqdm
+
 from src.create_dawg import Node
 from src.data import bonuses, letter_points, tile_bag
 
@@ -23,12 +25,25 @@ class Game:
         self.board = board
         self.possible_words = []
         self.best_word = ()
-        self.tile_bag = tile_bag
+        self.tile_bag = tile_bag.copy()
         self.score = 0
 
     def __str__(self) -> str:
         pretty_board = "\n".join([" ".join(x) for x in self.board])
         return pretty_board.upper()
+
+    def exchange_letters(self, n):
+        letters_to_rem = sample(self.letters, n)
+        self.tile_bag.extend(letters_to_rem)
+        new_letters = sample(self.tile_bag, n)
+
+        for letter in letters_to_rem:
+            self.letters = self.letters.replace(letter, "", 1)
+
+        for letter in new_letters:
+            self.tile_bag.remove(letter)
+
+        self.letters += "".join(new_letters)
 
     def get_new_letters(self):
         new_letters = sample(
@@ -233,6 +248,11 @@ class Game:
 
     def place_best_first_word(self):
         self.possible_words = self.find_first_words(dawg, (0, self.letters), [])
+
+        if not self.possible_words:
+            self.exchange_letters(7)
+            self.place_best_first_word()
+
         self.best_word = max(self.possible_words, key=itemgetter(2))
         self.insert_word(0, *self.best_word[:2])
         self.letters = self.best_word[3]
@@ -271,7 +291,10 @@ class Game:
             )
 
         if not self.possible_words:
-            raise NoPossibleWordError()
+            if not self.tile_bag:
+                return False
+            self.exchange_letters(7)
+            self.place_best_first_word()
 
         self.board = list(list(x) for x in zip(*self.board))
         self.best_word = max(self.possible_words, key=itemgetter(3))
@@ -281,26 +304,39 @@ class Game:
         return self.best_word
 
 
-def main():
+def play_game():
     game = Game()
     game.letters += game.get_new_letters()
-    print(game.letters)
-    print(game.place_best_first_word())
-    print(game.score)
-    print(game)
+    game.place_best_first_word()
+    # print(game.letters)
+    # print(game.place_best_first_word())
+    # print(game.score)
+    # print(game)
     while True:
         try:
-            print(game.tile_bag)
+            # print(game.tile_bag)
             game.letters += game.get_new_letters()
-            print(game.letters)
-            print(game.place_best_word())
-            print(game.score)
-            print(game)
+            game.place_best_word()
+            # print(game.letters)
+            # print(game.place_best_word())
+            # print(game.score)
+            # print(game)
         except NoPossibleWordError:
             if not game.tile_bag:
-                print("KONIEC!")
+                # print("KONIEC!")
                 break
-            print("Wymieniam litery")
+            litery = game.exchange_letters(7)
+            print(litery)
+            game.letters = litery
+    return game.score
+
+
+def main():
+    n = 1000
+    points = 0
+    for _ in tqdm(range(n)):
+        points += play_game()
+    print(points / n)
 
 
 if __name__ == "__main__":
