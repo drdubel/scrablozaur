@@ -81,7 +81,7 @@ def build_dawg(word_list):
 
 
 def main():
-    word_list = open("words/slowa.txt").read().split()
+    word_list = open("words/slowa2.txt").read().split()
     dawg = build_dawg(word_list)
     with open("words/dawg.pickle", "wb") as f:
         pickle.dump(dawg, f)
