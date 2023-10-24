@@ -13,6 +13,10 @@ from src.create_dawg import Node
 dawg = pickle.loads(open("words/dawg.pickle", "rb").read())
 
 
+class NoPossibleWordError(Exception):
+    pass
+
+
 class Game:
     def __init__(self, board=[["-" for _ in range(15)] for _ in range(15)]):
         self.letters = ""
@@ -158,7 +162,11 @@ class Game:
         if x == 15:
             return words
 
-        if self.board[y][x] != "-" and self.board[y][x] in node.children:
+        if (
+            self.board[y][x] != "-"
+            and self.board[y][x] in node.children
+            and not (not word and self.board[y][x] != "-")
+        ):
             words = self.find_words(
                 node.children[self.board[y][x]],
                 av_letters,
@@ -175,18 +183,7 @@ class Game:
                 x=x + 1,
             )
 
-        elif (
-            word
-            and self.board[y][x] == "-"
-            or (
-                not word
-                and (x == 0 or self.board[y][x - 1] == "-")
-                and self.board[y][x] == "-"
-            )
-        ):
-            if self.board[y][x] != "-":
-                print(self.board[y][x])
-                time.sleep(10)
+        elif self.board[y][x] == "-" and not (not word and self.board[y][x - 1] != "-"):
             for letter, child in node.children.items():
                 new_points = 0
                 new_addit_word = ""
@@ -260,6 +257,7 @@ class Game:
                     i,
                 )
             )
+
         self.board = list(list(x) for x in zip(*self.board))
         for i in range(15):
             if (
@@ -271,6 +269,10 @@ class Game:
             self.possible_words.extend(
                 self.find_words(dawg, (0, self.letters), [], i, orientation=1)
             )
+
+        if not self.possible_words:
+            raise NoPossibleWordError()
+
         self.board = list(list(x) for x in zip(*self.board))
         self.best_word = max(self.possible_words, key=itemgetter(3))
         self.insert_word(*self.best_word[:3])
@@ -284,16 +286,21 @@ def main():
     game.letters += game.get_new_letters()
     print(game.letters)
     print(game.place_best_first_word())
+    print(game.score)
     print(game)
     while True:
-        print(game.tile_bag)
-        game.letters += game.get_new_letters()
-        print(game.letters)
-        print(game.place_best_word())
-        print(game.score)
-        print(game)
-        if not game.tile_bag:
-            break
+        try:
+            print(game.tile_bag)
+            game.letters += game.get_new_letters()
+            print(game.letters)
+            print(game.place_best_word())
+            print(game.score)
+            print(game)
+        except NoPossibleWordError:
+            if not game.tile_bag:
+                print("KONIEC!")
+                break
+            print("Wymieniam litery")
 
 
 if __name__ == "__main__":
