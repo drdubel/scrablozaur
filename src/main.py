@@ -1,16 +1,16 @@
 # TODO
 # alternative move
 
-import time
 import pickle
 import re
 from operator import itemgetter
 from random import sample
 
-from data import bonuses, letter_points, tile_bag
 from src.create_dawg import Node
+from src.data import bonuses, letter_points, tile_bag
 
-dawg = pickle.loads(open("words/dawg.pickle", "rb").read())
+with open("words/dawg.pickle", "rb") as f:
+    dawg = pickle.loads(f.read())
 
 
 class NoPossibleWordError(Exception):
