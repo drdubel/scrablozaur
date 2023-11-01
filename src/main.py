@@ -5,6 +5,7 @@ import pickle
 import re
 from operator import itemgetter
 from random import sample
+from multiprocessing import Pool
 
 from tqdm import tqdm
 
@@ -15,7 +16,7 @@ with open("words/dawg.pickle", "rb") as f:
     dawg = pickle.loads(f.read())
 
 
-class NoPossibleWordError(Exception):
+class NoPossibleWords(Exception):
     pass
 
 
@@ -250,8 +251,7 @@ class Game:
         self.possible_words = self.find_first_words(dawg, (0, self.letters), [])
 
         if not self.possible_words:
-            self.exchange_letters(7)
-            self.place_best_first_word()
+            raise NoPossibleWords()
 
         self.best_word = max(self.possible_words, key=itemgetter(2))
         self.insert_word(0, *self.best_word[:2])
@@ -291,10 +291,7 @@ class Game:
             )
 
         if not self.possible_words:
-            if not self.tile_bag:
-                return False
-            self.exchange_letters(7)
-            self.place_best_first_word()
+            raise NoPossibleWords()
 
         self.board = list(list(x) for x in zip(*self.board))
         self.best_word = max(self.possible_words, key=itemgetter(3))
@@ -304,39 +301,48 @@ class Game:
         return self.best_word
 
 
-def play_game():
+def play_game(i):
     game = Game()
-    game.letters += game.get_new_letters()
-    game.place_best_first_word()
+    game.letters = game.get_new_letters()
+    while True:
+        try:
+            game.place_best_first_word()
+            break
+        except NoPossibleWords:
+            game.exchange_letters(7)
     # print(game.letters)
     # print(game.place_best_first_word())
     # print(game.score)
     # print(game)
+    n = 0
     while True:
         try:
             # print(game.tile_bag)
             game.letters += game.get_new_letters()
             game.place_best_word()
+            n = 0
             # print(game.letters)
             # print(game.place_best_word())
             # print(game.score)
             # print(game)
-        except NoPossibleWordError:
-            if not game.tile_bag:
+        except NoPossibleWords:
+            if not game.tile_bag or n == 4:
                 # print("KONIEC!")
                 break
-            litery = game.exchange_letters(7)
-            print(litery)
-            game.letters = litery
+            game.exchange_letters(7)
+            n += 1
+            # print(litery)
     return game.score
 
 
 def main():
     n = 1000
     points = 0
-    for _ in tqdm(range(n)):
-        points += play_game()
+    with Pool(processes=25) as pool:
+        for i in tqdm(pool.imap_unordered(play_game, range(n)), total=n):
+            points += i
     print(points / n)
+    # play_game()
 
 
 if __name__ == "__main__":
