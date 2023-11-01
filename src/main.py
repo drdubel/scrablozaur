@@ -1,11 +1,11 @@
 # TODO
-# alternative move
+# clever alternative move
 
 import pickle
 import re
+from multiprocessing import Pool
 from operator import itemgetter
 from random import sample
-from multiprocessing import Pool
 
 from tqdm import tqdm
 
