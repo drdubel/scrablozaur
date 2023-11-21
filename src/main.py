@@ -20,7 +20,7 @@ class NoPossibleWords(Exception):
     pass
 
 
-class Board:
+class Game:
     def __init__(self, board=[["-" for _ in range(15)] for _ in range(15)]):
         self.board = board
         self.tile_bag = tile_bag.copy()
@@ -41,26 +41,26 @@ class Board:
 
 
 class Player:
-    def __init__(self, board):
+    def __init__(self, game):
         self.letters = ""
         self.score = 0
-        self.board = board
+        self.game = game
         self.get_new_letters()
 
     def insert_word(self, orientation, pos, word):
         if orientation:
-            self.board.board = list(list(x) for x in zip(*self.board.board))
+            self.game.board = list(list(x) for x in zip(*self.game.board))
             pos = pos[::-1]
-        self.board.board[pos[0]][pos[1] : pos[1] + len(word)] = word
+        self.game.board[pos[0]][pos[1] : pos[1] + len(word)] = word
         if orientation:
-            self.board.board = list(list(x) for x in zip(*self.board.board))
+            self.game.board = list(list(x) for x in zip(*self.game.board))
 
     def exchange_letters(self, n):
         self.letters = "".join(sample(self.letters, n))
         self.get_new_letters()
 
     def get_new_letters(self):
-        self.letters += self.board.give_new_letters(self.letters)
+        self.letters += self.game.give_new_letters(self.letters)
 
     def validate_word(self, node: Node, word: str, x: int = 0):
         if x == len(word):
@@ -165,11 +165,11 @@ class Player:
             and can_be[1]
             and (
                 x == 15
-                or (x <= 14 and self.board.board[y][x] == "-")
+                or (x <= 14 and self.game.board[y][x] == "-")
                 or (
                     x <= 13
-                    and self.board.board[y][x] == "-"
-                    and self.board.board[y][x + 1] == "-"
+                    and self.game.board[y][x] == "-"
+                    and self.game.board[y][x + 1] == "-"
                 )
             )
         ):
@@ -194,28 +194,28 @@ class Player:
             return best_word
 
         if (
-            self.board.board[y][x] != "-"
-            and self.board.board[y][x] in node.children
-            and not (not word and self.board.board[y][x] != "-")
+            self.game.board[y][x] != "-"
+            and self.game.board[y][x] in node.children
+            and not (not word and self.game.board[y][x] != "-")
         ):
             best_word = self.find_words(
-                node.children[self.board.board[y][x]],
+                node.children[self.game.board[y][x]],
                 av_letters,
                 best_word,
                 y,
                 orientation=orientation,
-                word=word + self.board.board[y][x],
+                word=word + self.game.board[y][x],
                 can_be=(True, can_be[1]),
                 points=(
-                    points[0] + letter_points[self.board.board[y][x]],
+                    points[0] + letter_points[self.game.board[y][x]],
                     points[1],
                     points[2],
                 ),
                 x=x + 1,
             )
 
-        elif self.board.board[y][x] == "-" and not (
-            not word and self.board.board[y][x - 1] != "-"
+        elif self.game.board[y][x] == "-" and not (
+            not word and self.game.board[y][x - 1] != "-"
         ):
             for letter, child in node.children.items():
                 new_points = 0
@@ -223,10 +223,10 @@ class Player:
                 if letter not in av_letters[1]:
                     continue
 
-                if (y > 0 and self.board.board[y - 1][x] != "-") or (
-                    y < 14 and self.board.board[y + 1][x] != "-"
+                if (y > 0 and self.game.board[y - 1][x] != "-") or (
+                    y < 14 and self.game.board[y + 1][x] != "-"
                 ):
-                    column = list(list(list(x) for x in zip(*self.board.board))[x])
+                    column = list(list(list(x) for x in zip(*self.game.board))[x])
                     column[y] = letter
                     new_addit_word, new_points = self.check_crossword(
                         "".join(column), letter, y, x
@@ -280,9 +280,9 @@ class Player:
         best_word = (0, (0, 0), "", 0, "")
         for i in range(15):
             if (
-                self.board.board[i].count("-") == 15
-                and (i == 0 or self.board.board[i - 1].count("-") == 15)
-                and (i == 14 or self.board.board[i + 1].count("-") == 15)
+                self.game.board[i].count("-") == 15
+                and (i == 0 or self.game.board[i - 1].count("-") == 15)
+                and (i == 14 or self.game.board[i + 1].count("-") == 15)
             ):
                 continue
             possible_word = self.find_words(
@@ -294,12 +294,12 @@ class Player:
             if possible_word:
                 best_word = max(best_word, possible_word, key=itemgetter(3))
 
-        self.board.board = list(list(x) for x in zip(*self.board.board))
+        self.game.board = list(list(x) for x in zip(*self.game.board))
         for i in range(15):
             if (
-                self.board.board[i].count("-") == 15
-                and (i == 0 or self.board.board[i - 1].count("-") == 15)
-                and (i == 14 or self.board.board[i + 1].count("-") == 15)
+                self.game.board[i].count("-") == 15
+                and (i == 0 or self.game.board[i - 1].count("-") == 15)
+                and (i == 14 or self.game.board[i + 1].count("-") == 15)
             ):
                 continue
             possible_word = self.find_words(
@@ -323,27 +323,27 @@ class Player:
             else:
                 word = self.place_best_word()
         except NoPossibleWords:
-            if self.board.tile_bag:
+            if self.game.tile_bag:
                 self.exchange_letters(2)
             else:
-                self.board.end = True
+                self.game.end = True
                 return False
         return word
 
 
 def play_game(i):
-    board = Board()
-    player1 = Player(board)
-    player2 = Player(board)
+    game = Game()
+    player1 = Player(game)
+    player2 = Player(game)
     player2.move(first=True)
     while True:
-        if board.end:
+        if game.end:
             break
         print("Player1 move: ", player1.move())
-        if board.end:
+        if game.end:
             break
         print("Player2 move: ", player2.move(), "\n")
-        print(board)
+        print(game)
 
     for letter in player1.letters:
         player1.score -= letter_points[letter]
