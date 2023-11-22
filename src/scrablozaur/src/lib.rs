@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Result};
+use std::fs;
 use std::hash::{Hash, Hasher};
 
 static mut NEXT_ID: i32 = 0;
@@ -88,10 +89,10 @@ impl Display for Game {
 #[pymethods]
 impl Game {
     #[new]
-    fn new(board: Vec<Vec<char>>, dawg: Node) -> Self {
+    fn new(dawg: Node) -> Self {
         Game {
             dawg,
-            board,
+            board: (0..15).map(|_| (0..15).map(|_| '-').collect()).collect(),
             tile_bag: vec![
                 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'ą', 'b', 'b', 'c', 'c', 'c', 'ć',
                 'd', 'd', 'd', 'e', 'e', 'e', 'e', 'e', 'e', 'e', 'ę', 'f', 'g', 'g', 'h', 'h',
@@ -103,6 +104,7 @@ impl Game {
             ],
         }
     }
+
     fn __repr__(&self) -> String {
         format!("{}", self)
     }
@@ -127,14 +129,13 @@ impl Player {
     }
 }
 
-fn sth(data: &str) -> serde_json::Result<()> {
-    let node: Node = serde_json::from_str(data)?;
-    Ok(())
-}
-
 #[pyfunction]
-fn sth2(data: &str) {
-    let a = sth(data).unwrap();
+fn play_game() {
+    let data = fs::read_to_string("./dawg.json").expect("Unable to read file");
+    let node: Node = serde_json::from_str(&data).expect("JSON does not have correct format.");
+    println!("{}", node);
+    let game: Game = Game::new(node);
+    println!("{}", game);
 }
 
 #[derive(Serialize, Deserialize)]
@@ -149,6 +150,6 @@ fn scrablozaur(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Node>()?;
     m.add_class::<Player>()?;
     m.add_class::<Game>()?;
-    m.add_function(wrap_pyfunction!(sth2, m)?)?;
+    m.add_function(wrap_pyfunction!(play_game, m)?)?;
     Ok(())
 }
