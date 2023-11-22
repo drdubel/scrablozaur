@@ -333,7 +333,7 @@ class Player:
                 return False
 
 
-def play_game(i):
+def play_game(i=0):
     game = Game()
     player1 = Player(game)
     player2 = Player(game)
@@ -342,34 +342,28 @@ def play_game(i):
         if game.end:
             break
         player1.move()
-        # print("Player1 move: ", player1.move())
+        print("Player1 move: ", player1.move())
         if game.end:
             break
         player2.move()
-        # print("Player2 move: ", player2.move(), "\n")
-        # print(game)
+        print("Player2 move: ", player2.move(), "\n")
+        print(game)
 
     for letter in player1.letters:
         player1.score -= letter_points[letter]
     for letter in player2.letters:
         player2.score -= letter_points[letter]
 
-    # if player1.score > player2.score:
-    #     print("Player1 Won!")
-    # else:
-    #     print("Player2 Won!")
+    if player1.score > player2.score:
+        print("Player1 Won!")
+    else:
+        print("Player2 Won!")
 
     return player1.score, player2.score
 
 
 def main():
-    n = 1000
-    points = 0
-    with Pool(processes=30) as pool:
-        for score1, score2 in tqdm(pool.imap_unordered(play_game, range(n)), total=n):
-            points += score1 + score2
-    print(points / n)
-    # print(play_game(0))
+    print(play_game())
 
 
 if __name__ == "__main__":
