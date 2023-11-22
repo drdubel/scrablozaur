@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-
+use serde;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Result};
 use std::fs::File;
@@ -73,118 +73,19 @@ fn length_common_prefix(prev_word: &str, word: &str) -> i32 {
     pref_len
 }
 
-fn minimize<'a>(
-    curr_node: Node,
-    pref_len: i32,
-    minimized_nodes: HashMap<&'a Node, &'a Node>,
-    non_minimized_nodes: Vec<(Node, char, Node)>,
-) -> (Node, HashMap<&'a Node, &'a Node>) {
-    let mut new_minimized_nodes = minimized_nodes.clone();
-    let mut new_curr_node = curr_node.clone();
-    for i in 0..(non_minimized_nodes.len() - pref_len as usize) {
-        let (parent, letter, child) =
-            non_minimized_nodes[non_minimized_nodes.len() - 1 - i].clone();
-        let mut new_parent = parent.clone();
-        if minimized_nodes.contains_key(&child) {
-            new_parent
-                .children
-                .insert(letter, minimized_nodes[&child].clone());
-        } else {
-            new_minimized_nodes.insert(&child.clone(), &child.clone());
-        }
-        new_curr_node = parent;
-    }
-    (new_curr_node, new_minimized_nodes)
-}
-
 #[pyfunction]
-fn build_dawg(word_list: Vec<String>) -> Node {
-    let root = Node::new();
-    let mut minimized_nodes = HashMap::from([(&root, &root)]);
-    let mut non_minimized_nodes: Vec<(Node, char, Node)> = Vec::new();
-    let mut curr_node = root;
-    let mut prev_word = String::new();
-    for word in word_list.iter() {
-        let pref_len = length_common_prefix(&prev_word, word);
-        if !non_minimized_nodes.is_empty() {
-            (curr_node, minimized_nodes) = minimize(
-                curr_node.clone(),
-                pref_len,
-                minimized_nodes.clone(),
-                non_minimized_nodes.clone(),
-            );
-        }
-        for letter in word[pref_len as usize..].chars() {
-            let next_node = Node::new();
-            curr_node.children.insert(letter, next_node.clone());
-            non_minimized_nodes.push((curr_node.clone(), letter, next_node.clone()));
-            curr_node = &next_node;
-        }
-        curr_node.is_terminal = true;
-        prev_word = word.to_string();
-    }
-    (&curr_node, minimized_nodes) = minimize(
-        curr_node.clone(),
-        0,
-        minimized_nodes.clone(),
-        non_minimized_nodes.clone(),
-    );
-    println!("{}", minimized_nodes.len());
-    Node::new()
-}
-
-/*
-fn build_dawg(lexicon: Vec<String>) -> Node {
-    let root = Node::new();
-    let mut minimized_nodes = HashMap::from([(root, root)]);
-    let mut non_minimized_nodes: Vec<(&Node, char, Node)> = Vec::new();
-    let mut curr_node = &mut root;
-    let mut prev_word = String::new();
-    for word in lexicon {
-        let common_prefix_length = length_common_prefix(prev_word, word);
-
-        if !non_minimized_nodes.is_empty() {
-            curr_node = &mut minimize(
-                &mut curr_node,
-                common_prefix_length,
-                &mut minimized_nodes,
-                &mut non_minimized_nodes,
-            );
-        }
-
-        for letter in word[common_prefix_length as usize..].chars() {
-            let next_node = Node::new();
-            curr_node.children[&letter] = next_node;
-            non_minimized_nodes.push((&curr_node, letter, next_node));
-            curr_node = &mut next_node;
-        }
-
-        curr_node.is_terminal = true;
-        prev_word = word;
-    }
-    minimize(
-        &mut curr_node,
-        0,
-        &mut minimized_nodes,
-        &mut non_minimized_nodes,
-    );
-    println!("{}", minimized_nodes.len());
-    root
-} */
-#[pyfunction]
-fn file2dawg(path: &str) -> Node {
+fn read_dawg_from_file(path: &str) -> Node {
     let file = File::open(path).expect("Failed to open file");
     let reader = BufReader::new(file);
-    let word_list: Vec<String> = reader.lines().filter_map(|line| line.ok()).collect();
-    let dawg = build_dawg(word_list);
+    let data: Pickle = Pickle::new(reader).expect("Failed to parse pickle");
+    let my_value = data.get::<Node>().expect("Failed to get data");
     dawg
 }
 
 #[pymodule]
 fn dawgpyrust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Node>()?;
-    m.add_function(wrap_pyfunction!(build_dawg, m)?)?;
     m.add_function(wrap_pyfunction!(length_common_prefix, m)?)?;
-    m.add_function(wrap_pyfunction!(file2dawg, m)?)?;
+    m.add_function(wrap_pyfunction!(read_dawg_from_file, m)?)?;
     Ok(())
 }

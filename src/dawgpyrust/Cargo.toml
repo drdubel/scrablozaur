@@ -11,3 +11,5 @@ proc-macro = true
 
 [dependencies]
 pyo3 = { version = "0.19.1", features = ["extension-module"] }
+serde = "1.0.190"
+serde-pickle = "1.1.1"
