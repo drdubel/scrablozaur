@@ -1,4 +1,5 @@
 use pyo3::prelude::*;
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
@@ -9,7 +10,6 @@ use std::hash::{Hash, Hasher};
 static mut NEXT_ID: i32 = 0;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq)]
-#[pyclass(get_all, set_all, subclass)]
 struct Node {
     children: HashMap<char, Node>,
     is_terminal: bool,
@@ -33,9 +33,7 @@ impl Display for Node {
     }
 }
 
-#[pymethods]
 impl Node {
-    #[new]
     fn new() -> Self {
         unsafe { NEXT_ID += 1 };
         Node {
@@ -61,8 +59,7 @@ impl PartialEq for Node {
     }
 }
 
-#[derive(Debug)]
-#[pyclass(get_all, set_all, subclass)]
+#[derive(Debug, Clone)]
 struct Game {
     dawg: Node,
     board: Vec<Vec<char>>,
@@ -86,13 +83,11 @@ impl Display for Game {
     }
 }
 
-#[pymethods]
 impl Game {
-    #[new]
     fn new(dawg: Node) -> Self {
         Game {
             dawg,
-            board: (0..15).map(|_| (0..15).map(|_| '-').collect()).collect(),
+            board: vec![vec!['-'; 15]; 15],
             tile_bag: vec![
                 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'ą', 'b', 'b', 'c', 'c', 'c', 'ć',
                 'd', 'd', 'd', 'e', 'e', 'e', 'e', 'e', 'e', 'e', 'ę', 'f', 'g', 'g', 'h', 'h',
@@ -108,24 +103,86 @@ impl Game {
     fn __repr__(&self) -> String {
         format!("{}", self)
     }
-}
 
-#[pyclass(get_all, set_all, subclass)]
-struct Player {
-    points: i16,
-    letters: Vec<char>,
-    best_word: String,
-}
-
-#[pymethods]
-impl Player {
-    #[new]
-    fn new() -> Self {
-        Player {
-            points: 0,
-            letters: Vec::new(),
-            best_word: "".to_string(),
+    fn insert_word(&mut self, orientation: bool, mut pos: Vec<i16>, word: String) {
+        if orientation {
+            self.board = (0..15)
+                .map(|col| (0..15).map(|row| self.board[row][col]).collect())
+                .collect();
+            pos.reverse();
         }
+        for i in pos[1]..(pos[1] + word.len() as i16) {
+            self.board[pos[0] as usize][i as usize] =
+                word.chars().nth((i - pos[1]) as usize).unwrap();
+        }
+        if orientation {
+            self.board = (0..15)
+                .map(|col| (0..15).map(|row| self.board[row][col]).collect())
+                .collect();
+        }
+    }
+
+    fn give_new_letters(&mut self, letters: &Vec<char>) -> Vec<char> {
+        let mut rng = rand::thread_rng();
+        let new_letters: Vec<char> = (0..(7 - letters.len()).min(self.tile_bag.len()))
+            .filter_map(|_| letters.choose(&mut rng))
+            .cloned()
+            .collect();
+        for letter in new_letters.iter() {
+            let index = self.tile_bag.iter().position(|x| *x == *letter).unwrap();
+            self.tile_bag.remove(index);
+        }
+        new_letters
+    }
+}
+
+struct Player<'a> {
+    letters: Vec<char>,
+    score: i16,
+    game: &'a mut Game,
+}
+
+impl<'a> Player<'a> {
+    fn new(game: &'a mut Game) -> Self {
+        Player {
+            letters: Vec::new(),
+            score: 0,
+            game,
+        }
+    }
+
+    fn exchange_letters(&mut self, n: i16) {
+        let mut rng = rand::thread_rng();
+        self.letters = (0..(7 - n).min(self.letters.len() as i16))
+            .filter_map(|_| self.letters.choose(&mut rng))
+            .cloned()
+            .collect();
+        self.get_new_letters();
+    }
+
+    fn get_new_letters(&mut self) {
+        let new_letters = self.game.give_new_letters(&self.letters);
+        self.letters.extend(new_letters);
+    }
+
+    fn validate_word(&self, node: Node, word: String, x: i16) -> String {
+        if x == word.len() as i16 {
+            if node.is_terminal {
+                return word;
+            }
+            return "".to_string();
+        }
+        if node
+            .children
+            .contains_key(&word.chars().nth(x as usize).unwrap())
+        {
+            return self.validate_word(
+                node.children.get(&word.chars().nth(x as usize).unwrap()),
+                word,
+                x + 1,
+            );
+        }
+        return "".to_string();
     }
 }
 
@@ -134,7 +191,8 @@ fn play_game() {
     let data = fs::read_to_string("./dawg.json").expect("Unable to read file");
     let node: Node = serde_json::from_str(&data).expect("JSON does not have correct format.");
     println!("{}", node);
-    let game: Game = Game::new(node);
+    let mut game: Game = Game::new(node);
+    let player1: Player = Player::new(&mut game);
     println!("{}", game);
 }
 
@@ -147,9 +205,6 @@ struct Person {
 
 #[pymodule]
 fn scrablozaur(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_class::<Node>()?;
-    m.add_class::<Player>()?;
-    m.add_class::<Game>()?;
     m.add_function(wrap_pyfunction!(play_game, m)?)?;
     Ok(())
 }
