@@ -26,9 +26,17 @@ class Game:
         self.tile_bag = tile_bag.copy()
         self.end = False
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         pretty_board = "\n".join([" ".join(x) for x in self.board])
         return pretty_board.upper()
+
+    def insert_word(self, orientation, pos, word):
+        if orientation:
+            self.board = list(list(x) for x in zip(*self.board))
+            pos = pos[::-1]
+        self.board[pos[0]][pos[1] : pos[1] + len(word)] = word
+        if orientation:
+            self.board = list(list(x) for x in zip(*self.board))
 
     def give_new_letters(self, letters):
         new_letters = sample(
@@ -46,14 +54,6 @@ class Player:
         self.score = 0
         self.game = game
         self.get_new_letters()
-
-    def insert_word(self, orientation, pos, word):
-        if orientation:
-            self.game.board = list(list(x) for x in zip(*self.game.board))
-            pos = pos[::-1]
-        self.game.board[pos[0]][pos[1] : pos[1] + len(word)] = word
-        if orientation:
-            self.game.board = list(list(x) for x in zip(*self.game.board))
 
     def exchange_letters(self, n):
         self.letters = "".join(sample(self.letters, n))
@@ -270,7 +270,7 @@ class Player:
         if not best_word:
             raise NoPossibleWords()
 
-        self.insert_word(0, *best_word[:2])
+        self.game.insert_word(0, *best_word[:2])
         self.letters = best_word[3]
         self.score += best_word[2]
         self.get_new_letters()
@@ -307,10 +307,11 @@ class Player:
             )
             if possible_word:
                 best_word = max(best_word, possible_word, key=itemgetter(3))
+        self.game.board = list(list(x) for x in zip(*self.game.board))
 
         if not best_word[3]:
             raise NoPossibleWords()
-        self.insert_word(*best_word[:3])
+        self.game.insert_word(*best_word[:3])
         self.letters = best_word[4]
         self.score += best_word[3]
         self.get_new_letters()
@@ -322,13 +323,14 @@ class Player:
                 word = self.place_best_first_word()
             else:
                 word = self.place_best_word()
+            return word
+
         except NoPossibleWords:
             if self.game.tile_bag:
                 self.exchange_letters(2)
             else:
                 self.game.end = True
                 return False
-        return word
 
 
 def play_game(i):
@@ -339,33 +341,35 @@ def play_game(i):
     while True:
         if game.end:
             break
-        print("Player1 move: ", player1.move())
+        player1.move()
+        # print("Player1 move: ", player1.move())
         if game.end:
             break
-        print("Player2 move: ", player2.move(), "\n")
-        print(game)
+        player2.move()
+        # print("Player2 move: ", player2.move(), "\n")
+        # print(game)
 
     for letter in player1.letters:
         player1.score -= letter_points[letter]
     for letter in player2.letters:
         player2.score -= letter_points[letter]
 
-    if player1.score > player2.score:
-        print("Player1 Won!")
-    else:
-        print("Player2 Won!")
+    # if player1.score > player2.score:
+    #     print("Player1 Won!")
+    # else:
+    #     print("Player2 Won!")
 
     return player1.score, player2.score
 
 
 def main():
-    # n = 1000
-    # points = 0
-    # with Pool(processes=30) as pool:
-    #     for i in tqdm(pool.imap_unordered(play_game, range(n)), total=n):
-    #         points += i
-    # print(points / n)
-    print(play_game(0))
+    n = 1000
+    points = 0
+    with Pool(processes=30) as pool:
+        for score1, score2 in tqdm(pool.imap_unordered(play_game, range(n)), total=n):
+            points += score1 + score2
+    print(points / n)
+    # print(play_game(0))
 
 
 if __name__ == "__main__":
