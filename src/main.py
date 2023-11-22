@@ -338,13 +338,12 @@ def play_game(i=0):
     player1 = Player(game)
     player2 = Player(game)
     player2.move(first=True)
-    while True:
-        if game.end:
-            break
+    while game.end:
         player1.move()
         print("Player1 move: ", player1.move())
         if game.end:
             break
+
         player2.move()
         print("Player2 move: ", player2.move(), "\n")
         print(game)
