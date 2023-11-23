@@ -6,6 +6,7 @@ use rand::seq::SliceRandom;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::cmp::max;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Result};
 use std::fs;
@@ -13,14 +14,14 @@ use std::hash::{Hash, Hasher};
 
 static mut NEXT_ID: i32 = 0;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct Word {
     is_vertical: bool,
     x: u8,
     y: u8,
     word: String,
     score: i16,
-    unused_letters: Vec<char>,
+    av_letters: Vec<char>,
 }
 
 impl Word {
@@ -31,8 +32,20 @@ impl Word {
             y: 0,
             word: "".to_string(),
             score: 0,
-            unused_letters: vec![],
+            av_letters: vec![],
         }
+    }
+}
+
+impl Ord for Word {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score.cmp(&other.score)
+    }
+}
+
+impl PartialOrd for Word {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -232,7 +245,44 @@ impl<'a> Player<'a> {
         return (false, 0);
     }
 
-    fn find_first_words(&self, node: &Node, av_letters: &Vec<char>, best_word: Word) -> Word {
+    fn find_first_words(
+        &self,
+        node: &Node,
+        av_letters: &Vec<char>,
+        mut best_word: Word,
+        can_be: bool,
+        mut word: Word,
+        points: [i16; 2],
+        x: u8,
+    ) -> Word {
+        if node.is_terminal && can_be {
+            word.x = x - word.word.len() as u8;
+            word.y = 7;
+            word.score = points[0] * points[1];
+            word.av_letters = av_letters.to_vec();
+
+            if av_letters.len() == 7 {
+                word.score += 50;
+            }
+
+            if best_word.score != 0 {
+                best_word = max(best_word, word);
+            } else {
+                best_word = word;
+            }
+        }
+
+        if x == 15 {
+            return best_word;
+        }
+
+        for (letter, child) in node.children.iter() {}
+
+        if word.word == "" {
+            best_word =
+                self.find_first_words(node, av_letters, best_word, can_be, word, points, x + 1);
+        }
+
         return best_word;
     }
 
@@ -241,12 +291,19 @@ impl<'a> Player<'a> {
     }
 
     fn place_best_first_word(&mut self) -> Word {
-        let mut best_word: Word =
-            self.find_first_words(&self.game.dawg, &self.letters, Word::new());
+        let mut best_word: Word = self.find_first_words(
+            &self.game.dawg,
+            &self.letters,
+            Word::new(),
+            false,
+            Word::new(),
+            [0, 1],
+            0,
+        );
 
         if best_word.score != 0 {
             self.game.insert_word(&mut best_word);
-            self.letters = best_word.unused_letters.clone();
+            self.letters = best_word.av_letters.clone();
             self.score += best_word.score;
             self.get_new_letters();
         }
