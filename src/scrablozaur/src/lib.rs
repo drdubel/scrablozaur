@@ -1,5 +1,9 @@
+mod consts;
+
+use consts::*;
 use pyo3::prelude::*;
 use rand::seq::SliceRandom;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
@@ -88,15 +92,7 @@ impl Game {
         Game {
             dawg,
             board: vec![vec!['-'; 15]; 15],
-            tile_bag: vec![
-                'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'ą', 'b', 'b', 'c', 'c', 'c', 'ć',
-                'd', 'd', 'd', 'e', 'e', 'e', 'e', 'e', 'e', 'e', 'ę', 'f', 'g', 'g', 'h', 'h',
-                'i', 'i', 'i', 'i', 'i', 'i', 'i', 'i', 'j', 'j', 'k', 'k', 'k', 'l', 'l', 'l',
-                'ł', 'ł', 'm', 'm', 'm', 'n', 'n', 'n', 'n', 'n', 'ń', 'o', 'o', 'o', 'o', 'o',
-                'o', 'ó', 'p', 'p', 'p', 'r', 'r', 'r', 'r', 's', 's', 's', 's', 'ś', 't', 't',
-                't', 'u', 'u', 'w', 'w', 'w', 'w', 'y', 'y', 'y', 'y', 'z', 'z', 'z', 'z', 'z',
-                'ź', 'ż',
-            ],
+            tile_bag: TILE_BAG.to_vec(),
         }
     }
 
@@ -152,11 +148,12 @@ impl<'a> Player<'a> {
     }
 
     fn exchange_letters(&mut self, n: i16) {
-        let mut rng = rand::thread_rng();
-        self.letters = (0..(7 - n).min(self.letters.len() as i16))
-            .filter_map(|_| self.letters.choose(&mut rng))
-            .cloned()
-            .collect();
+        self.letters.shuffle(&mut rand::thread_rng());
+
+        for _ in 0..(n.min(self.letters.len() as i16)) {
+            let letter: char = self.letters.pop().expect("List is empty?");
+            self.game.tile_bag.push(letter);
+        }
         self.get_new_letters();
     }
 
@@ -165,25 +162,59 @@ impl<'a> Player<'a> {
         self.letters.extend(new_letters);
     }
 
-    fn validate_word(&self, node: Node, word: String, x: i16) -> String {
+    fn validate_word(&self, node: &Node, word: String, x: i16) -> String {
         if x == word.len() as i16 {
             if node.is_terminal {
                 return word;
             }
             return "".to_string();
         }
-        if node
-            .children
-            .contains_key(&word.chars().nth(x as usize).unwrap())
-        {
-            return self.validate_word(
-                node.children.get(&word.chars().nth(x as usize).unwrap()),
-                word,
-                x + 1,
-            );
-        }
-        return "".to_string();
+        node.children
+            .get(&word.chars().nth(x as usize).unwrap())
+            .and_then(|child| {
+                return Some(self.validate_word(child, word, x + 1));
+            })
+            .unwrap_or_else(|| {
+                return "".to_string();
+            })
     }
+
+    fn check_crossword(&self, column: Vec<char>, new_letter: char, y: u8, x: u8) -> (bool, i16) {
+        let mut score: i16 = 0;
+        let pattern = Regex::new(r"\w+").expect("");
+        let str_column: String = column.iter().collect();
+
+        for result in pattern.find_iter(&str_column) {
+            if result.start() as u8 <= y && y <= result.end() as u8 {
+                if self.validate_word(
+                    &self.game.dawg,
+                    column[result.start()..result.end()].iter().collect(),
+                    0,
+                ) != ""
+                {
+                    for letter in &column[result.start()..result.end()] {
+                        score += LETTER_POINTS.get(letter).expect("letter not in hashmap");
+                    }
+                    if BONUSES.contains_key(&[y, x]) {
+                        score += LETTER_POINTS[&new_letter] * (BONUSES[&[y, x]].0 as i16 - 1);
+                        score *= BONUSES[&[y, x]].1 as i16;
+                    }
+                    return (true, score);
+                }
+            }
+        }
+        return (false, 0);
+    }
+
+    fn find_first_words(&self) {}
+
+    fn find_words(&self) {}
+
+    fn place_best_first_word(&self) {}
+
+    fn place_best_word(&self) {}
+
+    fn make_move(&self) {}
 }
 
 #[pyfunction]
@@ -191,9 +222,13 @@ fn play_game() {
     let data = fs::read_to_string("./dawg.json").expect("Unable to read file");
     let node: Node = serde_json::from_str(&data).expect("JSON does not have correct format.");
     println!("{}", node);
-    let mut game: Game = Game::new(node);
+    let mut game: Game = Game::new(node.clone());
     let player1: Player = Player::new(&mut game);
-    println!("{}", game);
+    // println!("{}", game);
+    println!(
+        "{}",
+        player1.validate_word(&node.clone(), "samolot".to_string(), 0)
+    );
 }
 
 #[derive(Serialize, Deserialize)]

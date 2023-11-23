@@ -9,7 +9,9 @@ name = "scrablozaur"
 crate-type = ["cdylib"]
 
 [dependencies]
+phf = { version = "0.11.2", features = ["macros"] }
 pyo3 = { version = "0.20.0", features = ["serde"] }
 rand = "0.8.5"
+regex = "1.10.2"
 serde = { version = "1.0.192", features = ["derive"] }
 serde_json = "1.0.108"
