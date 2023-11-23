@@ -13,6 +13,29 @@ use std::hash::{Hash, Hasher};
 
 static mut NEXT_ID: i32 = 0;
 
+#[derive(Debug)]
+struct Word {
+    is_vertical: bool,
+    x: u8,
+    y: u8,
+    word: String,
+    score: i16,
+    unused_letters: Vec<char>,
+}
+
+impl Word {
+    fn new() -> Self {
+        Word {
+            is_vertical: false,
+            x: 0,
+            y: 0,
+            word: "".to_string(),
+            score: 0,
+            unused_letters: vec![],
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Eq)]
 struct Node {
     children: HashMap<char, Node>,
@@ -68,6 +91,7 @@ struct Game {
     dawg: Node,
     board: Vec<Vec<char>>,
     tile_bag: Vec<char>,
+    end: bool,
 }
 
 impl Display for Game {
@@ -93,6 +117,7 @@ impl Game {
             dawg,
             board: vec![vec!['-'; 15]; 15],
             tile_bag: TILE_BAG.to_vec(),
+            end: false,
         }
     }
 
@@ -100,21 +125,22 @@ impl Game {
         format!("{}", self)
     }
 
-    fn insert_word(&mut self, orientation: bool, mut pos: Vec<i16>, word: String) {
-        if orientation {
+    fn insert_word(&mut self, word: &mut Word) {
+        if word.is_vertical {
             self.board = (0..15)
                 .map(|col| (0..15).map(|row| self.board[row][col]).collect())
                 .collect();
-            pos.reverse();
+            (word.x, word.y) = (word.y, word.x);
         }
-        for i in pos[1]..(pos[1] + word.len() as i16) {
-            self.board[pos[0] as usize][i as usize] =
-                word.chars().nth((i - pos[1]) as usize).unwrap();
+        for i in word.y..(word.y + word.word.len() as u8) {
+            self.board[word.x as usize][i as usize] =
+                word.word.chars().nth((i - word.y) as usize).unwrap();
         }
-        if orientation {
+        if word.is_vertical {
             self.board = (0..15)
                 .map(|col| (0..15).map(|row| self.board[row][col]).collect())
                 .collect();
+            (word.x, word.y) = (word.y, word.x)
         }
     }
 
@@ -206,15 +232,51 @@ impl<'a> Player<'a> {
         return (false, 0);
     }
 
-    fn find_first_words(&self) {}
+    fn find_first_words(&self, node: &Node, av_letters: &Vec<char>, best_word: Word) -> Word {
+        return best_word;
+    }
 
-    fn find_words(&self) {}
+    fn find_words(&self, node: &Node, av_letters: &Vec<char>, best_word: Word) -> Word {
+        return best_word;
+    }
 
-    fn place_best_first_word(&self) {}
+    fn place_best_first_word(&mut self) -> Word {
+        let mut best_word: Word =
+            self.find_first_words(&self.game.dawg, &self.letters, Word::new());
 
-    fn place_best_word(&self) {}
+        if best_word.score != 0 {
+            self.game.insert_word(&mut best_word);
+            self.letters = best_word.unused_letters.clone();
+            self.score += best_word.score;
+            self.get_new_letters();
+        }
 
-    fn make_move(&self) {}
+        best_word
+    }
+
+    fn place_best_word(&self) -> Word {
+        let best_word = self.find_words(&self.game.dawg, &self.letters, Word::new());
+
+        return best_word;
+    }
+
+    fn make_move(&mut self, first: bool) -> Word {
+        let word;
+        if first {
+            word = self.place_best_first_word();
+        } else {
+            word = self.place_best_word();
+        }
+        if word.score == 0 {
+            if self.game.tile_bag.is_empty() {
+                self.game.end = true;
+                return Word::new();
+            } else {
+                self.exchange_letters(2);
+            }
+        }
+        word
+    }
 }
 
 #[pyfunction]
@@ -223,12 +285,9 @@ fn play_game() {
     let node: Node = serde_json::from_str(&data).expect("JSON does not have correct format.");
     println!("{}", node);
     let mut game: Game = Game::new(node.clone());
-    let player1: Player = Player::new(&mut game);
+    let mut player1: Player = Player::new(&mut game);
+    println!("{:?}", player1.make_move(true));
     // println!("{}", game);
-    println!(
-        "{}",
-        player1.validate_word(&node.clone(), "samolot".to_string(), 0)
-    );
 }
 
 #[derive(Serialize, Deserialize)]
