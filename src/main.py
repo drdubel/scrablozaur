@@ -5,7 +5,7 @@ import pickle
 import re
 from multiprocessing import Pool
 from operator import itemgetter
-from random import sample
+from random import shuffle, sample
 
 from tqdm import tqdm
 
@@ -45,22 +45,25 @@ class Game:
         )
         for letter in new_letters:
             self.tile_bag.remove(letter)
-        return "".join(new_letters)
+        return new_letters
 
 
 class Player:
     def __init__(self, game):
-        self.letters = ""
+        self.letters = []
         self.score = 0
         self.game = game
         self.get_new_letters()
 
     def exchange_letters(self, n):
-        self.letters = "".join(sample(self.letters, n))
+        shuffle(self.letters)
+        for _ in range(min(len(letters), n)):
+            letter = self.letters.pop()
+            self.tile_bag.append(letter)
         self.get_new_letters()
 
     def get_new_letters(self):
-        self.letters += self.game.give_new_letters(self.letters)
+        self.letters.extend(self.game.give_new_letters(self.letters))
 
     def validate_word(self, node: Node, word: str, x: int = 0):
         if x == len(word):
@@ -72,20 +75,20 @@ class Player:
         return False
 
     def check_crossword(self, column, new_letter, y, x) -> tuple:
-        points = 0
+        score = 0
         for result in re.finditer(r"\w+", column):
             if result.start() <= y and y <= result.end():
                 if self.validate_word(dawg, column[result.start() : result.end()]):
-                    points += sum(
+                    score += sum(
                         map(
                             lambda letter: letter_points[letter],
                             column[result.start() : result.end()],
                         )
                     )
                     if (y, x) in bonuses:
-                        points += letter_points[new_letter] * (bonuses[(y, x)][0] - 1)
-                        points *= bonuses[(y, x)][1]
-                    return column[result.start() : result.end()], points
+                        score += letter_points[new_letter] * (bonuses[(y, x)][0] - 1)
+                        score *= bonuses[(y, x)][1]
+                    return True, score
         return False, 0
 
     def find_first_words(
@@ -93,7 +96,7 @@ class Player:
         node: Node,
         av_letters: tuple,
         best_word: tuple,
-        can_be=False,
+        can_be: bool = False,
         word: str = "",
         points: tuple = (0, 1),
         x: int = 0,
@@ -124,9 +127,11 @@ class Player:
 
             bonus = bonuses[(7, x)] if (7, x) in bonuses else (1, 1)
 
+            new_av_letters = av_letters[1].copy()
+            new_av_letters.remove(letter)
             best_word = self.find_first_words(
                 child,
-                (av_letters[0] + 1, av_letters[1].replace(letter, "", 1)),
+                (av_letters[0] + 1, new_av_letters),
                 best_word,
                 can_be=can_be,
                 word=word + letter,
@@ -219,14 +224,14 @@ class Player:
         ):
             for letter, child in node.children.items():
                 new_points = 0
-                new_addit_word = ""
+                new_addit_word = False
                 if letter not in av_letters[1]:
                     continue
 
                 if (y > 0 and self.game.board[y - 1][x] != "-") or (
                     y < 14 and self.game.board[y + 1][x] != "-"
                 ):
-                    column = list(list(list(x) for x in zip(*self.game.board))[x])
+                    column = list(list(zip(*self.game.board))[x])
                     column[y] = letter
                     new_addit_word, new_points = self.check_crossword(
                         "".join(column), letter, y, x
@@ -236,9 +241,11 @@ class Player:
 
                 bonus = bonuses[(y, x)] if (y, x) in bonuses else (1, 1)
 
+                new_av_letters = av_letters[1].copy()
+                new_av_letters.remove(letter)
                 best_word = self.find_words(
                     child,
-                    (av_letters[0] + 1, av_letters[1].replace(letter, "", 1)),
+                    (av_letters[0] + 1, new_av_letters),
                     best_word,
                     y,
                     orientation=orientation,
