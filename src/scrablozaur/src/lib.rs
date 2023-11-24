@@ -1,12 +1,13 @@
 mod consts;
 
 use consts::*;
+use pyo3::ffi::newfunc;
 use pyo3::prelude::*;
 use rand::seq::SliceRandom;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::cmp::max;
+use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Result};
 use std::fs;
@@ -14,7 +15,7 @@ use std::hash::{Hash, Hasher};
 
 static mut NEXT_ID: i32 = 0;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Word {
     is_vertical: bool,
     x: u8,
@@ -145,9 +146,12 @@ impl Game {
                 .collect();
             (word.x, word.y) = (word.y, word.x);
         }
-        for i in word.y..(word.y + word.word.len() as u8) {
-            self.board[word.x as usize][i as usize] =
-                word.word.chars().nth((i - word.y) as usize).unwrap();
+        for i in 0..(word.word.chars().count() as u8) {
+            self.board[word.x as usize][(word.y + i) as usize] = word
+                .word
+                .chars()
+                .nth(i as usize)
+                .expect("no letter in insert word function!");
         }
         if word.is_vertical {
             self.board = (0..15)
@@ -159,12 +163,16 @@ impl Game {
 
     fn give_new_letters(&mut self, letters: &Vec<char>) -> Vec<char> {
         let mut rng = rand::thread_rng();
-        let new_letters: Vec<char> = (0..(7 - letters.len()).min(self.tile_bag.len()))
-            .filter_map(|_| letters.choose(&mut rng))
+        let new_letters: Vec<char> = (0..min(7 - letters.len(), self.tile_bag.len()))
+            .filter_map(|_| self.tile_bag.choose(&mut rng))
             .cloned()
             .collect();
         for letter in new_letters.iter() {
-            let index = self.tile_bag.iter().position(|x| *x == *letter).unwrap();
+            let index = self
+                .tile_bag
+                .iter()
+                .position(|x| *x == *letter)
+                .expect("letter not in new letters in give_new_letters function");
             self.tile_bag.remove(index);
         }
         new_letters
@@ -180,7 +188,7 @@ struct Player<'a> {
 impl<'a> Player<'a> {
     fn new(game: &'a mut Game) -> Self {
         Player {
-            letters: Vec::new(),
+            letters: game.give_new_letters(&Vec::new()),
             score: 0,
             game,
         }
@@ -202,7 +210,7 @@ impl<'a> Player<'a> {
     }
 
     fn validate_word(&self, node: &Node, word: String, x: i16) -> String {
-        if x == word.len() as i16 {
+        if x == word.chars().count() as i16 {
             if node.is_terminal {
                 return word;
             }
@@ -250,25 +258,26 @@ impl<'a> Player<'a> {
         node: &Node,
         av_letters: &Vec<char>,
         mut best_word: Word,
-        can_be: bool,
-        mut word: Word,
+        mut can_be: bool,
+        word: Word,
         points: [i16; 2],
         x: u8,
     ) -> Word {
         if node.is_terminal && can_be {
-            word.x = x - word.word.len() as u8;
-            word.y = 7;
-            word.score = points[0] * points[1];
-            word.av_letters = av_letters.to_vec();
+            let mut new_word = word.clone();
+            new_word.x = 7;
+            new_word.y = 7;
+            new_word.score = points[0] * points[1];
+            new_word.av_letters = av_letters.to_vec();
 
             if av_letters.len() == 7 {
-                word.score += 50;
+                new_word.score += 50;
             }
 
             if best_word.score != 0 {
-                best_word = max(best_word, word);
+                best_word = max(best_word, new_word);
             } else {
-                best_word = word;
+                best_word = new_word;
             }
         }
 
@@ -276,18 +285,52 @@ impl<'a> Player<'a> {
             return best_word;
         }
 
-        for (letter, child) in node.children.iter() {}
+        for (letter, child) in node.children.iter() {
+            if !av_letters.contains(&letter) {
+                continue;
+            }
+
+            if x == 7 {
+                can_be = true;
+            }
+
+            let bonus = BONUSES
+                .get(&[7, x])
+                .map(|bon| *bon)
+                .unwrap_or_else(|| (1, 1));
+
+            let mut new_av_letters = av_letters.clone();
+            new_av_letters.remove(
+                av_letters
+                    .iter()
+                    .position(|value| value == letter)
+                    .expect("no letter in av_letters"),
+            );
+
+            let mut new_word = word.clone();
+            new_word.word += letter.to_string().as_str();
+
+            let mut new_points = points.clone();
+            new_points[0] += LETTER_POINTS[&letter] * bonus.0 as i16;
+            new_points[1] *= bonus.1 as i16;
+
+            best_word = self.find_first_words(
+                child,
+                &new_av_letters,
+                best_word,
+                can_be,
+                new_word,
+                new_points,
+                x + 1,
+            );
+        }
 
         if word.word == "" {
             best_word =
                 self.find_first_words(node, av_letters, best_word, can_be, word, points, x + 1);
         }
 
-        return best_word;
-    }
-
-    fn find_words(&self, node: &Node, av_letters: &Vec<char>, best_word: Word) -> Word {
-        return best_word;
+        best_word
     }
 
     fn place_best_first_word(&mut self) -> Word {
@@ -309,6 +352,10 @@ impl<'a> Player<'a> {
         }
 
         best_word
+    }
+
+    fn find_words(&self, node: &Node, av_letters: &Vec<char>, best_word: Word) -> Word {
+        return best_word;
     }
 
     fn place_best_word(&self) -> Word {
@@ -343,7 +390,9 @@ fn play_game() {
     println!("{}", node);
     let mut game: Game = Game::new(node.clone());
     let mut player1: Player = Player::new(&mut game);
+    println!("{:?}", player1.letters);
     println!("{:?}", player1.make_move(true));
+    println!("{}", game);
     // println!("{}", game);
 }
 
