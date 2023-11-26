@@ -9,6 +9,7 @@ name = "scrablozaur"
 crate-type = ["cdylib"]
 
 [dependencies]
+lazy_static = "1.4.0"
 phf = { version = "0.11.2", features = ["macros"] }
 pyo3 = { version = "0.20.0", features = ["serde"] }
 rand = "0.8.5"

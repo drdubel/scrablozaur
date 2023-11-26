@@ -1,6 +1,6 @@
 use phf;
 
-pub const LETTER_POINTS: phf::Map<char, i16> = phf::phf_map! {
+pub const LETTER_POINTS: phf::Map<char, u16> = phf::phf_map! {
     'a' => 1,
     'ą' => 5,
     'b' => 3,
@@ -36,7 +36,7 @@ pub const LETTER_POINTS: phf::Map<char, i16> = phf::phf_map! {
     '?' => 0,
 };
 
-pub const BONUSES: phf::Map<[u8; 2], (u8, u8)> = phf::phf_map! {
+pub const BONUSES: phf::Map<[usize; 2], (usize, usize)> = phf::phf_map! {
     [0, 0] => (1, 3),
     [0, 7] => (1, 3),
     [0, 14] => (1, 3),
