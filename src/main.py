@@ -10,7 +10,7 @@ from random import shuffle, sample
 from tqdm import tqdm
 
 from src.create_dawg import Node
-from src.data import bonuses, letter_points, tile_bag
+from consts import BONUSES, LETTER_POINTS, TILE_BAG
 
 with open("words/dawg.pickle", "rb") as f:
     dawg = pickle.loads(f.read())
@@ -23,7 +23,7 @@ class NoPossibleWords(Exception):
 class Game:
     def __init__(self, board=[["-" for _ in range(15)] for _ in range(15)]):
         self.board = board
-        self.tile_bag = tile_bag.copy()
+        self.TILE_BAG = TILE_BAG.copy()
         self.end = False
 
     def __repr__(self) -> str:
@@ -40,11 +40,11 @@ class Game:
 
     def give_new_letters(self, letters):
         new_letters = sample(
-            self.tile_bag,
-            min(len(self.tile_bag), 7 - len(letters)),
+            self.TILE_BAG,
+            min(len(self.TILE_BAG), 7 - len(letters)),
         )
         for letter in new_letters:
-            self.tile_bag.remove(letter)
+            self.TILE_BAG.remove(letter)
         return new_letters
 
 
@@ -59,7 +59,7 @@ class Player:
         shuffle(self.letters)
         for _ in range(min(len(letters), n)):
             letter = self.letters.pop()
-            self.tile_bag.append(letter)
+            self.TILE_BAG.append(letter)
         self.get_new_letters()
 
     def get_new_letters(self):
@@ -81,13 +81,13 @@ class Player:
                 if self.validate_word(dawg, column[result.start() : result.end()]):
                     score += sum(
                         map(
-                            lambda letter: letter_points[letter],
+                            lambda letter: LETTER_POINTS[letter],
                             column[result.start() : result.end()],
                         )
                     )
-                    if (y, x) in bonuses:
-                        score += letter_points[new_letter] * (bonuses[(y, x)][0] - 1)
-                        score *= bonuses[(y, x)][1]
+                    if (y, x) in BONUSES:
+                        score += LETTER_POINTS[new_letter] * (BONUSES[(y, x)][0] - 1)
+                        score *= BONUSES[(y, x)][1]
                     return True, score
         return False, 0
 
@@ -125,7 +125,7 @@ class Player:
             if x == 7:
                 can_be = True
 
-            bonus = bonuses[(7, x)] if (7, x) in bonuses else (1, 1)
+            bonus = BONUSES[(7, x)] if (7, x) in BONUSES else (1, 1)
 
             new_av_letters = av_letters[1].copy()
             new_av_letters.remove(letter)
@@ -136,7 +136,7 @@ class Player:
                 can_be=can_be,
                 word=word + letter,
                 points=(
-                    points[0] + letter_points[letter] * bonus[0],
+                    points[0] + LETTER_POINTS[letter] * bonus[0],
                     points[1] * bonus[1],
                 ),
                 x=x + 1,
@@ -212,7 +212,7 @@ class Player:
                 word=word + self.game.board[y][x],
                 can_be=(True, can_be[1]),
                 points=(
-                    points[0] + letter_points[self.game.board[y][x]],
+                    points[0] + LETTER_POINTS[self.game.board[y][x]],
                     points[1],
                     points[2],
                 ),
@@ -239,7 +239,7 @@ class Player:
                     if not new_addit_word:
                         continue
 
-                bonus = bonuses[(y, x)] if (y, x) in bonuses else (1, 1)
+                bonus = BONUSES[(y, x)] if (y, x) in BONUSES else (1, 1)
 
                 new_av_letters = av_letters[1].copy()
                 new_av_letters.remove(letter)
@@ -252,7 +252,7 @@ class Player:
                     word=word + letter,
                     can_be=(True, True) if new_addit_word else (can_be[0], True),
                     points=(
-                        points[0] + letter_points[letter] * bonus[0],
+                        points[0] + LETTER_POINTS[letter] * bonus[0],
                         points[1] + new_points,
                         points[2] * bonus[1],
                     ),
@@ -272,7 +272,7 @@ class Player:
         return best_word
 
     def place_best_first_word(self):
-        best_word = self.find_first_words(dawg, (0, self.letters), [])
+        best_word = self.find_first_words(dawg, (0, self.letters), ())
 
         if not best_word:
             raise NoPossibleWords()
@@ -292,14 +292,12 @@ class Player:
                 and (i == 14 or self.game.board[i + 1].count("-") == 15)
             ):
                 continue
-            possible_word = self.find_words(
+            best_word = self.find_words(
                 dawg,
                 (0, self.letters),
-                [],
+                best_word,
                 i,
             )
-            if possible_word:
-                best_word = max(best_word, possible_word, key=itemgetter(3))
 
         self.game.board = list(list(x) for x in zip(*self.game.board))
         for i in range(15):
@@ -309,11 +307,9 @@ class Player:
                 and (i == 14 or self.game.board[i + 1].count("-") == 15)
             ):
                 continue
-            possible_word = self.find_words(
-                dawg, (0, self.letters), [], i, orientation=1
+            best_word = self.find_words(
+                dawg, (0, self.letters), best_word, i, orientation=1
             )
-            if possible_word:
-                best_word = max(best_word, possible_word, key=itemgetter(3))
         self.game.board = list(list(x) for x in zip(*self.game.board))
 
         if not best_word[3]:
@@ -333,7 +329,7 @@ class Player:
             return word
 
         except NoPossibleWords:
-            if self.game.tile_bag:
+            if self.game.TILE_BAG:
                 self.exchange_letters(2)
             else:
                 self.game.end = True
@@ -356,9 +352,9 @@ def play_game(i=0):
         print(game)
 
     for letter in player1.letters:
-        player1.score -= letter_points[letter]
+        player1.score -= LETTER_POINTS[letter]
     for letter in player2.letters:
-        player2.score -= letter_points[letter]
+        player2.score -= LETTER_POINTS[letter]
 
     if player1.score > player2.score:
         print("Player1 Won!")

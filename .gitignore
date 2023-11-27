@@ -1,5 +1,5 @@
-/target
-words/dawg.pickle
-*.pyc
-*.yml
-*.old
+*
+!*.py
+!*.rs
+!Cargo.toml
+!*/
