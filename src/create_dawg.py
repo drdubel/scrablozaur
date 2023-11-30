@@ -85,7 +85,7 @@ def main():
     dawg = build_dawg(word_list)
     with open("words/dawg.pickle", "wb") as f:
         pickle.dump(dawg, f)
-    print(round(os.path.getsize("words/dawg.pickle") / 1024**2, 3), "MB")
+    print(round(os.path.getsize("words/dawg.pickle") / 1024**2, 3), "MiB")
 
 
 if __name__ == "__main__":
