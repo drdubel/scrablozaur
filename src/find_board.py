@@ -2,10 +2,48 @@ import glob
 
 import cv2
 import numpy as np
+import pytesseract
+
+
+def get_grayscale(image):
+    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+
+# noise removal
+def remove_noise(image):
+    return cv2.medianBlur(image, 5)
+
+
+# thresholding
+def thresholding(image):
+    return cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+
+# dilation
+def dilate(image):
+    kernel = np.ones((5, 5), np.uint8)
+    return cv2.dilate(image, kernel, iterations=1)
+
+
+# erosion
+def erode(image):
+    kernel = np.ones((5, 5), np.uint8)
+    return cv2.erode(image, kernel, iterations=1)
+
+
+# opening - erosion followed by dilation
+def make_opening(image):
+    kernel = np.ones((5, 5), np.uint8)
+    return cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
+
+
+# canny edge detection
+def make_canny(image):
+    return cv2.Canny(image, 100, 200)
 
 
 def main():
-    paths = glob.glob("images/*.jpg")
+    paths = ["images/image5.jpg", *glob.glob("images/*.jpg")]
     print(paths)
 
     for path in paths:
@@ -14,10 +52,13 @@ def main():
         cv2.namedWindow("Original", cv2.WINDOW_NORMAL)
         cv2.imshow("Original", image)
 
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-        blurred = cv2.GaussianBlur(gray, (9, 9), 5)
+        blurred = cv2.GaussianBlur(hsv[:, :, 2], (9, 9), 3)
         edged = cv2.Canny(blurred, 10, 100)
+
+        cv2.namedWindow("Original2", cv2.WINDOW_NORMAL)
+        cv2.imshow("Original2", edged)
 
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 
@@ -26,8 +67,10 @@ def main():
             dilate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         image_copy = image.copy()
+        contours_img = image.copy()
 
         for i in range(len(contours)):
+            cv2.drawContours(contours_img, contours, i, (0, 255, 0), 3)
             rect = cv2.minAreaRect(contours[i])
             box = cv2.boxPoints(rect)
             box = np.intp(box)
@@ -54,11 +97,6 @@ def main():
                 if equal_distances:
                     contour_area = cv2.contourArea(approx)
                     if contour_area > 100000:
-                        cv2.drawContours(image_copy, [approx], 0, (0, 255, 0), 4)
-                        cv2.namedWindow("Board Detection", cv2.WINDOW_NORMAL)
-                        cv2.imshow("Board Detection", image_copy)
-                        image_copy = image.copy()
-
                         corners = approx.reshape(-1, 2)
 
                         rhombus_corners = np.float32(corners)
@@ -93,77 +131,50 @@ def main():
                         cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
                         cv2.imshow("Board", rotated_image)
 
-                        # rotated_image[100:120, 0:] = [0, 0, 255]
+                        cv2.waitKey(0)
+                        cv2.destroyAllWindows()
 
-                        # cv2.namedWindow("Tiles", cv2.WINDOW_NORMAL)
-                        # cv2.imshow("Tiles", rotated_image)
+                        target_color = (124, 150, 188)
+                        threshold = 20
 
-                        blurred = cv2.GaussianBlur(rotated_image, (15, 15), 9)
-
-                        hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
-
-                        lower_red = np.array([0, 175, 100])
-                        upper_red = np.array([70, 255, 255])
-
-                        # Threshold the HSV image to get only red colors
-                        mask = cv2.inRange(hsv, lower_red, upper_red)
-
-                        # Find contours
-                        contours2, _ = cv2.findContours(
-                            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                        )
-
-                        # Loop over the contours
-                        squares = []
-
-                        for contour in contours2:
-                            # Approximate contour
-                            hull = cv2.convexHull(contour)
-                            epsilon = 0.02 * cv2.arcLength(hull, True)
-                            approx = cv2.approxPolyDP(hull, epsilon, True)
-
-                            # Check if contour has 4 vertices (a square)
-                            if len(approx) == 4:
-                                distances = [
-                                    cv2.norm(approx[i] - approx[j])
-                                    for i in range(4)
-                                    for j in range(i + 1, 4)
+                        for i in range(6, 12):
+                            for j in range(2, 9):
+                                tile = rotated_image[
+                                    85 + i * 133 : 85 + (i + 1) * 133,
+                                    160 + j * 132 : 160 + (j + 1) * 132,
                                 ]
-                                # Draw contour
-                                print(approx)
-                                avg_distance = sum(distances) / len(distances)
 
-                                tolerance_percent = 50
-                                tolerance = avg_distance * tolerance_percent / 100
+                                average_color = np.mean(tile, axis=(0, 1))
 
-                                equal_distances = all(
-                                    abs(distance - avg_distance) < tolerance
-                                    for distance in distances
-                                )
+                                print(average_color)
 
-                                if equal_distances:
-                                    contour_area = cv2.contourArea(approx)
-                                    if contour_area > 1000:
-                                        rect = cv2.minAreaRect(contour)
-                                        box = cv2.boxPoints(rect)
-                                        box = np.intp(box)
-                                        squares.extend([*box])
+                                if all(
+                                    abs(c1 - c2) < threshold
+                                    for c1, c2 in zip(average_color, target_color)
+                                ):
+                                    print(f"Tile {i}, {j} is a target tile")
 
-                                        cv2.drawContours(
-                                            rotated_image, [box], 0, (0, 255, 0), 4
-                                        )
+                                    gray = get_grayscale(tile)
+                                    thresh = thresholding(gray)
+                                    opening = make_opening(thresh)
+                                    canny = make_canny(opening)
 
-                        if squares:
-                            squares = np.array(squares)
+                                    tile = canny
 
-                            rect = cv2.minAreaRect(squares)
-                            box = cv2.boxPoints(rect)
-                            box = np.intp(box)
-                            cv2.drawContours(rotated_image, [box], 0, (255, 255, 0), 15)
+                                    custom_config = r"--oem 2 --psm 6 -l pol"
+                                    text = pytesseract.image_to_string(
+                                        tile, config=custom_config
+                                    )
 
-                            cv2.namedWindow("Square Detection", cv2.WINDOW_NORMAL)
-                            cv2.imshow("Square Detection", rotated_image)
+                                    print(f"The text is: '{text}'")
 
+                                cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
+                                cv2.imshow("Tile", tile)
+                                cv2.waitKey(0)
+                                cv2.destroyAllWindows()
+
+        cv2.namedWindow("Contours", cv2.WINDOW_NORMAL)
+        cv2.imshow("Contours", contours_img)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
