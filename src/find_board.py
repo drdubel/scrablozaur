@@ -33,7 +33,7 @@ def erode(image):
 
 # opening - erosion followed by dilation
 def make_opening(image):
-    kernel = np.ones((5, 5), np.uint8)
+    kernel = np.ones((7, 7), np.uint8)
     return cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
 
 
@@ -43,7 +43,7 @@ def make_canny(image):
 
 
 def main():
-    paths = ["images/image5.jpg", *glob.glob("images/*.jpg")]
+    paths = ["images/image6.jpg", *glob.glob("images/*.jpg")]
     print(paths)
 
     for path in paths:
@@ -52,15 +52,15 @@ def main():
         cv2.namedWindow("Original", cv2.WINDOW_NORMAL)
         cv2.imshow("Original", image)
 
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        gray = get_grayscale(image)
 
-        blurred = cv2.GaussianBlur(hsv[:, :, 2], (9, 9), 3)
+        blurred = cv2.GaussianBlur(gray, (9, 9), 5)
         edged = cv2.Canny(blurred, 10, 100)
 
         cv2.namedWindow("Original2", cv2.WINDOW_NORMAL)
         cv2.imshow("Original2", edged)
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
 
         dilate = cv2.dilate(edged, kernel, iterations=1)
         contours, _ = cv2.findContours(
@@ -71,9 +71,6 @@ def main():
 
         for i in range(len(contours)):
             cv2.drawContours(contours_img, contours, i, (0, 255, 0), 3)
-            rect = cv2.minAreaRect(contours[i])
-            box = cv2.boxPoints(rect)
-            box = np.intp(box)
             hull = cv2.convexHull(contours[i])
             epsilon = 0.15 * cv2.arcLength(hull, True)
             approx = cv2.approxPolyDP(hull, epsilon, True)
@@ -134,19 +131,19 @@ def main():
                         cv2.waitKey(0)
                         cv2.destroyAllWindows()
 
-                        target_color = (124, 150, 188)
-                        threshold = 20
+                        target_color = (124, 160, 195)
+                        threshold = 30
+                        board = np.zeros((15, 15), dtype=str)
+                        board.fill("-")
 
                         for i in range(6, 12):
                             for j in range(2, 9):
                                 tile = rotated_image[
-                                    85 + i * 133 : 85 + (i + 1) * 133,
-                                    160 + j * 132 : 160 + (j + 1) * 132,
+                                    90 + i * 133 : 55 + (i + 1) * 133,
+                                    180 + j * 132 : 145 + (j + 1) * 132,
                                 ]
 
                                 average_color = np.mean(tile, axis=(0, 1))
-
-                                print(average_color)
 
                                 if all(
                                     abs(c1 - c2) < threshold
@@ -157,21 +154,44 @@ def main():
                                     gray = get_grayscale(tile)
                                     thresh = thresholding(gray)
                                     opening = make_opening(thresh)
-                                    canny = make_canny(opening)
 
-                                    tile = canny
+                                    tile = thresh
 
-                                    custom_config = r"--oem 2 --psm 6 -l pol"
+                                    tile[-30:, -30:] = 255
+
+                                    custom_config = rf"--oem 3 --psm 10 -l pol -c tessedit_char_whitelist=AĄBCĆDEĘFGHIJKLŁMNŃOÓPQRSŚTUVWXYZŹŻ"
                                     text = pytesseract.image_to_string(
-                                        tile, config=custom_config
+                                        tile,
+                                        config=custom_config,
                                     )
 
-                                    print(f"The text is: '{text}'")
+                                    custom_config = rf"--oem 3 -l pol -c tessedit_char_whitelist=AĄBCĆDEĘFGHIJKLŁMNŃOÓPQRSŚTUVWXYZŹŻ"
+                                    normal_text = pytesseract.image_to_string(
+                                        tile,
+                                        config=custom_config,
+                                    )
 
-                                cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
-                                cv2.imshow("Tile", tile)
-                                cv2.waitKey(0)
+                                    if (
+                                        not (
+                                            "PODWÓJNA" in normal_text
+                                            or "PREMIA" in normal_text
+                                            or "SŁOWNA" in normal_text
+                                        )
+                                        and text
+                                    ):
+                                        board[i][j] = text
+                                        print(f"The text is: '{text}'")
+
+                                    else:
+                                        print(f"The text is too long: '{text}'")
+
+                                    cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
+                                    cv2.imshow("Tile", tile)
+                                    cv2.waitKey(0)
+
                                 cv2.destroyAllWindows()
+
+                        print(board)
 
         cv2.namedWindow("Contours", cv2.WINDOW_NORMAL)
         cv2.imshow("Contours", contours_img)
