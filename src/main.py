@@ -11,7 +11,6 @@ from src.create_dawg import Node
 
 with open("words/dawg.pickle", "rb") as f:
     dawg = pickle.loads(f.read())
-    print(dawg)
 
 
 class NoPossibleWords(Exception):
@@ -75,8 +74,10 @@ class Player:
             if node.is_terminal:
                 return word
             return False
+
         if word[x] in node.children:
             return self.validate_word(node.children[word[x]], word, x + 1)
+
         return False
 
     def check_crossword(self, column, new_letter, y, x) -> tuple:
@@ -93,7 +94,9 @@ class Player:
                     if (y, x) in BONUSES:
                         score += LETTER_POINTS[new_letter] * (BONUSES[(y, x)][0] - 1)
                         score *= BONUSES[(y, x)][1]
+
                     return True, score
+
         return False, 0
 
     def find_first_words(
@@ -241,6 +244,7 @@ class Player:
                     new_addit_word, new_points = self.check_crossword(
                         "".join(column), letter, y, x
                     )
+
                     if not new_addit_word:
                         continue
 
@@ -286,6 +290,7 @@ class Player:
         self.letters = best_word[3]
         self.score += best_word[2]
         self.get_new_letters()
+
         return best_word
 
     def place_best_word(self):
@@ -297,6 +302,7 @@ class Player:
                 and (i == 14 or self.game.board[i + 1].count("-") == 15)
             ):
                 continue
+
             best_word = self.find_words(
                 dawg,
                 (0, self.letters),
