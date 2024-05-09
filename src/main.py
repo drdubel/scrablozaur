@@ -3,17 +3,15 @@
 
 import pickle
 import re
-from multiprocessing import Pool
 from operator import itemgetter
-from random import shuffle, sample
+from random import sample, shuffle
 
-from tqdm import tqdm
-
+from src.consts import BONUSES, LETTER_POINTS, TILE_BAG
 from src.create_dawg import Node
-from consts import BONUSES, LETTER_POINTS, TILE_BAG
 
 with open("words/dawg.pickle", "rb") as f:
     dawg = pickle.loads(f.read())
+    print(dawg)
 
 
 class NoPossibleWords(Exception):
@@ -28,13 +26,16 @@ class Game:
 
     def __repr__(self) -> str:
         pretty_board = "\n".join([" ".join(x) for x in self.board])
+
         return pretty_board.upper()
 
     def insert_word(self, orientation, pos, word):
         if orientation:
             self.board = list(list(x) for x in zip(*self.board))
             pos = pos[::-1]
+
         self.board[pos[0]][pos[1] : pos[1] + len(word)] = word
+
         if orientation:
             self.board = list(list(x) for x in zip(*self.board))
 
@@ -43,8 +44,10 @@ class Game:
             self.TILE_BAG,
             min(len(self.TILE_BAG), 7 - len(letters)),
         )
+
         for letter in new_letters:
             self.TILE_BAG.remove(letter)
+
         return new_letters
 
 
@@ -57,9 +60,11 @@ class Player:
 
     def exchange_letters(self, n):
         shuffle(self.letters)
-        for _ in range(min(len(letters), n)):
+
+        for _ in range(min(len(self.letters), n)):
             letter = self.letters.pop()
-            self.TILE_BAG.append(letter)
+            self.game.TILE_BAG.append(letter)
+
         self.get_new_letters()
 
     def get_new_letters(self):
@@ -314,10 +319,12 @@ class Player:
 
         if not best_word[3]:
             raise NoPossibleWords()
+
         self.game.insert_word(*best_word[:3])
         self.letters = best_word[4]
         self.score += best_word[3]
         self.get_new_letters()
+
         return best_word
 
     def move(self, first=False):
@@ -326,6 +333,7 @@ class Player:
                 word = self.place_best_first_word()
             else:
                 word = self.place_best_word()
+
             return word
 
         except NoPossibleWords:
@@ -333,6 +341,7 @@ class Player:
                 self.exchange_letters(2)
             else:
                 self.game.end = True
+
                 return False
 
 
@@ -340,10 +349,13 @@ def play_game(i=0):
     game = Game()
     player1 = Player(game)
     player2 = Player(game)
+
     player2.move(first=True)
+
     while not game.end:
         player1.move()
         print("Player1 move: ", player1.move())
+
         if game.end:
             break
 
@@ -353,6 +365,7 @@ def play_game(i=0):
 
     for letter in player1.letters:
         player1.score -= LETTER_POINTS[letter]
+
     for letter in player2.letters:
         player2.score -= LETTER_POINTS[letter]
 
