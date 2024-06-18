@@ -42,7 +42,16 @@ def make_canny(image):
     return cv2.Canny(image, 100, 200)
 
 
+def contour_center(contour):
+    M = cv2.moments(contour)
+    if M["m00"] == 0:
+        return None
+    return (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+
+
 def main():
+    alphabet = "AĄBCĆDEĘFGHIJKLŁMNŃOÓPRSŚTUWYZŹŻl"
+
     paths = ["images/image6.jpg", *glob.glob("images/*.jpg")]
     print(paths)
 
@@ -121,26 +130,22 @@ def main():
                             warped_image, (warped_image.shape[1], warped_image.shape[1])
                         )
 
-                        rotated_image = cv2.rotate(
-                            resized_image, cv2.ROTATE_90_CLOCKWISE
-                        )
-
                         cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
-                        cv2.imshow("Board", rotated_image)
+                        cv2.imshow("Board", resized_image)
 
                         cv2.waitKey(0)
                         cv2.destroyAllWindows()
 
                         target_color = (124, 160, 195)
-                        threshold = 30
+                        threshold = 255
                         board = np.zeros((15, 15), dtype=str)
                         board.fill("-")
 
                         for i in range(6, 12):
                             for j in range(2, 9):
-                                tile = rotated_image[
-                                    90 + i * 133 : 55 + (i + 1) * 133,
-                                    180 + j * 132 : 145 + (j + 1) * 132,
+                                tile = resized_image[
+                                    75 + i * 133 : 50 + (i + 1) * 133,
+                                    175 + j * 132 : 150 + (j + 1) * 132,
                                 ]
 
                                 average_color = np.mean(tile, axis=(0, 1))
@@ -155,39 +160,99 @@ def main():
                                     thresh = thresholding(gray)
                                     opening = make_opening(thresh)
 
+                                    blurred = cv2.GaussianBlur(thresh, (7, 7), 3)
+                                    edged = cv2.Canny(blurred, 10, 100)
+                                    kernel = cv2.getStructuringElement(
+                                        cv2.MORPH_RECT, (3, 3)
+                                    )
+
+                                    dilate = cv2.dilate(edged, kernel, iterations=1)
+                                    new_contours, _ = cv2.findContours(
+                                        dilate,
+                                        cv2.RETR_EXTERNAL,
+                                        cv2.CHAIN_APPROX_SIMPLE,
+                                    )
+
+                                    image_center = (
+                                        tile.shape[1] // 2,
+                                        tile.shape[0] // 2,
+                                    )
+
+                                    most_centered_contour = min(
+                                        new_contours,
+                                        key=lambda c: np.linalg.norm(
+                                            np.array(contour_center(c))
+                                            - np.array(image_center)
+                                        ),
+                                    )
+
                                     tile = thresh
 
-                                    tile[-30:, -30:] = 255
+                                    (x, y, w, h) = cv2.boundingRect(
+                                        most_centered_contour
+                                    )
+                                    add = 5
+                                    tile = tile[
+                                        max(0, y - add) : min(
+                                            tile.shape[0], y + h + add
+                                        ),
+                                        max(0, x - add) : min(
+                                            tile.shape[1], x + w + add
+                                        ),
+                                    ]
 
-                                    custom_config = rf"--oem 3 --psm 10 -l pol -c tessedit_char_whitelist=AĄBCĆDEĘFGHIJKLŁMNŃOÓPQRSŚTUVWXYZŹŻ"
+                                    ratio = w / h
+                                    tolerance = 1.5
+
+                                    if ratio > tolerance:
+                                        print(f"This is not a tile")
+
+                                        cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
+                                        cv2.imshow("Tile", tile)
+                                        cv2.waitKey(0)
+
+                                        continue
+
+                                    # FOR VISUALIZATION PURPOSES
+                                    scale_percent = 300
+                                    width = int(tile.shape[1] * scale_percent / 100)
+                                    height = int(tile.shape[0] * scale_percent / 100)
+                                    dim = (width, height)
+                                    tile = cv2.resize(
+                                        tile, dim, interpolation=cv2.INTER_AREA
+                                    )
+
+                                    custom_config = rf"--oem 3 --psm 10 -l pol -c tessedit_char_whitelist={alphabet}"
                                     text = pytesseract.image_to_string(
                                         tile,
                                         config=custom_config,
                                     )
 
-                                    custom_config = rf"--oem 3 -l pol -c tessedit_char_whitelist=AĄBCĆDEĘFGHIJKLŁMNŃOÓPQRSŚTUVWXYZŹŻ"
+                                    custom_config = rf"--oem 3 --psm 7 -l pol -c tessedit_char_whitelist={alphabet}"
                                     normal_text = pytesseract.image_to_string(
                                         tile,
                                         config=custom_config,
                                     )
 
+                                    print(text, normal_text)
+
                                     if (
-                                        not (
-                                            "PODWÓJNA" in normal_text
-                                            or "PREMIA" in normal_text
-                                            or "SŁOWNA" in normal_text
-                                        )
+                                        len([x for x in normal_text if x in alphabet])
+                                        == 1
                                         and text
                                     ):
+                                        if "l" in text:
+                                            text = "I"
+
                                         board[i][j] = text
                                         print(f"The text is: '{text}'")
 
                                     else:
                                         print(f"The text is too long: '{text}'")
 
-                                    cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
-                                    cv2.imshow("Tile", tile)
-                                    cv2.waitKey(0)
+                                cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
+                                cv2.imshow("Tile", tile)
+                                cv2.waitKey(0)
 
                                 cv2.destroyAllWindows()
 

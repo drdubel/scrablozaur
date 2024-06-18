@@ -73,6 +73,7 @@ class Player:
         if x == len(word):
             if node.is_terminal:
                 return word
+
             return False
 
         if word[x] in node.children:
@@ -91,6 +92,7 @@ class Player:
                             column[result.start() : result.end()],
                         )
                     )
+
                     if (y, x) in BONUSES:
                         score += LETTER_POINTS[new_letter] * (BONUSES[(y, x)][0] - 1)
                         score *= BONUSES[(y, x)][1]
@@ -311,6 +313,7 @@ class Player:
             )
 
         self.game.board = list(list(x) for x in zip(*self.game.board))
+
         for i in range(15):
             if (
                 self.game.board[i].count("-") == 15
@@ -318,9 +321,11 @@ class Player:
                 and (i == 14 or self.game.board[i + 1].count("-") == 15)
             ):
                 continue
+
             best_word = self.find_words(
                 dawg, (0, self.letters), best_word, i, orientation=1
             )
+
         self.game.board = list(list(x) for x in zip(*self.game.board))
 
         if not best_word[3]:
@@ -351,7 +356,7 @@ class Player:
                 return False
 
 
-def play_game(i=0):
+def play_game():
     game = Game()
     player1 = Player(game)
     player2 = Player(game)
