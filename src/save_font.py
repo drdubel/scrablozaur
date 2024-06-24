@@ -53,7 +53,6 @@ def main():
     alphabet = "AĄBCĆDEĘFGHIJKLŁMNŃOÓPRSŚTUWYZŹŻ"
 
     paths = ["images/all_letters8.jpg", "images/image6.jpg", *glob.glob("images/*.jpg")]
-    font = {letter: cv2.imread(f"font/{letter}.jpg") for letter in alphabet}
     print(paths)
 
     for path in paths:
@@ -160,32 +159,71 @@ def main():
 
                                     gray = get_grayscale(tile)
                                     thresh = thresholding(gray)
+                                    opening = make_opening(thresh)
+
+                                    blurred = cv2.GaussianBlur(thresh, (7, 7), 3)
+                                    edged = cv2.Canny(blurred, 10, 100)
+                                    kernel = cv2.getStructuringElement(
+                                        cv2.MORPH_RECT, (3, 3)
+                                    )
+
+                                    dilate = cv2.dilate(edged, kernel, iterations=1)
+                                    new_contours, _ = cv2.findContours(
+                                        dilate,
+                                        cv2.RETR_EXTERNAL,
+                                        cv2.CHAIN_APPROX_SIMPLE,
+                                    )
+
+                                    image_center = (
+                                        tile.shape[1] // 2,
+                                        tile.shape[0] // 2,
+                                    )
+
+                                    most_centered_contour = min(
+                                        new_contours,
+                                        key=lambda c: np.linalg.norm(
+                                            np.array(contour_center(c))
+                                            - np.array(image_center)
+                                        ),
+                                    )
 
                                     tile = thresh
 
-                                    for letter in font.values():
-                                        w, h = letter.shape[:-1]
-                                        print(w, h, tile.shape[:-1])
-                                        res = cv2.matchTemplate(
-                                            tile, letter, cv2.TM_CCOEFF_NORMED
-                                        )
-                                        threshold = 0.8
-                                        loc = np.where(res >= threshold)
-                                        for pt in zip(*loc[::-1]):
-                                            cv2.rectangle(
-                                                tile,
-                                                pt,
-                                                (pt[0] + w, pt[1] + h),
-                                                (0, 0, 255),
-                                                2,
-                                            )
+                                    (x, y, w, h) = cv2.boundingRect(
+                                        most_centered_contour
+                                    )
+                                    add = 4
+                                    cut_tile = tile[
+                                        max(0, y - 2 * add) : min(
+                                            tile.shape[0], y + h + add
+                                        ),
+                                        max(0, x - add) : min(
+                                            tile.shape[1], x + w + add
+                                        ),
+                                    ]
 
-                                        cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
-                                        cv2.imshow("Tile", tile)
-                                        cv2.waitKey(0)
-                                        cv2.destroyAllWindows()
+                                    ratio = w / h
+                                    tolerance = 1.5
 
-                                cv2.destroyAllWindows()
+                                    if ratio > tolerance:
+                                        print(f"This is not a tile")
+
+                                        continue
+
+                                    cv2.namedWindow("Cut Tile", cv2.WINDOW_NORMAL)
+                                    cv2.imshow("Cut Tile", cut_tile)
+                                    cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
+                                    cv2.imshow("Tile", tile)
+                                    cv2.waitKey(0)
+
+                                    letter = input("Enter letter: ")
+
+                                    if letter == "":
+                                        continue
+
+                                    board[i, j] = letter
+
+                                    cv2.imwrite(f"font/{letter}.jpg", cut_tile)
 
                         print(board)
 
