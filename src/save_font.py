@@ -144,8 +144,8 @@ def main():
                         for i in range(15):
                             for j in range(15):
                                 tile = resized_image[
-                                    75 + i * 133 : 50 + (i + 1) * 133,
-                                    175 + j * 132 : 150 + (j + 1) * 132,
+                                    67 + i * 133 : 65 + (i + 1) * 133,
+                                    170 + j * 132 : 155 + (j + 1) * 132,
                                 ]
 
                                 average_color = np.mean(tile, axis=(0, 1))
@@ -187,34 +187,34 @@ def main():
                                         ),
                                     )
 
-                                    tile = thresh
+                                    tile = gray
 
-                                    (x, y, w, h) = cv2.boundingRect(
-                                        most_centered_contour
-                                    )
-                                    add = 4
-                                    cut_tile = tile[
-                                        max(0, y - 2 * add) : min(
-                                            tile.shape[0], y + h + add
-                                        ),
-                                        max(0, x - add) : min(
-                                            tile.shape[1], x + w + add
-                                        ),
-                                    ]
-
-                                    ratio = w / h
-                                    tolerance = 1.5
-
-                                    if ratio > tolerance:
-                                        print(f"This is not a tile")
-
-                                        continue
-
-                                    cv2.namedWindow("Cut Tile", cv2.WINDOW_NORMAL)
-                                    cv2.imshow("Cut Tile", cut_tile)
+                                    # (x, y, w, h) = cv2.boundingRect(
+                                    #    most_centered_contour
+                                    # )
+                                    # add = 4
+                                    # cut_tile = tile[
+                                    #    max(0, y - 2 * add) : min(
+                                    #        tile.shape[0], y + h + add
+                                    #    ),
+                                    #    max(0, x - add) : min(
+                                    #        tile.shape[1], x + w + add
+                                    #    ),
+                                    # ]
+                                    #
+                                    # ratio = w / h
+                                    # tolerance = 1.5
+                                    #
+                                    # if ratio > tolerance:
+                                    #    print(f"This is not a tile")
+                                    #
+                                    #    continue
+                                    #
+                                    # cv2.namedWindow("Cut Tile", cv2.WINDOW_NORMAL)
+                                    # cv2.imshow("Cut Tile", cut_tile)
                                     cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
                                     cv2.imshow("Tile", tile)
-                                    cv2.waitKey(0)
+                                    cv2.waitKey(1)
 
                                     letter = input("Enter letter: ")
 
@@ -223,7 +223,8 @@ def main():
 
                                     board[i, j] = letter
 
-                                    cv2.imwrite(f"font/{letter}.jpg", cut_tile)
+                                    # cv2.imwrite(f"font/{letter}.jpg", cut_tile)
+                                    cv2.imwrite(f"font/{letter}.jpg", tile)
 
                         print(board)
 
