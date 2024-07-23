@@ -1,3 +1,10 @@
+from multiprocessing import Pool
+
+from tqdm import tqdm
+
+from main import play_game
+
+
 def test():
     n = 1000
     points = 0
