@@ -2,6 +2,7 @@ import glob
 
 import cv2
 import numpy as np
+import pytesseract
 
 
 def get_grayscale(image):
@@ -49,12 +50,16 @@ def contour_center(contour):
 
 
 def custom_threshold(image, middle, threshold):
+    image = image.copy()
+
     for i in range(image.shape[0]):
         for j in range(image.shape[1]):
             if abs(image[i, j] - middle) < threshold:
                 image[i, j] = 255
             else:
                 image[i, j] = 0
+
+    return image
 
 
 def main():
@@ -189,275 +194,163 @@ def main():
                                 ):
                                     print(f"Tile {i}, {j} is a target tile")
 
-                                    tile_copy = tile.copy()
-                                    resized_tile = tile.copy()
-                                    tile_copy = cv2.GaussianBlur(tile_copy, (3, 3), 1)
-                                    tile_copy[
-                                        np.where(
-                                            (tile_copy > [210, 220, 220]).all(axis=2)
-                                        )
-                                    ] = [0, 0, 0]
-                                    tile_copy[
-                                        np.where(
-                                            (tile_copy < [175, 255, 255]).all(axis=2)
-                                        )
-                                    ] = [0, 0, 0]
-
-                                    gray = get_grayscale(tile_copy)
+                                    gray = get_grayscale(tile)
 
                                     blurred = cv2.GaussianBlur(gray, (5, 5), 3)
-                                    custom_threshold(blurred, 230, 15)
-                                    # thresh = thresholding(blurred)
-                                    edged = cv2.Canny(blurred, 120, 150)
+                                    thresh = custom_threshold(blurred, 100, 75)
+                                    edged = cv2.Canny(thresh, 120, 255)
                                     kernel = cv2.getStructuringElement(
-                                        cv2.MORPH_RECT, (1, 1)
+                                        cv2.MORPH_RECT, (3, 3)
                                     )
 
-                                    dilate = cv2.dilate(blurred, kernel, iterations=1)
+                                    dilate = cv2.dilate(edged, kernel, iterations=1)
                                     new_contours, _ = cv2.findContours(
                                         dilate,
-                                        cv2.RETR_EXTERNAL,
+                                        cv2.RETR_TREE,
                                         cv2.CHAIN_APPROX_SIMPLE,
                                     )
-                                    boxes = []
+
+                                    new_contours = [
+                                        c
+                                        for c in new_contours
+                                        if cv2.contourArea(c) > 1000
+                                    ]
+                                    print(len(new_contours))
 
                                     for new_contour in new_contours:
                                         cv2.drawContours(
-                                            tile, [new_contour], 0, (0, 255, 0), 3
+                                            tile, [new_contour], -1, (0, 255, 0), 3
                                         )
-                                        # rectangle = cv2.minAreaRect(new_contour)
-                                        # box = cv2.boxPoints(rectangle)
-                                        # box = np.intp(box)
-                                        hull = cv2.convexHull(new_contour)
-                                        epsilon = 0.15 * cv2.arcLength(hull, True)
-                                        approx = cv2.approxPolyDP(hull, epsilon, True)
 
-                                        if len(approx) == 4:
-                                            distances = [
-                                                cv2.norm(approx[x] - approx[y])
-                                                for x in range(4)
-                                                for y in range(x + 1, 4)
-                                            ]
+                                    image_center = (
+                                        tile.shape[1] // 2,
+                                        tile.shape[0] // 2,
+                                    )
 
-                                            avg_distance = sum(distances) / len(
-                                                distances
-                                            )
+                                    bounding_boxes = [
+                                        cv2.boundingRect(c) for c in new_contours
+                                    ]
 
-                                            tolerance_percent = 50
-                                            tolerance = (
-                                                avg_distance * tolerance_percent / 100
-                                            )
-
-                                            equal_distances = all(
-                                                abs(distance - avg_distance) < tolerance
-                                                for distance in distances
-                                            )
-
-                                            if equal_distances:
-                                                contour_area = cv2.contourArea(approx)
-                                                if contour_area > 5000:
-                                                    # rectangle = cv2.boundingRect(approx)
-                                                    # x, y, w, h = rectangle
-                                                    # box = np.array(
-                                                    #    [
-                                                    #        [x, y + h],
-                                                    #        [x, y],
-                                                    #        [x + w, y],
-                                                    #        [x + w, y + h],
-                                                    #    ]
-                                                    # )
-                                                    rectangle = cv2.minAreaRect(approx)
-                                                    box = cv2.boxPoints(rectangle)
-                                                    box = np.intp(box)
-                                                    cv2.drawContours(
-                                                        tile,
-                                                        [box],
-                                                        0,
-                                                        (255, 0, 0),
-                                                        3,
-                                                    )
-                                                    boxes.append(
-                                                        (
-                                                            max(
-                                                                [
-                                                                    distance
-                                                                    / avg_distance
-                                                                    for distance in distances
-                                                                ]
-                                                            ),
-                                                            box,
-                                                        )
-                                                    )
-
-                                    if boxes:
-                                        box = min(boxes, key=lambda x: x[0])[1]
-
-                                        corners = box.reshape(-1, 2)
-
-                                        rhombus_corners = np.float32(corners)
-                                        new_corners = np.array(
+                                    bounding_boxes_contours = [
+                                        np.array(
                                             [
-                                                [0, 0],
-                                                [resized_tile.shape[1], 0],
-                                                [
-                                                    resized_tile.shape[1],
-                                                    resized_tile.shape[0],
-                                                ],
-                                                [0, resized_tile.shape[0]],
-                                            ],
-                                            dtype=np.float32,
+                                                [[x, y]],
+                                                [[x + w, y]],
+                                                [[x + w, y + h]],
+                                                [[x, y + h]],
+                                            ]
                                         )
+                                        for (x, y, w, h) in bounding_boxes
+                                    ]
 
-                                        print(rhombus_corners, new_corners)
+                                    filtered_bounding_boxes = [
+                                        bb
+                                        for bb in bounding_boxes_contours
+                                        if cv2.pointPolygonTest(bb, image_center, False)
+                                        >= 0
+                                    ]
 
-                                        matrix = cv2.getPerspectiveTransform(
-                                            rhombus_corners, new_corners
-                                        )
-                                        warped_tile = cv2.warpPerspective(
-                                            resized_tile,
-                                            matrix,
-                                            (
-                                                resized_tile.shape[1],
-                                                resized_tile.shape[0],
-                                            ),
-                                            flags=cv2.INTER_LINEAR,
-                                        )
+                                    smallest_bounding_box = min(
+                                        filtered_bounding_boxes, key=cv2.contourArea
+                                    )
 
-                                        resized_tile = cv2.resize(
-                                            warped_tile, (112, 112)
-                                        )
+                                    cv2.drawContours(
+                                        tile,
+                                        [smallest_bounding_box],
+                                        -1,
+                                        (0, 255, 255),
+                                        3,
+                                    )
 
-                                        gray_resized_tile = get_grayscale(resized_tile)
+                                    # tile = dilate
 
-                                        # Draw a 30 by 30 rectangle in the bottom right corner
-                                        # Calculate the sum of pixel values in each corner
-                                        top_left_sum = np.sum(
-                                            gray_resized_tile[4:27, 4:27]
-                                        )
-                                        top_right_sum = np.sum(
-                                            gray_resized_tile[4:27, -27:-4]
-                                        )
-                                        bottom_left_sum = np.sum(
-                                            gray_resized_tile[-27:-4, 4:27]
-                                        )
-                                        bottom_right_sum = np.sum(
-                                            gray_resized_tile[-27:-4, -27:-4]
-                                        )
+                                    (x, y, w, h) = cv2.boundingRect(
+                                        smallest_bounding_box
+                                    )
+                                    add = 5
+                                    letter = tile[
+                                        max(0, y - add) : min(
+                                            tile.shape[0], y + h + add
+                                        ),
+                                        max(0, x - add) : min(
+                                            tile.shape[1], x + w + add
+                                        ),
+                                    ]
 
-                                        # Draw rectangles in the corners
-                                        # cv2.rectangle(
-                                        #    resized_tile,
-                                        #    (4, 4),
-                                        #    (27, 27),
-                                        #    (0, 0, 255),
-                                        #    2,
-                                        # )  # Top left corner
-                                        # cv2.rectangle(
-                                        #    resized_tile,
-                                        #    (resized_tile.shape[1] - 27, 4),
-                                        #    (resized_tile.shape[1] - 4, 27),
-                                        #    (0, 0, 255),
-                                        #    2,
-                                        # )  # Top right corner
-                                        # cv2.rectangle(
-                                        #    resized_tile,
-                                        #    (4, resized_tile.shape[0] - 27),
-                                        #    (27, resized_tile.shape[0] - 4),
-                                        #    (0, 0, 255),
-                                        #    2,
-                                        # )  # Bottom left corner
-                                        # cv2.rectangle(
-                                        #    resized_tile,
-                                        #    (
-                                        #        resized_tile.shape[1] - 27,
-                                        #        resized_tile.shape[0] - 27,
-                                        #    ),
-                                        #    (
-                                        #        resized_tile.shape[1] - 4,
-                                        #        resized_tile.shape[0] - 4,
-                                        #    ),
-                                        #    (0, 0, 255),
-                                        #    2,
-                                        # )  # Bottom right corner
+                                    ratio = w / h
+                                    tolerance = 1.5
 
-                                        # Find the corner with the maximum sum
-                                        corner_sums = [
-                                            top_left_sum,
-                                            top_right_sum,
-                                            bottom_left_sum,
-                                            bottom_right_sum,
-                                        ]
-                                        print(corner_sums)
-                                        max_sum_corner = np.argmin(corner_sums)
+                                    if ratio > tolerance:
+                                        print("This is not a tile")
 
-                                        # Rotate the image so that the corner with the maximum sum is in the right bottom corner
-                                        if max_sum_corner == 1:  # Top right corner
-                                            resized_tile = cv2.rotate(
-                                                resized_tile,
-                                                cv2.ROTATE_90_CLOCKWISE,
-                                            )
-                                        elif max_sum_corner == 2:  # Bottom left corner
-                                            resized_tile = cv2.rotate(
-                                                resized_tile,
-                                                cv2.ROTATE_90_COUNTERCLOCKWISE,
-                                            )
+                                        cv2.namedWindow("Letter", cv2.WINDOW_NORMAL)
+                                        cv2.imshow("Letter", letter)
+                                        cv2.waitKey(0)
 
-                                    # tile = gray
+                                        continue
 
-                                    # (x, y, w, h) = cv2.boundingRect(
-                                    #    most_centered_contour
-                                    # )
-                                    # add = 4
-                                    # cut_tile = tile[
-                                    #    max(0, y - 2 * add) : min(
-                                    #        tile.shape[0], y + h + add
-                                    #    ),
-                                    #    max(0, x - add) : min(
-                                    #        tile.shape[1], x + w + add
-                                    #    ),
-                                    # ]
-                                    #
-                                    # ratio = w / h
-                                    # tolerance = 1.5
-                                    #
-                                    # if ratio > tolerance:
-                                    #    print(f"This is not a tile")
-                                    #
-                                    #    continue
-                                    #
-                                    # cv2.namedWindow("Cut Tile", cv2.WINDOW_NORMAL)
-                                    # cv2.imshow("Cut Tile", cut_tile)
-                                    gray_resized_tile = get_grayscale(resized_tile)
+                                    # FOR VISUALIZATION PURPOSES
+                                    scale_percent = 300
+                                    width = int(letter.shape[1] * scale_percent / 100)
+                                    height = int(letter.shape[0] * scale_percent / 100)
+                                    dim = (width, height)
+                                    letter = cv2.resize(
+                                        letter, dim, interpolation=cv2.INTER_AREA
+                                    )
 
+                                    custom_config = rf"--oem 3 --psm 10 -l pol -c tessedit_char_whitelist={alphabet}"
+                                    text = pytesseract.image_to_string(
+                                        letter,
+                                        config=custom_config,
+                                    )
+
+                                    custom_config = rf"--oem 3 --psm 7 -l pol -c tessedit_char_whitelist={alphabet}"
+                                    normal_text = pytesseract.image_to_string(
+                                        letter,
+                                        config=custom_config,
+                                    )
+
+                                    print(text, normal_text)
+
+                                    if (
+                                        len([x for x in normal_text if x in alphabet])
+                                        == 1
+                                        and text
+                                    ):
+                                        if "l" in text:
+                                            text = "I"
+
+                                        board[i][j] = text
+                                        print(f"The text is: '{text}'")
+
+                                    else:
+                                        print(f"The text is too long: '{text}'")
+
+                                    cv2.namedWindow("Letter", cv2.WINDOW_NORMAL)
+                                    cv2.imshow("Letter", letter)
                                     cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
                                     cv2.imshow("Tile", tile)
-                                    cv2.namedWindow("Til3", cv2.WINDOW_NORMAL)
-                                    cv2.imshow("Tile3", tile_copy)
-                                    cv2.namedWindow("Tile4", cv2.WINDOW_NORMAL)
-                                    cv2.imshow("Tile4", blurred)
-                                    cv2.namedWindow("Tile2", cv2.WINDOW_NORMAL)
-                                    cv2.imshow("Tile2", gray_resized_tile)
                                     cv2.waitKey(0)
                                     cv2.destroyAllWindows()
 
                                     # letter = input("Enter letter: ")
-                                    try:
-                                        letter = layout[i][j]
-                                    except IndexError:
-                                        print("za daleko...")
-                                        break
-
-                                    if letter == "":
-                                        continue
-
-                                    board[i, j] = letter
+                                    # try:
+                                    #    letter = layout[i][j]
+                                    # except IndexError:
+                                    #    print("za daleko...")
+                                    #    break
+                                    #
+                                    # if letter == "":
+                                    #    continue
+                                    #
+                                    # board[i, j] = letter
 
                                     # cv2.imwrite(f"font/{letter}.jpg", cut_tile)
-                                    cv2.imwrite(
-                                        f"font/{letter}{ids[letter]}.jpg",
-                                        gray_resized_tile,
-                                    )
-                                    ids[letter] += 1
+                                    # cv2.imwrite(
+                                    #    f"font/{letter}{ids[letter]}.jpg",
+                                    #    tile,
+                                    # )
+                                    # ids[letter] += 1
 
                         print(board)
 
