@@ -3,6 +3,7 @@ import glob
 import cv2
 import numpy as np
 import pytesseract
+from requests import get
 
 
 def get_grayscale(image):
@@ -72,7 +73,7 @@ def main():
         ["S", "Ś", *["T"] * 3, *["U"] * 2, *["W"] * 4, *["Y"] * 4],
         [*["Z"] * 5, "Ź", "Ż", "", ""],
     ]
-    alphabet = "AĄBCĆDEĘFGHIJKLŁMNŃOÓPRSŚTUWYZŹŻ"
+    alphabet = "AĄBCĆDEĘFGHIJKLŁMNŃOÓPRSŚTUWYZŹŻl"
     ids = {letter: 0 for letter in alphabet}
 
     paths = [
@@ -194,7 +195,13 @@ def main():
                                 ):
                                     print(f"Tile {i}, {j} is a target tile")
 
-                                    gray = get_grayscale(tile)
+                                    image_center = (
+                                        tile.shape[1] // 2,
+                                        tile.shape[0] // 2,
+                                    )
+                                    original_tile = tile.copy()
+
+                                    gray = get_grayscale(original_tile)
 
                                     blurred = cv2.GaussianBlur(gray, (5, 5), 3)
                                     thresh = custom_threshold(blurred, 100, 75)
@@ -206,7 +213,7 @@ def main():
                                     dilate = cv2.dilate(edged, kernel, iterations=1)
                                     new_contours, _ = cv2.findContours(
                                         dilate,
-                                        cv2.RETR_TREE,
+                                        cv2.RETR_CCOMP,
                                         cv2.CHAIN_APPROX_SIMPLE,
                                     )
 
@@ -215,17 +222,11 @@ def main():
                                         for c in new_contours
                                         if cv2.contourArea(c) > 1000
                                     ]
-                                    print(len(new_contours))
 
                                     for new_contour in new_contours:
                                         cv2.drawContours(
                                             tile, [new_contour], -1, (0, 255, 0), 3
                                         )
-
-                                    image_center = (
-                                        tile.shape[1] // 2,
-                                        tile.shape[0] // 2,
-                                    )
 
                                     bounding_boxes = [
                                         cv2.boundingRect(c) for c in new_contours
@@ -248,9 +249,24 @@ def main():
                                         for bb in bounding_boxes_contours
                                         if cv2.pointPolygonTest(bb, image_center, False)
                                         >= 0
+                                        and cv2.contourArea(bb) < 10000
                                     ]
 
-                                    smallest_bounding_box = min(
+                                    if not filtered_bounding_boxes:
+                                        continue
+
+                                    for (
+                                        filtered_bounding_box
+                                    ) in filtered_bounding_boxes:
+                                        cv2.drawContours(
+                                            tile,
+                                            [filtered_bounding_box],
+                                            -1,
+                                            (255, 255, 0),
+                                            2,
+                                        )
+
+                                    smallest_bounding_box = max(
                                         filtered_bounding_boxes, key=cv2.contourArea
                                     )
 
@@ -258,8 +274,8 @@ def main():
                                         tile,
                                         [smallest_bounding_box],
                                         -1,
-                                        (0, 255, 255),
-                                        3,
+                                        (0, 0, 0),
+                                        1,
                                     )
 
                                     # tile = dilate
@@ -267,8 +283,13 @@ def main():
                                     (x, y, w, h) = cv2.boundingRect(
                                         smallest_bounding_box
                                     )
-                                    add = 5
-                                    letter = tile[
+                                    add = 2
+
+                                    gray = get_grayscale(original_tile)
+                                    blurred = cv2.GaussianBlur(gray, (3, 3), 3)
+                                    thresh = custom_threshold(gray, 100, 80)
+
+                                    letter = thresh[
                                         max(0, y - add) : min(
                                             tile.shape[0], y + h + add
                                         ),
@@ -276,6 +297,7 @@ def main():
                                             tile.shape[1], x + w + add
                                         ),
                                     ]
+                                    letter ^= 255
 
                                     ratio = w / h
                                     tolerance = 1.5
@@ -304,10 +326,10 @@ def main():
                                         config=custom_config,
                                     )
 
-                                    custom_config = rf"--oem 3 --psm 7 -l pol -c tessedit_char_whitelist={alphabet}"
+                                    custom_config2 = rf"--oem 3 --psm 7 -l pol -c tessedit_char_whitelist={alphabet}"
                                     normal_text = pytesseract.image_to_string(
                                         letter,
-                                        config=custom_config,
+                                        config=custom_config2,
                                     )
 
                                     print(text, normal_text)
@@ -331,7 +353,6 @@ def main():
                                     cv2.namedWindow("Tile", cv2.WINDOW_NORMAL)
                                     cv2.imshow("Tile", tile)
                                     cv2.waitKey(0)
-                                    cv2.destroyAllWindows()
 
                                     # letter = input("Enter letter: ")
                                     # try:
@@ -351,6 +372,7 @@ def main():
                                     #    tile,
                                     # )
                                     # ids[letter] += 1
+                        cv2.destroyAllWindows()
 
                         print(board)
 
