@@ -3,7 +3,6 @@ import glob
 import cv2
 import numpy as np
 import pytesseract
-from requests import get
 
 
 def get_grayscale(image):
