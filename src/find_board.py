@@ -1,8 +1,14 @@
+import argparse
 import glob
+import time
 
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
+
+from helper import mix_filter
+
+debug = False
 
 
 def get_grayscale(image):
@@ -80,40 +86,27 @@ def contour_center(contour):
     return (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
 
 
-def remove_glare(image):
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    lab_planes = list(cv2.split(lab))
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    lab_planes[0] = clahe.apply(lab_planes[0])
-    lab = cv2.merge(lab_planes)
-    clahe_bgr = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-    grayimage1 = cv2.cvtColor(clahe_bgr, cv2.COLOR_BGR2GRAY)
-    mask2 = cv2.threshold(grayimage1, 150, 255, cv2.THRESH_BINARY)[1]
-    result2 = cv2.inpaint(image, mask2, 0.1, cv2.INPAINT_TELEA)
+def remove_white(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    cv2.namedWindow("float image", cv2.WINDOW_NORMAL)
-    cv2.imshow("float image", image)
-    cv2.namedWindow("float glare", cv2.WINDOW_NORMAL)
-    cv2.imshow("float glare", result2)
+    # Define the threshold range for "almost white"
+    threshold_min = 90  # Adjust this value for sensitivity
+    _, mask = cv2.threshold(gray, threshold_min, 255, cv2.THRESH_BINARY)
 
-    while cv2.waitKey(0) & 0xFF != ord("q"):
-        pass
+    # Apply the mask to make "almost white" pixels pure white
+    result = cv2.bitwise_or(image, image, mask=mask)
 
-    cv2.destroyAllWindows()
-
-    return result2
+    return result
 
 
-def remove_background(image):
-    # image = remove_glare(image)
+def preprocess_image(image):
+    without_glare = mix_filter(image)
+    blurred = blur(without_glare, 9, 10)
+    without_background = remove_white(blurred)
+    gray = get_grayscale(without_background)
+    canny = make_canny(gray)
 
-    green_mask = image[:, :, 1] > image[:, :, 2]
-    green_mask = (green_mask.astype(np.uint8)) * 255
-    green_mask = cv2.cvtColor(green_mask, cv2.COLOR_GRAY2BGR)
-    green3_mask = (green_mask > 0).astype(np.uint8) * 255
-    image_green = cv2.bitwise_and(green3_mask, image)
-
-    return image_green
+    return canny
 
 
 def transform_perspective(image, approx):
@@ -153,12 +146,28 @@ def check_contour(approx):
     tolerance = avg_distance * tolerance_percent / 100
     equal_distances = all(abs(distance - avg_distance) < tolerance for distance in distances)
 
+    angles = []
+    for i in range(4):
+        p1 = approx[i][0]
+        p2 = approx[(i + 1) % 4][0]
+        p3 = approx[(i + 2) % 4][0]
+
+        v1 = p1 - p2
+        v2 = p3 - p2
+
+        angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+        angles.append(np.degrees(angle))
+
+    for angle in angles:
+        if not (70 <= angle <= 110):
+            return False
+
     if not equal_distances:
         return False
 
     contour_area = cv2.contourArea(approx)
 
-    if contour_area < 40000:
+    if contour_area < 50000:
         return False
 
     return True
@@ -166,15 +175,19 @@ def check_contour(approx):
 
 def find_board(image):
     board = None
-    without_background = remove_background(image.copy())
+    original_image = image.copy()
 
-    plt.imshow(cv2.cvtColor(without_background, cv2.COLOR_BGR2RGB))
-    plt.show()
+    preprocessed_image = preprocess_image(image)
 
-    contours = get_contours(without_background)
+    if debug:
+        plt.imshow(preprocessed_image)
+        plt.show()
+
+    contours = get_contours(preprocessed_image)
 
     for contour in contours:
-        # cv2.drawContours(image, [contour], 0, (0, 255, 0), 3)
+        if debug:
+            cv2.drawContours(image, [contour], 0, (0, 255, 0), 3)
 
         hull = cv2.convexHull(contour)
         epsilon = 0.15 * cv2.arcLength(hull, True)
@@ -183,19 +196,18 @@ def find_board(image):
         if not check_contour(approx):
             continue
 
-        cv2.drawContours(image, [approx], 0, (0, 255, 255), 3)
+        if debug:
+            cv2.drawContours(image, [approx], 0, (0, 255, 255), 3)
 
-        board = transform_perspective(image, approx)
+        board = transform_perspective(original_image, approx)
+        board = cv2.resize(board, (1000, 1000))
+        board = mix_filter(board)
 
         break
 
-    # cv2.namedWindow("float contours", cv2.WINDOW_NORMAL)
-    # cv2.imshow("float contours", image)
-    #
-    # while cv2.waitKey(0) & 0xFF != ord("q"):
-    #    pass
-    #
-    # cv2.destroyAllWindows()
+    if debug:
+        plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        plt.show()
 
     return board
 
@@ -203,16 +215,17 @@ def find_board(image):
 def read_board(image):
     board = find_board(image)
 
-    if board is not None:
-        plt.imshow(cv2.cvtColor(board, cv2.COLOR_BGR2RGB))
-        plt.show()
+    if debug:
+        if board is not None:
+            plt.imshow(cv2.cvtColor(board, cv2.COLOR_BGR2RGB))
+            plt.show()
 
-    else:
-        print("No board found")
+        else:
+            print("No board found")
 
 
-def read_files():
-    for filename in glob.glob("images/all_letters*.jpg"):
+def from_files():
+    for filename in glob.glob("images/camera*.jpg"):
         image = cv2.imread(filename)
         read_board(image)
 
@@ -220,23 +233,47 @@ def read_files():
 def from_camera():
     cap = cv2.VideoCapture(0)
 
-    while True:
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+
+    for _ in range(10):
+        start = time.time()
         ret, frame = cap.read()
 
         if ret:
-            plt.imshow(frame)
-            plt.show()
+            if debug:
+                plt.imshow(frame)
+                plt.show()
+
             read_board(frame)
         else:
             print("No frame")
+
+        end = time.time()
+        print(f"Time: {end - start}")
 
     cap.release()
     cv2.destroyAllWindows()
 
 
 def main():
+    global debug
+
+    parser = argparse.ArgumentParser(description="A program with a --debug flag.")
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode for detailed logging.",
+    )
+
+    args = parser.parse_args()
+
     try:
+        debug = args.debug
+
         from_camera()
+        # from_files(args.debug)
 
     except KeyboardInterrupt:
         print("\rBreak!")
