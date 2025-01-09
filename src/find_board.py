@@ -90,7 +90,7 @@ def remove_white(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     # Define the threshold range for "almost white"
-    threshold_min = 90  # Adjust this value for sensitivity
+    threshold_min = 50  # Adjust this value for sensitivity
     _, mask = cv2.threshold(gray, threshold_min, 255, cv2.THRESH_BINARY)
 
     # Apply the mask to make "almost white" pixels pure white
@@ -99,14 +99,24 @@ def remove_white(image):
     return result
 
 
-def preprocess_image(image):
-    without_glare = mix_filter(image)
-    blurred = blur(without_glare, 9, 10)
-    without_background = remove_white(blurred)
-    gray = get_grayscale(without_background)
-    canny = make_canny(gray)
+def make_green(image):
+    green_mask = image[:, :, 1] > image[:, :, 2]
+    green_mask = (green_mask.astype(np.uint8)) * 255
+    green_mask = cv2.cvtColor(green_mask, cv2.COLOR_GRAY2BGR)
+    green3_mask = (green_mask > 0).astype(np.uint8) * 255
+    image_green = cv2.bitwise_and(green3_mask, image)
 
-    return canny
+    return image_green
+
+
+def preprocess_image(image):
+    blurred = blur(image, 9, 12)
+    # without_glare = mix_filter(blurred)
+    # blurred = blur(without_glare, 9, 10)
+    without_background = remove_white(blurred)
+    green = make_green(without_background)
+
+    return green
 
 
 def transform_perspective(image, approx):
@@ -159,7 +169,7 @@ def check_contour(approx):
         angles.append(np.degrees(angle))
 
     for angle in angles:
-        if not (70 <= angle <= 110):
+        if not (45 <= angle <= 135):
             return False
 
     if not equal_distances:
@@ -190,7 +200,7 @@ def find_board(image):
             cv2.drawContours(image, [contour], 0, (0, 255, 0), 3)
 
         hull = cv2.convexHull(contour)
-        epsilon = 0.15 * cv2.arcLength(hull, True)
+        epsilon = 0.1 * cv2.arcLength(hull, True)
         approx = cv2.approxPolyDP(hull, epsilon, True)
 
         if not check_contour(approx):
@@ -225,7 +235,7 @@ def read_board(image):
 
 
 def from_files():
-    for filename in glob.glob("images/camera*.jpg"):
+    for filename in glob.glob("images/all_letters*.jpg"):
         image = cv2.imread(filename)
         read_board(image)
 
@@ -272,8 +282,8 @@ def main():
     try:
         debug = args.debug
 
-        from_camera()
-        # from_files(args.debug)
+        # from_camera()
+        from_files()
 
     except KeyboardInterrupt:
         print("\rBreak!")
