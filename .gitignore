@@ -1,5 +1,10 @@
 *
-!*.py
+!*.txt
+!*.in
 !*.rs
 !Cargo.toml
 !*/
+
+# Added by cargo
+
+/target
