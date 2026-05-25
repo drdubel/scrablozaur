@@ -419,23 +419,33 @@ impl Board {
         }
 
         let mut total_points = 0;
+        let mut used_letters = 0;
         for (i, ch) in word.chars().enumerate() {
             let r = if horizontal { row } else { row + i };
             let c = if horizontal { col + i } else { col };
 
             let (r2, c2) = ((r as u8).min(14 - r as u8), (c as u8).min(14 - c as u8));
 
+            let bonus = get_bonus(r2, c2);
+            let on_empty = self.board[r][c] == '-';
+
             if r >= 15 || c >= 15 {
                 panic!("Słowo wykracza poza planszę");
             }
-            if self.board[r][c] == '-' {
-                total_points += letter_points(ch) * get_bonus(r2, c2).0 as u32;
-                word_mul *= get_bonus(r2, c2).1 as u32;
+            if on_empty {
+                used_letters += 1;
+                total_points += letter_points(ch) * bonus.0 as u32;
+                word_mul *= bonus.1 as u32;
             } else {
                 total_points += letter_points(ch);
             }
         }
-        total_points * word_mul
+
+        if used_letters == 7 {
+            total_points * word_mul + 50 // bonus za wykorzystanie wszystkich 7 liter gracza
+        } else {
+            total_points * word_mul // bez bonusu
+        }
     }
 }
 
