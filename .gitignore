@@ -2,6 +2,7 @@
 !*.txt
 !*.in
 !*.rs
+!*.py
 !Cargo.toml
 !*/
 
