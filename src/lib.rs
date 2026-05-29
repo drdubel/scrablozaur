@@ -378,7 +378,7 @@ impl Board {
             ^ (self.tile_bag.len() as u64);
 
         let mut drawn = String::new();
-        let draw_count = (7 - letters.len()).min(self.tile_bag.len());
+        let draw_count = (7 - letters.chars().count()).min(self.tile_bag.len());
         for _ in 0..draw_count {
             seed ^= seed << 13;
             seed ^= seed >> 7;
