@@ -9,4 +9,4 @@ rayon = "1.12.0"
 
 [lib]
 name = "scrablozaur"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
