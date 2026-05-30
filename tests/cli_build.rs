@@ -6,14 +6,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn build_command_creates_dawg_bin() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system time before unix epoch")
+        .expect("system time is before Unix epoch")
         .as_nanos();
     let temp_root = std::env::temp_dir().join(format!("scrablozaur-cli-test-{stamp}"));
     fs::create_dir_all(&temp_root).expect("create temporary test directory");
 
     let words_path = temp_root.join("words.txt");
     let dawg_path = temp_root.join("dawg.bin");
-    fs::write(&words_path, "ala\nal\nkot\nkot\n").expect("write test words");
+    fs::write(&words_path, "ala\nal\nkot\n").expect("write test words");
 
     let output = Command::new(env!("CARGO_BIN_EXE_scrablozaur"))
         .arg("build")
