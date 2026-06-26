@@ -3,6 +3,7 @@
 !*.in
 !*.rs
 !*.py
+!*.pyi
 !Cargo.toml
 !*/
 
