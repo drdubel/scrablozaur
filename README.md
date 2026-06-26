@@ -105,8 +105,13 @@ The compiled `.so` lands in `target/release/` and is registered in your environm
 A pre-built `words/dawg.bin` is included. To recompile from a word list:
 
 ```bash
-# add a [[bin]] target to Cargo.toml, then:
 cargo run --release -- build words/words.txt words/dawg.bin
+```
+
+To verify quickly with a smaller input file:
+
+```bash
+cargo run --release -- build words/sth.txt /tmp/dawg.bin
 ```
 
 ---
@@ -316,7 +321,7 @@ let (letter_mul, word_mul) = BONUS_TABLE[r2][c2];  // O(1) lookup
 
 ## CLI
 
-The crate includes three diagnostic commands. Enable them by adding a `[[bin]]` target to `Cargo.toml`:
+The crate includes three diagnostic commands:
 
 ```bash
 cargo run --release -- build  words/words.txt  words/dawg.bin   # compile DAWG
