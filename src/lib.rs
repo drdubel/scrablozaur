@@ -10,14 +10,86 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 // Entry: (letter_multiplier, word_multiplier).
 static BONUS_TABLE: [[(u8, u8); 8]; 8] = [
     //       0       1       2       3       4       5       6       7
-    [(1,3), (1,1), (1,1), (2,1), (1,1), (1,1), (1,1), (1,3)],
-    [(1,1), (1,2), (1,1), (1,1), (1,1), (3,1), (1,1), (1,1)],
-    [(1,1), (1,1), (1,2), (1,1), (1,1), (1,1), (2,1), (1,1)],
-    [(2,1), (1,1), (1,1), (1,2), (1,1), (1,1), (1,1), (2,1)],
-    [(1,1), (1,1), (1,1), (1,1), (1,2), (1,1), (1,1), (1,1)],
-    [(1,1), (3,1), (1,1), (1,1), (1,1), (3,1), (1,1), (1,1)],
-    [(1,1), (1,1), (2,1), (1,1), (1,1), (1,1), (2,1), (1,1)],
-    [(1,3), (1,1), (1,1), (2,1), (1,1), (1,1), (1,1), (1,2)],
+    [
+        (1, 3),
+        (1, 1),
+        (1, 1),
+        (2, 1),
+        (1, 1),
+        (1, 1),
+        (1, 1),
+        (1, 3),
+    ],
+    [
+        (1, 1),
+        (1, 2),
+        (1, 1),
+        (1, 1),
+        (1, 1),
+        (3, 1),
+        (1, 1),
+        (1, 1),
+    ],
+    [
+        (1, 1),
+        (1, 1),
+        (1, 2),
+        (1, 1),
+        (1, 1),
+        (1, 1),
+        (2, 1),
+        (1, 1),
+    ],
+    [
+        (2, 1),
+        (1, 1),
+        (1, 1),
+        (1, 2),
+        (1, 1),
+        (1, 1),
+        (1, 1),
+        (2, 1),
+    ],
+    [
+        (1, 1),
+        (1, 1),
+        (1, 1),
+        (1, 1),
+        (1, 2),
+        (1, 1),
+        (1, 1),
+        (1, 1),
+    ],
+    [
+        (1, 1),
+        (3, 1),
+        (1, 1),
+        (1, 1),
+        (1, 1),
+        (3, 1),
+        (1, 1),
+        (1, 1),
+    ],
+    [
+        (1, 1),
+        (1, 1),
+        (2, 1),
+        (1, 1),
+        (1, 1),
+        (1, 1),
+        (2, 1),
+        (1, 1),
+    ],
+    [
+        (1, 3),
+        (1, 1),
+        (1, 1),
+        (2, 1),
+        (1, 1),
+        (1, 1),
+        (1, 1),
+        (1, 2),
+    ],
 ];
 
 // Covers all Polish letters (max 'ż' = U+017C = 380) and the blank tile '?' (U+003F = 63).
@@ -92,12 +164,15 @@ impl Dawg {
         for _ in 0..node_count {
             offset_table.push(pos);
             pos += 1;
-            let n_children =
-                u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+            let n_children = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4 + n_children * 8;
         }
 
-        Ok(Self { data, root, offset_table })
+        Ok(Self {
+            data,
+            root,
+            offset_table,
+        })
     }
 
     #[inline]
@@ -152,9 +227,14 @@ impl Dawg {
         let mut results = Vec::new();
         let mut current = String::with_capacity(pattern.len());
         self.match_pattern(
-            &pattern_chars, 0, self.root,
-            &mut freq, bag_count, mandatory_slots,
-            &mut results, &mut current,
+            &pattern_chars,
+            0,
+            self.root,
+            &mut freq,
+            bag_count,
+            mandatory_slots,
+            &mut results,
+            &mut current,
         );
         results.sort_unstable();
         results.dedup();
@@ -203,9 +283,14 @@ impl Dawg {
                         freq[ci] -= 1;
                         current.push(c);
                         self.match_pattern(
-                            pattern, pat_pos + 1, child_id,
-                            freq, bag_count - 1, mandatory_slots - 1,
-                            results, current,
+                            pattern,
+                            pat_pos + 1,
+                            child_id,
+                            freq,
+                            bag_count - 1,
+                            mandatory_slots - 1,
+                            results,
+                            current,
                         );
                         current.pop();
                         freq[ci] += 1;
@@ -216,9 +301,14 @@ impl Dawg {
                         freq[qi] -= 1;
                         current.push(c);
                         self.match_pattern(
-                            pattern, pat_pos + 1, child_id,
-                            freq, bag_count - 1, mandatory_slots - 1,
-                            results, current,
+                            pattern,
+                            pat_pos + 1,
+                            child_id,
+                            freq,
+                            bag_count - 1,
+                            mandatory_slots - 1,
+                            results,
+                            current,
                         );
                         current.pop();
                         freq[qi] += 1;
@@ -228,9 +318,14 @@ impl Dawg {
             '*' => {
                 // consume zero letters for this `*`
                 self.match_pattern(
-                    pattern, pat_pos + 1, node_id,
-                    freq, bag_count, mandatory_slots,
-                    results, current,
+                    pattern,
+                    pat_pos + 1,
+                    node_id,
+                    freq,
+                    bag_count,
+                    mandatory_slots,
+                    results,
+                    current,
                 );
                 // consume one more letter and stay at the same `*` position
                 if bag_count > mandatory_slots {
@@ -242,9 +337,14 @@ impl Dawg {
                             freq[ci] -= 1;
                             current.push(c);
                             self.match_pattern(
-                                pattern, pat_pos, child_id,
-                                freq, bag_count - 1, mandatory_slots,
-                                results, current,
+                                pattern,
+                                pat_pos,
+                                child_id,
+                                freq,
+                                bag_count - 1,
+                                mandatory_slots,
+                                results,
+                                current,
                             );
                             current.pop();
                             freq[ci] += 1;
@@ -254,9 +354,14 @@ impl Dawg {
                             freq[qi] -= 1;
                             current.push(c);
                             self.match_pattern(
-                                pattern, pat_pos, child_id,
-                                freq, bag_count - 1, mandatory_slots,
-                                results, current,
+                                pattern,
+                                pat_pos,
+                                child_id,
+                                freq,
+                                bag_count - 1,
+                                mandatory_slots,
+                                results,
+                                current,
                             );
                             current.pop();
                             freq[qi] += 1;
@@ -268,9 +373,14 @@ impl Dawg {
                 if let Some(child_id) = self.find_child(node_id, fixed_char) {
                     current.push(fixed_char);
                     self.match_pattern(
-                        pattern, pat_pos + 1, child_id,
-                        freq, bag_count, mandatory_slots,
-                        results, current,
+                        pattern,
+                        pat_pos + 1,
+                        child_id,
+                        freq,
+                        bag_count,
+                        mandatory_slots,
+                        results,
+                        current,
                     );
                     current.pop();
                 }
@@ -338,9 +448,9 @@ impl Board {
             }
             for (c, cell) in row.iter().enumerate() {
                 let mut chars = cell.chars();
-                let ch = chars.next().ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err("empty cell")
-                })?;
+                let ch = chars
+                    .next()
+                    .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("empty cell"))?;
                 if chars.next().is_some() {
                     return Err(pyo3::exceptions::PyValueError::new_err(
                         "cell must contain exactly one character",
@@ -350,21 +460,28 @@ impl Board {
             }
         }
         let tile_bag = vec![
-            'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'ą', 'b', 'b', 'c', 'c', 'c', 'ć',
-            'd', 'd', 'd', 'e', 'e', 'e', 'e', 'e', 'e', 'e', 'ę', 'f', 'g', 'g', 'h', 'h',
-            'i', 'i', 'i', 'i', 'i', 'i', 'i', 'i', 'j', 'j', 'k', 'k', 'k', 'l', 'l', 'l',
-            'ł', 'ł', 'm', 'm', 'm', 'n', 'n', 'n', 'n', 'n', 'ń', 'o', 'o', 'o', 'o', 'o',
-            'o', 'ó', 'p', 'p', 'p', 'r', 'r', 'r', 'r', 's', 's', 's', 's', 'ś', 't', 't',
-            't', 'u', 'u', 'w', 'w', 'w', 'w', 'y', 'y', 'y', 'y', 'z', 'z', 'z', 'z', 'z',
-            'ź', 'ż',
+            'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'ą', 'b', 'b', 'c', 'c', 'c', 'ć', 'd',
+            'd', 'd', 'e', 'e', 'e', 'e', 'e', 'e', 'e', 'ę', 'f', 'g', 'g', 'h', 'h', 'i', 'i',
+            'i', 'i', 'i', 'i', 'i', 'i', 'j', 'j', 'k', 'k', 'k', 'l', 'l', 'l', 'ł', 'ł', 'm',
+            'm', 'm', 'n', 'n', 'n', 'n', 'n', 'ń', 'o', 'o', 'o', 'o', 'o', 'o', 'ó', 'p', 'p',
+            'p', 'r', 'r', 'r', 'r', 's', 's', 's', 's', 'ś', 't', 't', 't', 'u', 'u', 'w', 'w',
+            'w', 'w', 'y', 'y', 'y', 'y', 'z', 'z', 'z', 'z', 'z', 'ź', 'ż',
         ];
-        Ok(Board { board: result, tile_bag })
+        Ok(Board {
+            board: result,
+            tile_bag,
+        })
     }
 
     fn __str__(&self) -> String {
         self.board
             .iter()
-            .map(|row| row.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" "))
+            .map(|row| {
+                row.iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -416,7 +533,9 @@ impl Board {
             let r = if horizontal { row } else { row + i };
             let c = if horizontal { col + i } else { col };
             if r >= 15 || c >= 15 {
-                return Err(pyo3::exceptions::PyValueError::new_err("word out of bounds"));
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "word out of bounds",
+                ));
             }
 
             let (r2, c2) = ((r as u8).min(14 - r as u8), (c as u8).min(14 - c as u8));
@@ -484,7 +603,9 @@ impl Board {
             let r = if horizontal { row } else { row + i };
             let c = if horizontal { col + i } else { col };
             if r >= 15 || c >= 15 {
-                return Err(pyo3::exceptions::PyValueError::new_err("word out of bounds"));
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "word out of bounds",
+                ));
             }
             if self.board[r][c] != '-' {
                 continue;
@@ -494,7 +615,8 @@ impl Board {
             if adjacent.len() > 1 {
                 dawg.contains(&adjacent).then_some(()).ok_or_else(|| {
                     pyo3::exceptions::PyValueError::new_err(format!(
-                        "cross-word '{adjacent}' formed by '{}' is not in the dictionary", ch,
+                        "cross-word '{adjacent}' formed by '{}' is not in the dictionary",
+                        ch,
                     ))
                 })?;
             }
@@ -502,18 +624,14 @@ impl Board {
         Ok(())
     }
 
-    fn place_word(
-        &mut self,
-        word: &str,
-        row: usize,
-        col: usize,
-        horizontal: bool,
-    ) -> PyResult<()> {
+    fn place_word(&mut self, word: &str, row: usize, col: usize, horizontal: bool) -> PyResult<()> {
         for (i, ch) in word.chars().enumerate() {
             let r = if horizontal { row } else { row + i };
             let c = if horizontal { col + i } else { col };
             if r >= 15 || c >= 15 {
-                return Err(pyo3::exceptions::PyValueError::new_err("word out of bounds"));
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "word out of bounds",
+                ));
             }
             self.board[r][c] = ch;
         }
@@ -557,8 +675,14 @@ impl Board {
                 let mut has_empty = false;
                 let mut has_tile = false;
                 for i in start..=end {
-                    if self.board[i][col_idx] == '-' { has_empty = true; } else { has_tile = true; }
-                    if has_empty && has_tile { break; }
+                    if self.board[i][col_idx] == '-' {
+                        has_empty = true;
+                    } else {
+                        has_tile = true;
+                    }
+                    if has_empty && has_tile {
+                        break;
+                    }
                 }
                 if has_empty && has_tile {
                     patterns.push((start, end));
@@ -590,7 +714,8 @@ impl Board {
         horizontal: bool,
         letters: &str,
     ) -> String {
-        self.best_word_from_pattern_inner(&dawg.inner, row, start, end, horizontal, letters).0
+        self.best_word_from_pattern_inner(&dawg.inner, row, start, end, horizontal, letters)
+            .0
     }
 
     fn get_best_word(
@@ -608,7 +733,9 @@ impl Board {
             // First move must cover the centre square (7, 7); try all offsets.
             for word in dawg.search("*", letters) {
                 for offset in 1..7usize {
-                    if offset >= word.len() { break; }
+                    if offset >= word.len() {
+                        break;
+                    }
                     let score = self
                         .calculate_word_points(&word, 7, 7 - offset, true, letters)
                         .unwrap_or(0);
@@ -625,20 +752,40 @@ impl Board {
             if let Some((word, score, ar, ac, horiz)) = patterns
                 .into_par_iter()
                 .filter_map(|(row, start, end, horizontal)| {
-                    let (ar, ac) = if horizontal { (row, start) } else { (start, row) };
-                    let (word, score) =
-                        self.best_word_from_pattern_inner(&dawg.inner, ar, ac, end, horizontal, letters);
-                    if word.is_empty() { None } else { Some((word, score, ar, ac, horizontal)) }
+                    let (ar, ac) = if horizontal {
+                        (row, start)
+                    } else {
+                        (start, row)
+                    };
+                    let (word, score) = self.best_word_from_pattern_inner(
+                        &dawg.inner,
+                        ar,
+                        ac,
+                        end,
+                        horizontal,
+                        letters,
+                    );
+                    if word.is_empty() {
+                        None
+                    } else {
+                        Some((word, score, ar, ac, horizontal))
+                    }
                 })
                 .max_by_key(|&(_, score, ..)| score)
             {
                 best_score = score;
                 best_pos = (ar, ac, horiz);
-                used = word.chars().enumerate()
+                used = word
+                    .chars()
+                    .enumerate()
                     .filter_map(|(i, ch)| {
                         let r = if horiz { ar } else { ar + i };
                         let c = if horiz { ac + i } else { ac };
-                        if self.board[r][c] == '-' { Some(ch) } else { None }
+                        if self.board[r][c] == '-' {
+                            Some(ch)
+                        } else {
+                            None
+                        }
                     })
                     .collect();
                 best_word = word;
@@ -659,10 +806,14 @@ impl Board {
         if !horizontal {
             // placing vertically → check horizontal neighbours
             let mut x = 1;
-            while x <= col && self.board[row][col - x] != '-' { x += 1; }
+            while x <= col && self.board[row][col - x] != '-' {
+                x += 1;
+            }
             let start = col - x + 1;
             let mut x = 1;
-            while col + x < 15 && self.board[row][col + x] != '-' { x += 1; }
+            while col + x < 15 && self.board[row][col + x] != '-' {
+                x += 1;
+            }
             let end = col + x - 1;
             if end > start || (end == start && (start < col || col < end)) {
                 for ci in start..=end {
@@ -672,10 +823,14 @@ impl Board {
         } else {
             // placing horizontally → check vertical neighbours
             let mut y = 1;
-            while y <= row && self.board[row - y][col] != '-' { y += 1; }
+            while y <= row && self.board[row - y][col] != '-' {
+                y += 1;
+            }
             let start = row - y + 1;
             let mut y = 1;
-            while row + y < 15 && self.board[row + y][col] != '-' { y += 1; }
+            while row + y < 15 && self.board[row + y][col] != '-' {
+                y += 1;
+            }
             let end = row + y - 1;
             if end > start || (end == start && (start < row || row < end)) {
                 for ri in start..=end {
@@ -697,8 +852,12 @@ impl Board {
         for (i, ch) in word.chars().enumerate() {
             let r = if horizontal { row } else { row + i };
             let c = if horizontal { col + i } else { col };
-            if r >= 15 || c >= 15 { return false; }
-            if self.board[r][c] != '-' { continue; }
+            if r >= 15 || c >= 15 {
+                return false;
+            }
+            if self.board[r][c] != '-' {
+                continue;
+            }
 
             let adjacent = self.cross_word(r, c, horizontal, ch);
             if adjacent.len() > 1 && !dawg.contains(&adjacent) {
@@ -719,9 +878,13 @@ impl Board {
     ) -> (String, u32) {
         let mut pattern = String::new();
         if horizontal {
-            for i in start..=end { pattern.push(self.board[row][i]); }
+            for i in start..=end {
+                pattern.push(self.board[row][i]);
+            }
         } else {
-            for i in row..=end { pattern.push(self.board[i][start]); }
+            for i in row..=end {
+                pattern.push(self.board[i][start]);
+            }
         }
 
         // Skip the DAWG search if the hand can't fill all empty slots.
@@ -864,14 +1027,21 @@ fn cmd_build(words_path: &str, dawg_path: &str) -> io::Result<()> {
 
     let t0 = Instant::now();
     let (arena, root, node_count) = build_dawg(&words);
-    eprintln!("  done in {:.2?}  │  {} nodes after minimization", t0.elapsed(), node_count);
+    eprintln!(
+        "  done in {:.2?}  │  {} nodes after minimization",
+        t0.elapsed(),
+        node_count
+    );
 
     let data = serialize(&arena, root);
     {
         let file = fs::File::create(dawg_path)?;
         BufWriter::new(file).write_all(&data)?;
     }
-    eprintln!("  {:.3} MiB → '{dawg_path}'", data.len() as f64 / (1 << 20) as f64);
+    eprintln!(
+        "  {:.3} MiB → '{dawg_path}'",
+        data.len() as f64 / (1 << 20) as f64
+    );
     Ok(())
 }
 
@@ -903,7 +1073,9 @@ fn cmd_bench(dawg_path: &str, words_path: &str) -> io::Result<()> {
     let t0 = Instant::now();
     for _ in 0..PASSES {
         for w in &words {
-            if dawg.contains(w) { found += 1; }
+            if dawg.contains(w) {
+                found += 1;
+            }
         }
     }
     let elapsed = t0.elapsed();
@@ -913,17 +1085,23 @@ fn cmd_bench(dawg_path: &str, words_path: &str) -> io::Result<()> {
     println!("  total time  : {elapsed:.3?}");
     println!("  throughput  : {:.0} lookups/s", total as f64 / secs);
     println!("  per lookup  : {:.1} ns", secs * 1e9 / total as f64);
-    println!("  hits        : {found}/{total} ({:.1}%)", 100.0 * found as f64 / total as f64);
+    println!(
+        "  hits        : {found}/{total} ({:.1}%)",
+        100.0 * found as f64 / total as f64
+    );
     Ok(())
 }
 
 pub fn main_cli() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
-        Some("build")  if args.len() == 4 => cmd_build(&args[2], &args[3]),
+        Some("build") if args.len() == 4 => cmd_build(&args[2], &args[3]),
         Some("lookup") if args.len() == 4 => cmd_lookup(&args[2], &args[3]),
-        Some("bench")  if args.len() == 4 => cmd_bench(&args[2], &args[3]),
-        _ => { usage(&args[0]); std::process::exit(1); }
+        Some("bench") if args.len() == 4 => cmd_bench(&args[2], &args[3]),
+        _ => {
+            usage(&args[0]);
+            std::process::exit(1);
+        }
     }
 }
 
