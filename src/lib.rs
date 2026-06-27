@@ -718,11 +718,13 @@ impl Board {
             .0
     }
 
+    #[pyo3(signature = (dawg, letters, first, parallel=true))]
     fn get_best_word(
         &self,
         dawg: &DawgPy,
         letters: &str,
         first: bool,
+        parallel: bool,
     ) -> (String, u32, (usize, usize, bool), Vec<char>) {
         let mut best_word = String::new();
         let mut best_pos = (0usize, 0usize, true);
@@ -749,30 +751,56 @@ impl Board {
             }
         } else {
             let patterns = self.get_all_patterns();
-            if let Some((word, score, ar, ac, horiz)) = patterns
-                .into_par_iter()
-                .filter_map(|(row, start, end, horizontal)| {
-                    let (ar, ac) = if horizontal {
-                        (row, start)
-                    } else {
-                        (start, row)
-                    };
-                    let (word, score) = self.best_word_from_pattern_inner(
-                        &dawg.inner,
-                        ar,
-                        ac,
-                        end,
-                        horizontal,
-                        letters,
-                    );
-                    if word.is_empty() {
-                        None
-                    } else {
-                        Some((word, score, ar, ac, horizontal))
-                    }
-                })
-                .max_by_key(|&(_, score, ..)| score)
-            {
+            let best = if parallel {
+                patterns
+                    .into_par_iter()
+                    .filter_map(|(row, start, end, horizontal)| {
+                        let (ar, ac) = if horizontal {
+                            (row, start)
+                        } else {
+                            (start, row)
+                        };
+                        let (word, score) = self.best_word_from_pattern_inner(
+                            &dawg.inner,
+                            ar,
+                            ac,
+                            end,
+                            horizontal,
+                            letters,
+                        );
+                        if word.is_empty() {
+                            None
+                        } else {
+                            Some((word, score, ar, ac, horizontal))
+                        }
+                    })
+                    .max_by_key(|&(_, score, ..)| score)
+            } else {
+                patterns
+                    .into_iter()
+                    .filter_map(|(row, start, end, horizontal)| {
+                        let (ar, ac) = if horizontal {
+                            (row, start)
+                        } else {
+                            (start, row)
+                        };
+                        let (word, score) = self.best_word_from_pattern_inner(
+                            &dawg.inner,
+                            ar,
+                            ac,
+                            end,
+                            horizontal,
+                            letters,
+                        );
+                        if word.is_empty() {
+                            None
+                        } else {
+                            Some((word, score, ar, ac, horizontal))
+                        }
+                    })
+                    .max_by_key(|&(_, score, ..)| score)
+            };
+            if let Some((word, score, ar, ac, horiz)) = best {
                 best_score = score;
                 best_pos = (ar, ac, horiz);
                 used = word

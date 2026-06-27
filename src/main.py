@@ -25,7 +25,7 @@ class Player:
             the player's letters and fits one of the patterns.
           - Place the word on the board and update the player's letters.
         """
-        w = self.board.get_best_word(dawg, self.letters, first)
+        w = self.board.get_best_word(dawg, self.letters, first, parallel=False)
         self.score += w[1]
         self.board.place_word(w[0], w[2][0], w[2][1], w[2][2])
         for ch in w[3]:

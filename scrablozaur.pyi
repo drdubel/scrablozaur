@@ -99,7 +99,9 @@ class Board:
         returns the one with the highest score.
         """
 
-    def get_best_word(self, dawg: Dawg, letters: str, first: bool) -> tuple[str, int, tuple[int, int, bool], list[str]]:
+    def get_best_word(
+        self, dawg: Dawg, letters: str, first: bool, parallel: bool
+    ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
         """Find the best scoring word that can be placed on the board with the given letters.
 
         This method searches through all valid patterns on the board and uses the DAWG
