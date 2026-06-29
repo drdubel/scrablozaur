@@ -50,7 +50,7 @@ class Board:
     def __str__(self) -> str:
         """Return a string representation of the board for printing."""
 
-    def calculate_word_points(self, word: str, row: int, col: int, horizontal: bool) -> int:
+    def calculate_word_points(self, word: str, row: int, col: int, horizontal: bool, letters: str) -> int:
         """Calculate the points for placing a word at the given position and orientation.
 
         The word must fit on the board and can only be placed on empty cells ('-').
