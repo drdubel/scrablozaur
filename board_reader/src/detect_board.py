@@ -79,10 +79,16 @@ def detect_board(image_path):
     for i in range(len(contours)):
         cv2.drawContours(contours_img, contours, i, (0, 255, 0), 3)
         hull = cv2.convexHull(contours[i])
-        epsilon = 0.15 * cv2.arcLength(hull, True)
-        approx = cv2.approxPolyDP(hull, epsilon, True)
+        perimeter = cv2.arcLength(hull, True)
 
-        if len(approx) != 4:
+        approx = None
+        for epsilon_fraction in (0.02, 0.05, 0.08, 0.10):
+            candidate = cv2.approxPolyDP(hull, epsilon_fraction * perimeter, True)
+            if len(candidate) == 4 and cv2.isContourConvex(candidate):
+                approx = candidate
+                break
+
+        if approx is None:
             continue
 
         distances = [cv2.norm(approx[i] - approx[j]) for i in range(4) for j in range(i + 1, 4)]
@@ -93,13 +99,14 @@ def detect_board(image_path):
         tolerance = avg_distance * tolerance_percent / 100
 
         equal_distances = all(abs(distance - avg_distance) < tolerance for distance in distances)
-
         if not equal_distances:
             continue
 
+        img_area = image_copy.shape[0] * image_copy.shape[1]
         contour_area = cv2.contourArea(approx)
-        if contour_area < 100000:
+        if contour_area < img_area * 0.2:
             continue
+
         corners = approx.reshape(-1, 2)
 
         rhombus_corners = np.float32(corners)
