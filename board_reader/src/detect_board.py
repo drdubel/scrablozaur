@@ -12,10 +12,12 @@ from hsv_config import load_params, load_range
 TEAL_LOWER_DEFAULT = (70, 35, 85)
 TEAL_UPPER_DEFAULT = (125, 255, 255)
 
-# Every other detection knob (dilation/close/open kernels, Canny blur and
-# thresholds, red-ink range, quad-validity thresholds), overridden by a
-# tuned preset saved to hsv_config.json (name "board_params"), if one
-# exists. hsv_tuner.py exposes all of these as trackbars.
+# Every other board-detection knob (dilation/close/open kernels, Canny blur
+# and thresholds, quad-validity thresholds), overridden by a tuned preset
+# saved to hsv_config.json (name "board_params"), if one exists.
+# hsv_tuner.py exposes all of these as trackbars. Orientation (red panel)
+# and grid-level parameters live in grid_reader.py / grid_tuner.py instead
+# -- this module only finds the board's *outer* quad, nothing past that.
 PARAM_DEFAULTS = {
     "dark_s_max": 110,
     "dark_v_max": 90,
@@ -28,12 +30,6 @@ PARAM_DEFAULTS = {
     "canny_low": 10,
     "canny_high": 100,
     "canny_dilate_kernel": 7,
-    "red_hue_min": 172,
-    "red_hue_max": 179,
-    "red_sat_min": 120,
-    "red_val_min": 60,
-    "red_min_area_frac": 0.00005,
-    "red_aspect_threshold": 1.6,
     "quad_side_ratio_max": 1.6,
     "quad_angle_tolerance": 45,
     "quad_min_area_frac": 0.08,
@@ -238,87 +234,6 @@ def canny_edge_mask(bgr, **param_overrides):
     return cv2.dilate(edged, kernel, iterations=1)
 
 
-def find_panel(bgr, **param_overrides):
-    """Find the board's red "SCRABBLE" panel, ignoring the smaller,
-    roughly-square premium-square icons the board also prints in red --
-    only the elongated panel is useful (for orientation), so the
-    premium-square icons are filtered out rather than classified.
-
-    Board red only ever falls on the *high* side of OpenCV's hue wrap
-    (~172-179), never the low side (~0-6) -- even though both look "red" to
-    the eye. Reddish-brown wood grain sits on the low side and is easily
-    mistaken for board red there: on one test photo, a hue range covering
-    both sides of the wrap produced 1055 candidate blobs, almost all of them
-    wood grain on the table below the board (confirmed by drawing their
-    bounding boxes -- the two largest landed squarely on the table, not the
-    board). Restricting to the high side alone dropped that to 32 blobs,
-    with the board's own 6-8 premium squares and the panel landing cleanly
-    among the largest of them (aspect ~1.0-1.1 for the squares, ~4 for the
-    panel) and no wood-grain contamination.
-
-    Returns (centroid, bbox) for the largest sufficiently elongated
-    (aspect >= red_aspect_threshold) red blob, or None if nothing matched.
-    """
-    p = _params(param_overrides)
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(
-        hsv, (int(p["red_hue_min"]), int(p["red_sat_min"]), int(p["red_val_min"])), (int(p["red_hue_max"]), 255, 255)
-    )
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    min_area = p["red_min_area_frac"] * bgr.shape[0] * bgr.shape[1]
-    best, best_area = None, 0
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < min_area or area <= best_area:
-            continue
-        moments = cv2.moments(contour)
-        if moments["m00"] == 0:
-            continue
-        bbox = cv2.boundingRect(contour)
-        _, _, w, h = bbox
-        aspect = max(w, h) / max(1, min(w, h))
-        if aspect < p["red_aspect_threshold"]:
-            continue  # too square to be the panel -- a premium-square icon
-        centroid = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
-        best, best_area = (centroid, bbox), area
-    return best
-
-
-# Rotation that brings the edge nearest the panel to the bottom of the
-# image (panel canonically sits along the board's bottom edge).
-_ROTATION_TO_BOTTOM = {
-    "left": cv2.ROTATE_90_COUNTERCLOCKWISE,
-    "top": cv2.ROTATE_180,
-    "right": cv2.ROTATE_90_CLOCKWISE,
-    "bottom": None,
-}
-
-
-def find_panel_edge(bgr, **param_overrides):
-    """Which edge of `bgr` the "SCRABBLE" panel is nearest to, or None if
-    no panel was found. Meant to run on an already-warped board, where the
-    panel's position pins down the board's rotation."""
-    panel = find_panel(bgr, **param_overrides)
-    if panel is None:
-        return None
-    (cx, cy), _ = panel
-    img_h, img_w = bgr.shape[:2]
-    distances = {"left": cx, "right": img_w - cx, "top": cy, "bottom": img_h - cy}
-    return min(distances, key=distances.get)
-
-
-def orient_to_bottom(bgr, **param_overrides):
-    """Rotate `bgr` (a warped board) so the SCRABBLE panel ends up at the
-    bottom edge. Returns (rotated_image, edge_found); edge_found is None
-    (image unchanged) when no panel could be located."""
-    edge = find_panel_edge(bgr, **param_overrides)
-    if edge is None:
-        return bgr, None
-    rotation = _ROTATION_TO_BOTTOM[edge]
-    return (bgr if rotation is None else cv2.rotate(bgr, rotation)), edge
-
-
 def find_quad_candidates(mask, img_area, **param_overrides):
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     candidates = []
@@ -355,7 +270,26 @@ def find_board_quad(image):
     return order_corners(best) / scale
 
 
-def detect_board(image_path, show_panel=False):
+def warp_board(image, corners):
+    """Perspective-warp `image` onto `corners` (from find_board_quad),
+    producing the "Warped Board": the warp itself targets a canvas shaped
+    like the source image (the board's true corners don't generally span a
+    square region of the photo), so a following resize is what actually
+    squares it off. Shared by detect_board(), hsv_tuner.py, and
+    grid_tuner.py so this exact stage-1 geometry only lives in one place.
+    """
+    w, h = image.shape[1], image.shape[0]
+    new_corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+    matrix = cv2.getPerspectiveTransform(corners, new_corners)
+    warped = cv2.warpPerspective(image, matrix, (w, h), flags=cv2.INTER_LINEAR)
+    return cv2.resize(warped, (warped.shape[1], warped.shape[1]))
+
+
+def detect_board(image_path):
+    """Stage 1 only: find + warp the board's outer quad. Orientation (red
+    panel), the white-grid refinement, and tile/ink binarization are
+    grid_reader.py's job -- see grid_tuner.py to tune and preview those on
+    top of this function's output."""
     image = cv2.imread(image_path)
     corners = find_board_quad(image)
 
@@ -363,53 +297,23 @@ def detect_board(image_path, show_panel=False):
 
     contours_img = image.copy()
 
-    if show_panel:
-        panel = find_panel(image)
-        if panel is not None:
-            _, (x, y, w, h) = panel
-            cv2.rectangle(contours_img, (x, y), (x + w, y + h), (0, 255, 255), 4)
-
     if corners is not None:
         cv2.polylines(contours_img, [corners.astype(np.int32)], True, (0, 255, 0), 3)
+        resized_image = warp_board(image, corners)
 
-        new_corners = np.array(
-            [
-                [0, 0],
-                [image.shape[1], 0],
-                [image.shape[1], image.shape[0]],
-                [0, image.shape[0]],
-            ],
-            dtype=np.float32,
-        )
-
-        matrix = cv2.getPerspectiveTransform(corners, new_corners)
-        warped_image = cv2.warpPerspective(
-            image,
-            matrix,
-            (image.shape[1], image.shape[0]),
-            flags=cv2.INTER_LINEAR,
-        )
-        warped_image, panel_edge = orient_to_bottom(warped_image)
-        print(
-            f"SCRABBLE panel: "
-            f"{'not found, orientation unchanged' if panel_edge is None else f'found near {panel_edge}, rotated to bottom'}"
-        )
-
-        resized_image = cv2.resize(warped_image, (warped_image.shape[1], warped_image.shape[1]))
-
-        show_image("Detected Board with Panel", contours_img)
+        show_image("Detected Board", contours_img)
         show_image("Warped Board", resized_image)
     else:
         print(f"No board found in {image_path}")
 
 
 def main():
-    path = "test/in/*_m.jpg"
+    path = "test/in/*_e.jpg"
     paths = glob.glob(path)
     print(paths)
 
     for path in paths:
-        detect_board(path, show_panel=True)
+        detect_board(path)
 
 
 if __name__ == "__main__":

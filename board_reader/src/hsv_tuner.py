@@ -1,32 +1,34 @@
-"""Interactive HSV color-range tuner.
+"""Interactive HSV color-range tuner -- STAGE 1 ONLY: finding the board's
+outer quad in a raw photo. For orientation (the red SCRABBLE panel), the
+white grid, and tile/ink binarization, see grid_tuner.py, which runs on
+top of this stage's output.
 
-Sliders are seeded from hsv_config.json's saved presets if any exist,
-otherwise from detect_board.py's hardcoded defaults: the "HSV Tuner" window
-holds the teal H/S/V range, and the "Parameters" window holds every other
-detection knob (dark-bezel thresholds, dilation/close/open kernel sizes,
-Canny blur/thresholds, red-ink hue/sat/val range, quad-validity
-thresholds). Drag them until the "HSV Tuner" window's right half outlines
-the board correctly on the current image, and the "Warped Board" window
-matches detect_board()'s own warped output (rotated so the SCRABBLE panel
-sits at the bottom, same as detect_board() will do).
+Everything lives in one window: all sliders (teal H/S/V range, then every
+other board-detection knob -- dark-bezel thresholds, dilation/close/open
+kernel sizes, Canny blur/thresholds, quad-validity thresholds) stack at the
+top, and three live previews sit side by side below them -- the colour/
+Canny mask, the original image with the detected outline drawn on it, and
+the warped board (not yet oriented -- that's grid_tuner.py's job). Sliders
+are seeded from hsv_config.json's saved presets if any exist, otherwise
+from detect_board.py's hardcoded defaults.
 
 Press 's' to record the current teal range as this image's working value,
 repeat across images with 'n'/'p', then 'q'/Esc to combine everything
 recorded (component-wise min of the lower bounds, max of the upper bounds)
 and re-validate the result against every recorded image. The combined teal
-range plus whatever the Parameters sliders currently show -- or, if nothing
-was recorded, just the current teal sliders -- gets written to
-hsv_config.json ('w' saves that at any time), which detect_board.py's
-functions read automatically, so no copy-pasting numbers by hand. 'r'
-resets every slider back to its seed.
+range plus whatever the other sliders currently show -- or, if nothing was
+recorded, just the current teal sliders -- gets written to hsv_config.json
+('w' saves that at any time), which detect_board.py's functions read
+automatically, so no copy-pasting numbers by hand. 'r' resets every slider
+back to its seed.
 
-Every mask/detection/orientation step here calls detect_board.py's actual
-functions (board_color_mask, canny_edge_mask, find_quad_candidates,
-orient_to_bottom) at the same DETECT_MAX_SIDE scale detect_board.py itself
-searches at, instead of a simplified re-implementation -- otherwise a range
-that looks perfect here can still perform worse once it's actually used by
-detect_board(). The colour-mask stage is tried first and, if it finds
-nothing, the Canny fallback is tried too, exactly like find_board_quad().
+Every mask/detection step here calls detect_board.py's actual functions
+(board_color_mask, canny_edge_mask, find_quad_candidates) at the same
+DETECT_MAX_SIDE scale detect_board.py itself searches at, instead of a
+simplified re-implementation -- otherwise a range that looks perfect here
+can still perform worse once it's actually used by detect_board(). The
+colour-mask stage is tried first and, if it finds nothing, the Canny
+fallback is tried too, exactly like find_board_quad().
 
 Usage (run from board_reader/, same convention as detect_board.py):
     python src/hsv_tuner.py                    # difficulty "e" (easy) only
@@ -42,7 +44,7 @@ Keys:
     n / p    next / previous image (keeps current slider positions)
     s        record current teal range as this image's working value
     w        save current sliders (teal range + parameters) right now
-    [ / ]    select the previous / next individual slider (shown in "Parameters")
+    [ / ]    select the previous / next individual slider
     0        reset only the selected slider back to its seed
     r        reset every slider back to its seed (saved config or defaults)
     q / Esc  quit; compute + validate + save the combined range if any were recorded
@@ -50,7 +52,6 @@ Keys:
 
 import argparse
 import glob
-import os
 import sys
 from collections import namedtuple
 
@@ -66,14 +67,12 @@ from detect_board import (
     canny_edge_mask,
     find_quad_candidates,
     order_corners,
-    orient_to_bottom,
+    warp_board,
 )
 from detect_board import signal_handler  # noqa: F401  (registers SIGINT handler on import)
 from hsv_config import load_params, load_range, save_params, save_range
 
-WINDOW = "HSV Tuner (mask | detection)"
-WARP_WINDOW = "Warped Board"
-PARAMS_WINDOW = "Parameters"
+WINDOW = "HSV + Grid Tuner (mask | detection | warp)"
 
 TEAL_TRACKBARS = ("H min", "H max", "S min", "S max", "V min", "V max")
 
@@ -81,33 +80,34 @@ TEAL_TRACKBARS = ("H min", "H max", "S min", "S max", "V min", "V max")
 # scale). Trackbars are integer-only, so non-integer/small-fraction values
 # are stored scaled up (e.g. a fraction of 0.00005 as a "x1e-6" slider at
 # position 50); `scale` divides the raw trackbar position back down to the
-# real value, or is 1 for plain integer parameters.
+# real value, or is 1 for plain integer parameters. Labels are kept short --
+# cv2 clips trackbar labels to the window width.
 ParamSpec = namedtuple("ParamSpec", "key label max_pos scale")
-# One entry per individually selectable/resettable slider, teal channels
-# included, built once in main() from that run's seed values.
-SliderRef = namedtuple("SliderRef", "window label seed scale max_pos")
+# One entry per individually selectable/resettable slider, built once in
+# main() from that run's seed values.
+SliderRef = namedtuple("SliderRef", "label seed scale max_pos")
 PARAM_SPECS = [
     ParamSpec("dark_s_max", "dark S max", 255, 1),
     ParamSpec("dark_v_max", "dark V max", 255, 1),
-    ParamSpec("near_teal_kernel", "bezel dilate kernel", 61, 1),
+    ParamSpec("near_teal_kernel", "bezel dilate k", 61, 1),
     ParamSpec("close_kernel", "close kernel", 61, 1),
-    ParamSpec("close_iterations", "close iterations", 5, 1),
+    ParamSpec("close_iterations", "close iters", 5, 1),
     ParamSpec("open_kernel", "open kernel", 31, 1),
-    ParamSpec("canny_blur_kernel", "canny blur kernel", 31, 1),
-    ParamSpec("canny_blur_sigma", "canny blur sigma", 20, 1),
-    ParamSpec("canny_low", "canny threshold low", 300, 1),
-    ParamSpec("canny_high", "canny threshold high", 300, 1),
-    ParamSpec("canny_dilate_kernel", "canny dilate kernel", 31, 1),
-    ParamSpec("red_hue_min", "red hue min", 179, 1),
-    ParamSpec("red_hue_max", "red hue max", 179, 1),
-    ParamSpec("red_sat_min", "red sat min", 255, 1),
-    ParamSpec("red_val_min", "red val min", 255, 1),
-    ParamSpec("red_min_area_frac", "red min area (x1e-6)", 2000, 1_000_000),
-    ParamSpec("red_aspect_threshold", "red aspect (x0.1)", 100, 10),
-    ParamSpec("quad_side_ratio_max", "quad side ratio (x0.1)", 100, 10),
-    ParamSpec("quad_angle_tolerance", "quad angle tol (deg)", 90, 1),
-    ParamSpec("quad_min_area_frac", "quad min area (x1e-3)", 500, 1000),
+    ParamSpec("canny_blur_kernel", "canny blur k", 31, 1),
+    ParamSpec("canny_blur_sigma", "canny blur sig", 20, 1),
+    ParamSpec("canny_low", "canny low", 300, 1),
+    ParamSpec("canny_high", "canny high", 300, 1),
+    ParamSpec("canny_dilate_kernel", "canny dilate k", 31, 1),
+    ParamSpec("quad_side_ratio_max", "quad side x0.1", 100, 10),
+    ParamSpec("quad_angle_tolerance", "quad angle deg", 90, 1),
+    ParamSpec("quad_min_area_frac", "quad area x1e-3", 500, 1000),
 ]
+
+# Each preview panel is resized to this height before being hstacked into
+# one composite image -- keeps the single window's width driven by the
+# (wide) image content, which incidentally keeps every trackbar label
+# above it fully visible without needing a manual minimum window size.
+PANEL_HEIGHT = 520
 
 
 def _nothing(_):
@@ -115,22 +115,21 @@ def _nothing(_):
 
 
 def _load(path):
-    """Downscale to DETECT_MAX_SIDE -- the exact scale find_board_quad()
-    searches at -- so masks/candidates computed here match production."""
-    image = cv2.imread(path)
-    if image is None:
-        return None
-    h, w = image.shape[:2]
+    """Return (full, search, scale). `search` is downscaled to
+    DETECT_MAX_SIDE -- the exact scale find_board_quad() searches at -- so
+    masks/candidates computed on it match production. `full` is the
+    original resolution, used for the actual warp once a quad is found:
+    detect_board()'s own pipeline searches on a downscaled copy but always
+    warps the original image, so this tool's "Warped Board" preview does
+    the same instead of quietly capping every downstream step (and,
+    eventually, letter recognition) at search resolution."""
+    full = cv2.imread(path)
+    if full is None:
+        return None, None, 1.0
+    h, w = full.shape[:2]
     scale = min(1.0, DETECT_MAX_SIDE / max(h, w))
-    if scale < 1.0:
-        image = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    return image
-
-
-def _set_titles(path):
-    name = os.path.basename(path)
-    for win in (WINDOW, WARP_WINDOW):
-        cv2.setWindowTitle(win, f"{win} - {name}")
+    search = cv2.resize(full, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA) if scale < 1.0 else full
+    return full, search, scale
 
 
 def _set_teal_trackbars(lower, upper):
@@ -144,19 +143,19 @@ def _create_param_trackbars(seed_params):
     for spec in PARAM_SPECS:
         pos = int(round(seed_params.get(spec.key, PARAM_DEFAULTS[spec.key]) * spec.scale))
         pos = max(0, min(spec.max_pos, pos))
-        cv2.createTrackbar(spec.label, PARAMS_WINDOW, pos, spec.max_pos, _nothing)
+        cv2.createTrackbar(spec.label, WINDOW, pos, spec.max_pos, _nothing)
 
 
 def _set_param_trackbars(params):
     for spec in PARAM_SPECS:
         pos = int(round(params.get(spec.key, PARAM_DEFAULTS[spec.key]) * spec.scale))
-        cv2.setTrackbarPos(spec.label, PARAMS_WINDOW, max(0, min(spec.max_pos, pos)))
+        cv2.setTrackbarPos(spec.label, WINDOW, max(0, min(spec.max_pos, pos)))
 
 
 def _read_params():
     values = {}
     for spec in PARAM_SPECS:
-        pos = cv2.getTrackbarPos(spec.label, PARAMS_WINDOW)
+        pos = cv2.getTrackbarPos(spec.label, WINDOW)
         values[spec.key] = pos / spec.scale if spec.scale != 1 else int(pos)
     return values
 
@@ -166,38 +165,30 @@ def _build_slider_refs(seed_lower, seed_upper, seed_params):
     parameter), so any single one can be selected and reset on its own
     instead of only all-at-once via 'r'."""
     refs = [
-        SliderRef(WINDOW, "H min", int(seed_lower[0]), 1, 179),
-        SliderRef(WINDOW, "H max", int(seed_upper[0]), 1, 179),
-        SliderRef(WINDOW, "S min", int(seed_lower[1]), 1, 255),
-        SliderRef(WINDOW, "S max", int(seed_upper[1]), 1, 255),
-        SliderRef(WINDOW, "V min", int(seed_lower[2]), 1, 255),
-        SliderRef(WINDOW, "V max", int(seed_upper[2]), 1, 255),
+        SliderRef("H min", int(seed_lower[0]), 1, 179),
+        SliderRef("H max", int(seed_upper[0]), 1, 179),
+        SliderRef("S min", int(seed_lower[1]), 1, 255),
+        SliderRef("S max", int(seed_upper[1]), 1, 255),
+        SliderRef("V min", int(seed_lower[2]), 1, 255),
+        SliderRef("V max", int(seed_upper[2]), 1, 255),
     ]
     for spec in PARAM_SPECS:
         seed_val = seed_params.get(spec.key, PARAM_DEFAULTS[spec.key])
-        refs.append(SliderRef(PARAMS_WINDOW, spec.label, seed_val, spec.scale, spec.max_pos))
+        refs.append(SliderRef(spec.label, seed_val, spec.scale, spec.max_pos))
     return refs
 
 
 def _reset_single(ref):
     pos = int(round(ref.seed * ref.scale))
-    cv2.setTrackbarPos(ref.label, ref.window, max(0, min(ref.max_pos, pos)))
+    cv2.setTrackbarPos(ref.label, WINDOW, max(0, min(ref.max_pos, pos)))
 
 
-def _params_canvas(ref):
-    """Small status readout shown in the Parameters window: which slider is
-    currently selected (for '[' / ']' / '0'), its live value vs. its seed."""
-    pos = cv2.getTrackbarPos(ref.label, ref.window)
+def _selection_status(ref):
+    """Status line for the currently selected slider ('[' / ']' / '0')."""
+    pos = cv2.getTrackbarPos(ref.label, WINDOW)
     current = pos / ref.scale if ref.scale != 1 else pos
     changed = abs(current - ref.seed) > 1e-9
-    canvas = np.zeros((90, 520, 3), np.uint8)
-    cv2.putText(canvas, f"selected: {ref.label} ({ref.window})", (10, 25),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
-    cv2.putText(canvas, f"current={current:g}  seed={ref.seed:g}{'  (changed)' if changed else ''}",
-               (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-    cv2.putText(canvas, "[ / ] select prev/next slider   0 reset this one   r reset all",
-               (10, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
-    return canvas
+    return f"selected: {ref.label}  current={current:g}  seed={ref.seed:g}{'  (changed)' if changed else ''}"
 
 
 def _find_candidates(image, lower, upper, params):
@@ -215,25 +206,28 @@ def _find_candidates(image, lower, upper, params):
     return candidates, canny_mask, "canny (colour found nothing)"
 
 
-def _warp_to_board(image, corners, params):
-    """Reproduce detect_board()'s exact warp pipeline: perspective-warp onto
-    the photo-shaped canvas, auto-rotate to the panel-at-bottom orientation,
-    then squash to a `warped.shape[1]`-square image -- that last resize is
-    what actually makes detect_board()'s "Warped Board" look board-shaped
-    (square) instead of the original photo's aspect ratio."""
+def _warp_to_board(image, corners):
+    """detect_board.warp_board(), with a "no board found" placeholder when
+    there are no corners to warp onto. Not oriented yet -- grid_tuner.py's
+    job."""
     if corners is None:
         blank = np.zeros_like(image)
         cv2.putText(blank, "No board found", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         return blank
-    w, h = image.shape[1], image.shape[0]
-    new_corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
-    matrix = cv2.getPerspectiveTransform(corners, new_corners)
-    warped = cv2.warpPerspective(image, matrix, (w, h), flags=cv2.INTER_LINEAR)
-    warped, panel_edge = orient_to_bottom(warped, **params)
-    warped = cv2.resize(warped, (warped.shape[1], warped.shape[1]))
-    label = "panel: not found" if panel_edge is None else f"panel was near {panel_edge} -> rotated"
-    cv2.putText(warped, label, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-    return warped
+    return warp_board(image, corners)
+
+
+def _panel(img, height=PANEL_HEIGHT):
+    h, w = img.shape[:2]
+    scale = height / h
+    return cv2.resize(img, (max(1, int(w * scale)), height))
+
+
+def _compose(mask, detected, warped):
+    """Resize every preview to a common height and hstack them into one
+    composite image, so all three previews and every trackbar live in a
+    single window instead of several separate cv2 windows."""
+    return np.hstack([_panel(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)), _panel(detected), _panel(warped)])
 
 
 def _parse_args():
@@ -272,8 +266,6 @@ def main():
     )
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.namedWindow(WARP_WINDOW, cv2.WINDOW_NORMAL)
-    cv2.namedWindow(PARAMS_WINDOW, cv2.WINDOW_NORMAL)
     maxvals = (179, 179, 255, 255, 255, 255)
     defaults = (seed_lower[0], seed_upper[0], seed_lower[1], seed_upper[1], seed_lower[2], seed_upper[2])
     for name, maxval, default in zip(TEAL_TRACKBARS, maxvals, defaults):
@@ -290,14 +282,14 @@ def main():
 
     recordings: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     idx = 0
-    image = _load(paths[idx])
+    full_image, image, search_scale = _load(paths[idx])
     while image is None and idx < len(paths) - 1:
         idx += 1
-        image = _load(paths[idx])
+        full_image, image, search_scale = _load(paths[idx])
     if image is None:
         print("Could not read any of the matched images.")
         sys.exit(1)
-    _set_titles(paths[idx])
+    cv2.setWindowTitle(WINDOW, f"{WINDOW} - {paths[idx]}")
     print(f"[{idx + 1}/{len(paths)}] {paths[idx]}")
 
     lower = upper = None
@@ -319,15 +311,16 @@ def main():
         else:
             cv2.putText(detected, "No board found", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-        preview = np.hstack([cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR), detected])
+        full_corners = corners / search_scale if corners is not None else None
+        composite = _compose(mask, detected, _warp_to_board(full_image, full_corners))
         status = (
             f"recorded {len(recordings)}/{len(paths)} | this image: "
             f"{'SAVED' if paths[idx] in recordings else 'not saved'}"
         )
-        cv2.putText(preview, status, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        cv2.imshow(WINDOW, preview)
-        cv2.imshow(WARP_WINDOW, _warp_to_board(image, corners, params))
-        cv2.imshow(PARAMS_WINDOW, _params_canvas(slider_refs[selected_idx]))
+        cv2.putText(composite, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(composite, _selection_status(slider_refs[selected_idx]), (10, 55),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1)
+        cv2.imshow(WINDOW, composite)
 
         key = cv2.waitKey(30) & 0xFF
         if key in (ord("q"), 27):
@@ -351,18 +344,18 @@ def main():
         elif key == ord("0"):
             ref = slider_refs[selected_idx]
             _reset_single(ref)
-            print(f"  reset {ref.label} ({ref.window}) to seed {ref.seed:g}")
+            print(f"  reset {ref.label} to seed {ref.seed:g}")
         elif key in (ord("n"), ord("p")) and len(paths) > 1:
             step = 1 if key == ord("n") else -1
             new_image = None
             for _ in range(len(paths)):
                 idx = (idx + step) % len(paths)
-                new_image = _load(paths[idx])
+                new_full, new_image, new_scale = _load(paths[idx])
                 if new_image is not None:
                     break
             if new_image is not None:
-                image = new_image
-                _set_titles(paths[idx])
+                full_image, image, search_scale = new_full, new_image, new_scale
+                cv2.setWindowTitle(WINDOW, f"{WINDOW} - {paths[idx]}")
                 saved_note = " (already saved)" if paths[idx] in recordings else ""
                 print(f"[{idx + 1}/{len(paths)}] {paths[idx]}{saved_note}")
 
@@ -388,7 +381,7 @@ def main():
     print("\nValidating combined range against every recorded image:")
     ok = 0
     for path in recordings:
-        img = _load(path)
+        _, img, _ = _load(path)
         if img is None:
             print(f"  SKIP could not reload {path}")
             continue
