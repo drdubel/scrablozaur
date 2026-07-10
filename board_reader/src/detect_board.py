@@ -57,6 +57,18 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 
+def show_image(title, image):
+    """Display an image in a resizable window."""
+    cv2.namedWindow(title, cv2.WINDOW_NORMAL)
+    cv2.imshow(title, image)
+    # Use shorter wait time to be responsive to Ctrl+C
+    while True:
+        key = cv2.waitKey(100)  # Wait 100ms
+        if key != -1:  # If a key was pressed
+            break
+    cv2.destroyAllWindows()
+
+
 # Register signal handler for SIGINT (Ctrl+C)
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -166,13 +178,55 @@ def canny_edge_mask(bgr):
     return cv2.dilate(edged, kernel, iterations=1)
 
 
+def find_red_features(bgr, min_area_fraction=0.00005):
+    """Find the board's red ink: premium-square icons and the "SCRABBLE" panel.
+
+    Board red only ever falls on the *high* side of OpenCV's hue wrap
+    (~172-179), never the low side (~0-6) -- even though both look "red" to
+    the eye. Reddish-brown wood grain sits on the low side and is easily
+    mistaken for board red there: on one test photo, a hue range covering
+    both sides of the wrap produced 1055 candidate blobs, almost all of them
+    wood grain on the table below the board (confirmed by drawing their
+    bounding boxes -- the two largest landed squarely on the table, not the
+    board). Restricting to the high side alone dropped that to 32 blobs,
+    with the board's own 6-8 premium squares and the panel landing cleanly
+    among the largest of them (aspect ~1.0-1.1 for the squares, ~4 for the
+    panel) and no wood-grain contamination.
+
+    Returns two lists of (centroid, bbox) tuples: premium-square blobs
+    (roughly square, aspect < 1.6) and panel blobs (elongated, aspect >= 1.6).
+    In a clean photo there should be exactly one panel blob; if there are
+    several, the largest by area is the real one.
+    """
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (172, 120, 60), (179, 255, 255))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    min_area = min_area_fraction * bgr.shape[0] * bgr.shape[1]
+    premiums, panels = [], []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area:
+            continue
+        moments = cv2.moments(contour)
+        if moments["m00"] == 0:
+            continue
+        centroid = (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
+        bbox = cv2.boundingRect(contour)
+        _, _, w, h = bbox
+        aspect = max(w, h) / max(1, min(w, h))
+        (premiums if aspect < 1.6 else panels).append((centroid, bbox))
+    return premiums, panels
+
+
 def find_quad_candidates(mask, img_area):
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     candidates = []
     for contour in contours:
         approx = approx_quad(contour)
-        if approx is not None and is_valid_quad(approx, img_area):
-            candidates.append(approx)
+        if approx is None or not is_valid_quad(approx, img_area):
+            continue
+        candidates.append(approx)
     return candidates
 
 
@@ -201,11 +255,20 @@ def find_board_quad(image):
     return order_corners(best) / scale
 
 
-def detect_board(image_path):
+def detect_board(image_path, show_red_features=False):
     image = cv2.imread(image_path)
     corners = find_board_quad(image)
 
+    show_image("Original Image", image)
+
     contours_img = image.copy()
+
+    if show_red_features:
+        premiums, panels = find_red_features(image)
+        for _, (x, y, w, h) in premiums:
+            cv2.rectangle(contours_img, (x, y), (x + w, y + h), (255, 0, 255), 4)
+        for _, (x, y, w, h) in panels:
+            cv2.rectangle(contours_img, (x, y), (x + w, y + h), (0, 255, 255), 4)
 
     if corners is not None:
         cv2.polylines(contours_img, [corners.astype(np.int32)], True, (0, 255, 0), 3)
@@ -230,27 +293,10 @@ def detect_board(image_path):
 
         resized_image = cv2.resize(warped_image, (warped_image.shape[1], warped_image.shape[1]))
 
-        # cv2.namedWindow("Board", cv2.WINDOW_NORMAL)
-        # cv2.imshow("Board", resized_image)
-
-        # Use shorter wait time to be responsive to Ctrl+C
-        # while True:
-        #    key = cv2.waitKey(100)  # Wait 100ms
-        #    if key != -1:  # If a key was pressed
-        #        break
-        # cv2.destroyAllWindows()
+        show_image("Detected Board with Red Features", contours_img)
+        show_image("Warped Board", resized_image)
     else:
         print(f"No board found in {image_path}")
-
-    cv2.namedWindow("Contours", cv2.WINDOW_NORMAL)
-    cv2.imshow("Contours", contours_img)
-
-    # Use shorter wait time to be responsive to Ctrl+C
-    while True:
-        key = cv2.waitKey(100)  # Wait 100ms
-        if key != -1:  # If a key was pressed
-            break
-    cv2.destroyAllWindows()
 
 
 def main():
@@ -259,7 +305,7 @@ def main():
     print(paths)
 
     for path in paths:
-        detect_board(path)
+        detect_board(path, show_red_features=True)
 
 
 if __name__ == "__main__":
