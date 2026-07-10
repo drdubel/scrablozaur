@@ -1,10 +1,11 @@
 """Top-level orchestration: photo -> 15x15 board of letters.
 
 Chains detect_board.py (stage 1: find + warp the board), grid_reader.py
-(stage 2: orient, find + warp to the precise grid, binarize), and
-letter_classifier.py (stage 3: per-cell occupancy + letter classification)
-into read_board(), the "run everything" entry point at this module's
-level -- mirrors detect_board.py's own role for stage 1 alone.
+(stage 2: orient, find + warp to the precise grid), and
+letter_classifier.py (stage 3: per-cell local binarization + occupancy +
+letter classification) into read_board(), the "run everything" entry
+point at this module's level -- mirrors detect_board.py's own role for
+stage 1 alone.
 
 Run directly to evaluate against the ground truth in test/out/*.txt
 (board<N>.txt matches test/in/img<N>_*.jpg):
@@ -25,7 +26,7 @@ import sys
 import cv2
 
 from detect_board import find_board_quad, warp_board
-from grid_reader import binarize_tiles, extract_cells, find_grid_quad, orient_to_bottom, warp_to_grid
+from grid_reader import extract_cells, find_grid_quad, orient_to_bottom, warp_to_grid
 from hsv_config import load_params
 from letter_classifier import PARAM_DEFAULTS, classify_cell, render_digit_glyphs, render_reference_glyphs
 
@@ -52,9 +53,11 @@ def read_board(image_path, refs=None, digit_refs=None):
     if grid_corners is None:
         return None, None
     grid_warp = warp_to_grid(oriented, grid_corners)
-    binarized = binarize_tiles(grid_warp)
+    # Color cells, not grid_reader.binarize_tiles()'s global-threshold
+    # output -- classify_cell() binarizes each one locally now; see
+    # letter_classifier.py's module docstring for why.
     expand_frac = load_params("letter_params", PARAM_DEFAULTS)["expand_frac"]
-    cells = extract_cells(binarized, GRID, expand_frac=expand_frac)
+    cells = extract_cells(grid_warp, GRID, expand_frac=expand_frac)
 
     board, scores = [], []
     for row in cells:

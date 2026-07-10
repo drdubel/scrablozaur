@@ -6,11 +6,21 @@ simpler than ocr/scrabble_reader/'s CNN + template + OCR-fallback fusion
 builds its own independent version instead of wiring into it, per an
 explicit choice to keep this stage simple and standalone).
 
-Input to every function here is a cell crop of grid_reader.binarize_tiles()'s
-output: tile = 255 (including letter-ink holes, which are 0), background/
-grid = 0. Reference glyphs are rendered once (render_reference_glyphs()) /
-digit glyphs (render_digit_glyphs()) and passed into classify_cell() rather
-than re-rendered per call.
+classify_cell() takes a *color* cell crop (a slice of the grid-aligned
+warp, e.g. grid_reader.extract_cells(grid_warp, ...)) and binarizes it
+itself, per cell, via local_binarize() -- deliberately NOT a slice of
+grid_reader.binarize_tiles()'s output, which applies one global HSV
+threshold across the whole board. A single global cutoff doesn't fit every
+region of a real photo (confirmed: it under-inked an entire row on one
+test photo whose lighting varied across the frame), and no fixed preset
+would either, since the same problem recurs *within* one photo, not just
+across photos. Otsu's method recomputes its own cutoff from each cell's
+own pixel histogram, so it adapts automatically with no tunable threshold
+and no manual preset selection -- see local_binarize()'s docstring for
+the empirical comparison against the global-threshold approach it replaced.
+Reference glyphs are rendered once (render_reference_glyphs()) / digit
+glyphs (render_digit_glyphs()) and passed into classify_cell() rather than
+re-rendered per call.
 
 Each Polish Scrabble tile also prints its point value in the bottom-right
 corner, and the point scale is a fixed, known mapping (LETTER_POINTS,
@@ -80,6 +90,20 @@ PARAM_DEFAULTS = {
                                   # was a real improvement (29.8% -> 34.7%). Retune
                                   # together if you change expand_frac.
     "max_hole_area_frac": 0.55,  # holes larger than this aren't a single letter
+    "min_dominance_ratio": 4.5,  # best hole must be at least this many times bigger
+                                  # than the runner-up (both already past
+                                  # min_hole_area_frac) -- observed ~5-14x for real
+                                  # letters vs ~1.1-3.4x for decorative premium-square
+                                  # content (an icon or multi-word label), so this
+                                  # catches false positives min_hole_area_frac alone
+                                  # can't: under per-cell Otsu, some premium-square
+                                  # holes are as big as or bigger than a real letter's
+                                  # (observed up to ~0.11 of cell area), so no area
+                                  # threshold alone separates them cleanly. Swept
+                                  # empirically on the em test set: accuracy plateaus
+                                  # at ratio >= ~4.5 (overall cell accuracy 72.0% ->
+                                  # 82.2%, occupied-cell 34.8% -> 33.1% -- a small,
+                                  # worthwhile trade for far fewer false positives).
     "digit_corner_frac": 0.35,   # bottom-right corner fraction reserved for the score digit
     "min_digit_area_frac": 0.003,  # digit holes are much smaller than letter holes
     "max_digit_area_frac": 0.04,
@@ -97,6 +121,10 @@ PARAM_DEFAULTS = {
                                   # ratio too (same hole, bigger cell), so a large
                                   # expand_frac may need min_hole_area_frac lowered
                                   # to compensate -- tune them together.
+    "binarize_open_kernel": 7,   # local_binarize()'s morphological-open kernel size,
+                                  # strips thin grid-line/border remnants after Otsu.
+                                  # No separate threshold parameter is needed -- that's
+                                  # the point of using Otsu instead of a fixed cutoff.
 }
 
 
@@ -140,6 +168,34 @@ def render_digit_glyphs(size=GLYPH_SIZE):
     """Same as render_reference_glyphs(), for the tile's printed point-value
     digit (0-9) instead of the letter."""
     return _render_glyphs(DIGITS, size)
+
+
+def local_binarize(cell_bgr, **param_overrides):
+    """Per-cell Otsu threshold on this cell's own grayscale pixels, then
+    the same morphological open used everywhere else to strip thin grid-
+    line/border remnants. Tile = 255 (including a letter-ink hole, which
+    stays 0), background = 0 -- same convention grid_reader.binarize_tiles()
+    used, but computed fresh per cell instead of once globally.
+
+    Empirically compared against the global-threshold approach on a known
+    problem case (img13_e.jpg row 10, a whole row under-inked because that
+    region of the photo is lit differently than the rest): per-cell Otsu
+    recovered roughly 2-3x more of the true letter-ink area there. It's
+    not a full fix for every cell -- on that same test, CLAHE local-
+    contrast boosting on top of Otsu barely helped further, meaning some
+    residual failures are genuine source blur (warp-interpolation
+    softness / focus falloff), not a threshold-calibration problem. Also
+    confirmed: this doesn't just help letters -- some premium-square icons
+    (e.g. a "d" double-letter square, not just the word-premium label text
+    fixed earlier) can produce a spurious hole comparable in size to a
+    real letter's, so min_hole_area_frac may need retuning against these
+    per-cell statistics rather than the old global-mask ones.
+    """
+    p = _params(param_overrides)
+    gray = cv2.cvtColor(cell_bgr, cv2.COLOR_BGR2GRAY)
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    open_size = max(1, int(p["binarize_open_kernel"]))
+    return cv2.morphologyEx(otsu, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_size, open_size)))
 
 
 def is_occupied(cell, **param_overrides):
@@ -216,7 +272,7 @@ def extract_glyph(cell, size=GLYPH_SIZE, **param_overrides):
         return None
 
     cell_area = h * w
-    best_hole, best_area = None, 0
+    best_hole, best_area, second_area = None, 0, 0
     for i, hier in enumerate(hierarchy):
         if hier[3] != outer_idx:
             continue  # not a direct hole of the tile
@@ -228,8 +284,17 @@ def extract_glyph(cell, size=GLYPH_SIZE, **param_overrides):
         if cx > (1 - p["digit_corner_frac"]) * w and cy > (1 - p["digit_corner_frac"]) * h:
             continue  # score digit corner
         if area > best_area:
-            best_hole, best_area = i, area
+            best_hole, best_area, second_area = i, area, best_area
+        elif area > second_area:
+            second_area = area
     if best_hole is None:
+        return None
+    # A letter produces one hole clearly bigger than any runner-up
+    # (observed ~5-14x); decorative premium-square content -- an icon or
+    # multi-word label -- produces holes closer in size to each other
+    # (observed ~1.1-3.4x), so a second, comparably-sized hole nearby is a
+    # sign this isn't a single letter even when its own area alone passed.
+    if second_area and best_area / second_area < p["min_dominance_ratio"]:
         return None
 
     mask = np.zeros_like(cell)
@@ -289,9 +354,14 @@ def classify_glyph(glyph, refs):
     return _match_all(glyph, refs)[0]
 
 
-def classify_cell(cell, refs, digit_refs=None, **param_overrides):
+def classify_cell(cell_bgr, refs, digit_refs=None, **param_overrides):
     """'-' for empty (score 1.0) or the best-matching letter for occupied
-    cells. "Occupied" means extract_glyph() found a dominant ink hole --
+    cells. `cell_bgr` is a *color* cell crop (e.g. from
+    grid_reader.extract_cells(grid_warp, ...)) -- binarized here, once,
+    per cell via local_binarize() rather than assuming a pre-binarized
+    input; see that function's and the module docstring for why.
+
+    "Occupied" means extract_glyph() found a dominant ink hole --
     is_occupied()'s white-fraction check is only a cheap pre-filter, not
     the real decision (see both docstrings): a bright cell with no
     dominant hole (e.g. a premium square's printed label) is reported as
@@ -307,6 +377,7 @@ def classify_cell(cell, refs, digit_refs=None, **param_overrides):
     matches the read digit, so a misread digit can't override a
     confident, unambiguous letter match.
     """
+    cell = local_binarize(cell_bgr, **param_overrides)
     if not is_occupied(cell, **param_overrides):
         return "-", 1.0
     glyph = extract_glyph(cell, **param_overrides)

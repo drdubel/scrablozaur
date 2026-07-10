@@ -9,9 +9,14 @@ below for what each one does -- select one with '[' / ']' to see its
 description on screen). Three labelled previews sit below the sliders,
 left to right:
     ORIGINAL       the raw source photo, exactly as loaded from disk
-    BINARIZED       stage 2's output: tile = white (including a black
-                    letter-ink hole), everything else (grid lines, empty
-                    cells) = black
+    BINARIZED       what the classifier actually sees: each cell's own
+                    per-cell Otsu threshold (letter_classifier.
+                    local_binarize()), stitched back together -- tile =
+                    white (including a black letter-ink hole), everything
+                    else (grid lines, empty cells) = black. NOT
+                    grid_reader.binarize_tiles()'s single whole-board
+                    threshold; see letter_classifier.py's module docstring
+                    for why that changed.
     PREDICTIONS     the grid-aligned colour warp with this stage's guess
                     for each cell drawn on it -- this *is* "the board
                     state that was read". Green text = matches
@@ -54,7 +59,6 @@ from detect_board import (
     warp_board,
 )
 from grid_reader import (
-    binarize_tiles,
     extract_cells,
     find_grid_quad,
     orient_to_bottom,
@@ -64,6 +68,7 @@ from hsv_config import load_params, save_params
 from letter_classifier import (
     PARAM_DEFAULTS,
     classify_cell,
+    local_binarize,
     render_digit_glyphs,
     render_reference_glyphs,
 )
@@ -88,6 +93,9 @@ PARAM_SPECS = [
               "several smaller holes instead of one dominant one."),
     ParamSpec("max_hole_area_frac", "max hole x1000", 1000, 1000,
               "An ink hole bigger than this fraction of the cell isn't a plausible single letter."),
+    ParamSpec("min_dominance_ratio", "dominance x10", 200, 10,
+              "The best ink hole must be at least this many times bigger than the runner-up -- real letters "
+              "are strongly dominant (~5-14x), decorative premium-square content isn't (~1-3.4x)."),
     ParamSpec("digit_corner_frac", "digit corner x1000", 500, 1000,
               "Size of the bottom-right corner region reserved for the tile's printed point-value digit -- "
               "excluded when looking for the letter, required when looking for the digit."),
@@ -149,18 +157,17 @@ def _selection_status(ref):
 
 def _stage12(image):
     """Run stage 1 + stage 2 (using whatever's already saved to
-    hsv_config.json) to get to a binarized, grid-aligned board. Returns
-    (grid_warp_bgr, binarized) or (None, None)."""
+    hsv_config.json) to get to a grid-aligned, color board. Returns
+    grid_warp_bgr, or None if the board or grid couldn't be found."""
     corners = find_board_quad(image)
     if corners is None:
-        return None, None
+        return None
     warped = warp_board(image, corners)
     oriented, _ = orient_to_bottom(warped)
     grid_corners, _ = find_grid_quad(oriented)
     if grid_corners is None:
-        return None, None
-    grid_warp = warp_to_grid(oriented, grid_corners)
-    return grid_warp, binarize_tiles(grid_warp)
+        return None
+    return warp_to_grid(oriented, grid_corners)
 
 
 def _panel(img, label, height=PANEL_HEIGHT):
@@ -174,13 +181,17 @@ def _panel(img, label, height=PANEL_HEIGHT):
     return np.vstack([bar, resized])
 
 
-def _predictions_overlay(grid_warp, binarized, refs, digit_refs, gt, params):
+def _predictions_overlay(grid_warp, refs, digit_refs, gt, params):
     """grid_warp with each cell's predicted letter drawn on it, colour-
     coded green (matches ground truth) / red (mismatch) / yellow (no
-    ground truth for this image). Returns (overlay, board, correct, total)."""
-    h, w = binarized.shape[:2]
-    cells = extract_cells(binarized, GRID, expand_frac=params.get("expand_frac", 0.0))
+    ground truth for this image). Also builds the BINARIZED panel (each
+    cell's own local_binarize() output, stitched back together) in the
+    same pass, since both need the same per-cell extraction.
+    Returns (overlay, binarized_composite, board, correct, total)."""
+    h, w = grid_warp.shape[:2]
+    cells = extract_cells(grid_warp, GRID, expand_frac=params.get("expand_frac", 0.0))
     overlay = grid_warp.copy()
+    binarized_composite = np.zeros((h, w), np.uint8)
     board = []
     correct = total = 0
     for r in range(GRID):
@@ -190,6 +201,13 @@ def _predictions_overlay(grid_warp, binarized, refs, digit_refs, gt, params):
             row.append(letter)
             cy0, cy1 = r * h // GRID, (r + 1) * h // GRID
             cx0, cx1 = c * w // GRID, (c + 1) * w // GRID
+            cell_bin = local_binarize(cells[r][c], **params)
+            ch, cw = cell_bin.shape[:2]
+            # Cells may be larger than the plain grid slice when
+            # expand_frac > 0 -- crop back down to the unexpanded slice so
+            # the composite stays a clean, non-overlapping 15x15 mosaic.
+            oy, ox = (ch - (cy1 - cy0)) // 2, (cw - (cx1 - cx0)) // 2
+            binarized_composite[cy0:cy1, cx0:cx1] = cell_bin[oy:oy + (cy1 - cy0), ox:ox + (cx1 - cx0)]
             cv2.rectangle(overlay, (cx0, cy0), (cx1, cy1), (60, 60, 60), 1)
             if gt is not None:
                 total += 1
@@ -204,7 +222,7 @@ def _predictions_overlay(grid_warp, binarized, refs, digit_refs, gt, params):
             elif gt is not None and gt[r][c] != "-":
                 cv2.circle(overlay, ((cx0 + cx1) // 2, (cy0 + cy1) // 2), 6, (0, 0, 220), -1)
         board.append(row)
-    return overlay, board, correct, total
+    return overlay, binarized_composite, board, correct, total
 
 
 def _parse_args():
@@ -219,14 +237,12 @@ def _parse_args():
 
 
 def _load(path):
-    """Returns (original_bgr, grid_warp_bgr, binarized) or (None, None, None)."""
+    """Returns (original_bgr, grid_warp_bgr) or (None, None); grid_warp_bgr
+    is None if a board+grid couldn't be found even when the photo loaded."""
     image = cv2.imread(path)
     if image is None:
-        return None, None, None
-    grid_warp, binarized = _stage12(image)
-    if grid_warp is None:
-        return image, None, None
-    return image, grid_warp, binarized
+        return None, None
+    return image, _stage12(image)
 
 
 def main():
@@ -270,10 +286,10 @@ def main():
             return None
 
     idx = 0
-    original, grid_warp, binarized = _load(paths[idx])
+    original, grid_warp = _load(paths[idx])
     while grid_warp is None and idx < len(paths) - 1:
         idx += 1
-        original, grid_warp, binarized = _load(paths[idx])
+        original, grid_warp = _load(paths[idx])
     if grid_warp is None:
         print("Could not find a board+grid (via stage 1+2) on any of the matched images.")
         sys.exit(1)
@@ -285,7 +301,7 @@ def main():
     running_correct = running_total = 0
     while True:
         params = _read_params()
-        overlay, board, correct, total = _predictions_overlay(grid_warp, binarized, refs, digit_refs, gt, params)
+        overlay, binarized, board, correct, total = _predictions_overlay(grid_warp, refs, digit_refs, gt, params)
         composite = np.hstack([
             _panel(original, "ORIGINAL PHOTO"),
             _panel(cv2.cvtColor(binarized, cv2.COLOR_GRAY2BGR), "BINARIZED"),
@@ -320,14 +336,14 @@ def main():
                 running_correct += correct
                 running_total += total
             step = 1 if key == ord("n") else -1
-            new_original = new_warp = new_bin = None
+            new_original = new_warp = None
             for _ in range(len(paths)):
                 idx = (idx + step) % len(paths)
-                new_original, new_warp, new_bin = _load(paths[idx])
+                new_original, new_warp = _load(paths[idx])
                 if new_warp is not None:
                     break
             if new_warp is not None:
-                original, grid_warp, binarized = new_original, new_warp, new_bin
+                original, grid_warp = new_original, new_warp
                 gt = _gt_for(paths[idx])
                 cv2.setWindowTitle(WINDOW, f"{WINDOW} - {paths[idx]}")
                 running_note = f" | running: {running_correct}/{running_total} ({running_correct / running_total:.1%})" if running_total else ""
