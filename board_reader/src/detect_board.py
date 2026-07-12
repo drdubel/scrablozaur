@@ -1,3 +1,24 @@
+"""Find a Scrabble board in a photo and produce a perspective-corrected,
+straight-on crop of it (the "Warped Board").
+
+    find_board_quad(image) -> corners        find the board's outer 4 corners
+    warp_board(image, corners) -> warped     perspective-correct + square it
+
+That warped image is the flat, straight-on board -- whatever reads the
+grid and the letters on it (orientation, the grid lines, individual
+tiles) starts from this output.
+
+Detection works by masking the board's own colour (find_board_quad() ->
+board_color_mask()), falling back to a Canny edge search if the colour
+mask finds nothing usable. Both stages are tunable interactively via
+hsv_tuner.py, which saves its presets to hsv_config.json (see
+hsv_config.py) for these functions to pick up automatically.
+
+Run this file directly for a minimal demo (see detect_board()/main()
+below): shows the original photo, the detected outline, and the warped
+result for every test/in/*_e.jpg image, one photo at a time.
+"""
+
 import glob
 import signal
 import sys
@@ -14,9 +35,7 @@ TEAL_UPPER_DEFAULT = (125, 255, 255)
 # Every other board-detection knob (dilation/close/open kernels, Canny blur
 # and thresholds, quad-validity thresholds), overridden by a tuned preset
 # saved to hsv_config.json (name "board_params"), if one exists.
-# hsv_tuner.py exposes all of these as trackbars. Orientation (red panel)
-# and grid-level parameters live in grid_reader.py / grid_tuner.py instead
-# -- this module only finds the board's *outer* quad, nothing past that.
+# hsv_tuner.py exposes all of these as trackbars.
 PARAM_DEFAULTS = {
     "dark_s_max": 110,
     "dark_v_max": 90,
@@ -48,46 +67,6 @@ def _params(overrides=None):
 
 def get_grayscale(image):
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-
-# noise removal
-def remove_noise(image):
-    return cv2.medianBlur(image, 5)
-
-
-# thresholding
-def thresholding(image):
-    return cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-
-
-# dilation
-def dilate(image):
-    kernel = np.ones((5, 5), np.uint8)
-    return cv2.dilate(image, kernel, iterations=1)
-
-
-# erosion
-def erode(image):
-    kernel = np.ones((5, 5), np.uint8)
-    return cv2.erode(image, kernel, iterations=1)
-
-
-# opening - erosion followed by dilation
-def make_opening(image):
-    kernel = np.ones((7, 7), np.uint8)
-    return cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
-
-
-# canny edge detection
-def make_canny(image):
-    return cv2.Canny(image, 100, 200)
-
-
-def contour_center(contour):
-    M = cv2.moments(contour)
-    if M["m00"] == 0:
-        return None
-    return (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
 
 
 def signal_handler(sig, frame):
@@ -274,8 +253,8 @@ def warp_board(image, corners):
     producing the "Warped Board": the warp itself targets a canvas shaped
     like the source image (the board's true corners don't generally span a
     square region of the photo), so a following resize is what actually
-    squares it off. Shared by detect_board(), hsv_tuner.py, and
-    grid_tuner.py so this exact stage-1 geometry only lives in one place.
+    squares it off. Shared by detect_board() and hsv_tuner.py so this
+    exact warp geometry only lives in one place.
     """
     w, h = image.shape[1], image.shape[0]
     new_corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
@@ -285,10 +264,9 @@ def warp_board(image, corners):
 
 
 def detect_board(image_path):
-    """Stage 1 only: find + warp the board's outer quad. Orientation (red
-    panel), the white-grid refinement, and tile/ink binarization are
-    grid_reader.py's job -- see grid_tuner.py to tune and preview those on
-    top of this function's output."""
+    """Find + warp the board's outer quad, showing each step in its own
+    window. A minimal CLI demo of find_board_quad()/warp_board(); see
+    hsv_tuner.py for interactive tuning."""
     image = cv2.imread(image_path)
     corners = find_board_quad(image)
 

@@ -1,16 +1,13 @@
-"""Interactive HSV color-range tuner -- STAGE 1 ONLY: finding the board's
-outer quad in a raw photo. For orientation (the red SCRABBLE panel), the
-white grid, and tile/ink binarization, see grid_tuner.py, which runs on
-top of this stage's output.
+"""Interactive HSV color-range tuner for finding the board's outer quad in
+a raw photo (detect_board.py's find_board_quad()/warp_board()).
 
 Everything lives in one window: all sliders (teal H/S/V range, then every
 other board-detection knob -- dark-bezel thresholds, dilation/close/open
 kernel sizes, Canny blur/thresholds, quad-validity thresholds) stack at the
 top, and three live previews sit side by side below them -- the colour/
 Canny mask, the original image with the detected outline drawn on it, and
-the warped board (not yet oriented -- that's grid_tuner.py's job). Sliders
-are seeded from hsv_config.json's saved presets if any exist, otherwise
-from detect_board.py's hardcoded defaults.
+the warped board. Sliders are seeded from hsv_config.json's saved presets
+if any exist, otherwise from detect_board.py's hardcoded defaults.
 
 Press 's' to record the current teal range as this image's working value,
 repeat across images with 'n'/'p', then 'q'/Esc to combine everything
@@ -71,7 +68,7 @@ from detect_board import (
 )
 from hsv_config import load_params, load_range, save_params, save_range
 
-WINDOW = "HSV + Grid Tuner (mask | detection | warp)"
+WINDOW = "HSV Tuner (mask | detection | warp)"
 
 TEAL_TRACKBARS = ("H min", "H max", "S min", "S max", "V min", "V max")
 
@@ -207,8 +204,7 @@ def _find_candidates(image, lower, upper, params):
 
 def _warp_to_board(image, corners):
     """detect_board.warp_board(), with a "no board found" placeholder when
-    there are no corners to warp onto. Not oriented yet -- grid_tuner.py's
-    job."""
+    there are no corners to warp onto."""
     if corners is None:
         blank = np.zeros_like(image)
         cv2.putText(blank, "No board found", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
