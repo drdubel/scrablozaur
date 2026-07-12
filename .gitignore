@@ -10,3 +10,6 @@
 # Added by cargo
 
 /target
+test
+ocr
+.*/

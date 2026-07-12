@@ -24,7 +24,6 @@ Tunable via grid_tuner.py; parameters are saved to hsv_config.json under
 
 import cv2
 import numpy as np
-
 from detect_board import find_quad_candidates, order_corners
 from hsv_config import load_params
 
@@ -39,7 +38,6 @@ PARAM_DEFAULTS = {
     "red_val_min": 60,
     "red_min_area_frac": 0.00005,
     "red_aspect_threshold": 1.6,
-
     # white grid lines: hue-agnostic (white has no meaningful hue), just a
     # saturation ceiling and value floor
     "white_sat_max": 60,
@@ -48,14 +46,12 @@ PARAM_DEFAULTS = {
     "grid_close_kernel": 9,
     "grid_close_iterations": 2,
     "grid_open_kernel": 3,
-
     # quad-validity for the grid quad -- reuses detect_board.is_valid_quad,
     # but the grid is expected to fill most of the (already warped) board,
     # so its own, much larger minimum area applies than stage 1's board quad
     "quad_side_ratio_max": 1.3,
     "quad_angle_tolerance": 20,
     "quad_min_area_frac": 0.5,
-
     # tile/ink binarization
     "tile_open_kernel": 7,
 }
@@ -151,6 +147,24 @@ def orient_to_bottom(bgr, **param_overrides):
     return (bgr if rotation is None else cv2.rotate(bgr, rotation)), edge
 
 
+def rotate_shift(shift_x_frac, shift_y_frac, panel_edge):
+    """Re-express a (shift_x_frac, shift_y_frac) direction vector -- e.g.
+    estimate_tile_shift()'s output, measured on detect_board.find_board_
+    quad()'s *unrotated* stage-1 quad -- in the coordinate frame
+    orient_to_bottom() actually rotates images into (its `panel_edge`
+    return value pins down which of the 4 rotations, if any, it applied).
+    Without this, the shift would point the wrong way on any photo that
+    needed a 90/180/270 rotation to bring the panel to the bottom."""
+    rotation = _ROTATION_TO_BOTTOM.get(panel_edge)
+    if rotation == cv2.ROTATE_90_COUNTERCLOCKWISE:
+        return shift_y_frac, -shift_x_frac
+    if rotation == cv2.ROTATE_90_CLOCKWISE:
+        return -shift_y_frac, shift_x_frac
+    if rotation == cv2.ROTATE_180:
+        return -shift_x_frac, -shift_y_frac
+    return shift_x_frac, shift_y_frac
+
+
 def white_grid_mask(bgr, **param_overrides):
     """Isolate the thin white grid lines between cells.
 
@@ -170,7 +184,8 @@ def white_grid_mask(bgr, **param_overrides):
 
     close_size = max(1, int(p["grid_close_kernel"]))
     mask = cv2.morphologyEx(
-        mask, cv2.MORPH_CLOSE,
+        mask,
+        cv2.MORPH_CLOSE,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size)),
         iterations=max(1, int(p["grid_close_iterations"])),
     )
@@ -229,10 +244,53 @@ def binarize_tiles(bgr, **param_overrides):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     bright = cv2.inRange(hsv, (0, 0, int(p["white_val_min"])), (179, int(p["white_sat_max"]), 255))
     open_size = max(1, int(p["tile_open_kernel"]))
-    return cv2.morphologyEx(bright, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_size, open_size)))
+    return cv2.morphologyEx(
+        bright, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_size, open_size))
+    )
 
 
-def extract_cells(binarized, n=15, expand_frac=0.0):
+def estimate_tile_shift(grid_corners, magnitude=0.7):
+    """First-order guess at the tile-height parallax shift (see
+    grid_reader.extract_cells()'s shift_x_frac/shift_y_frac): physical
+    tiles sit *on top of* the flat plane grid_corners describes (the
+    board's printed white grid lines), so the flattening homography --
+    which by construction perfectly rectifies that flat plane -- does not
+    correct for a tile's height above it. Relief displacement means an
+    elevated point projects, in the pre-warp photo, shifted toward the
+    camera relative to its true ground position; after the warp
+    stretches whichever side of the quad was originally farther/more
+    foreshortened to match the nearer side's scale, that same
+    displacement ends up pointing toward the *nearer* (longer, less
+    foreshortened) edge of the pre-warp quad -- or so first-principles
+    reasoning suggested.
+
+    That reasoning got the *direction* backwards: swept empirically
+    against the easy test set (python src/read_board.py -d e), the
+    opposite sign monotonically improved occupied-cell accuracy as
+    magnitude increased (71.7% -> 73.7% at magnitude 0.7, still climbing,
+    before the sign below was corrected and this became the "positive"
+    direction) while the originally-derived sign made it monotonically
+    worse. The formula below already has that correction baked in --
+    `magnitude` is just a strength knob, always meant to be positive.
+    Treat this as an empirically-anchored starting point (see letter_
+    tuner.py's per-image-reseeded shift sliders for overriding it further
+    per photo), not a first-principles-guaranteed correction -- there's
+    still no camera calibration here to get a real physical tile-height
+    estimate, so `magnitude` is a single fixed constant scaled only by
+    how asymmetric the quad is, not swept to a precise optimum.
+
+    `grid_corners` is find_grid_quad()'s [TL, TR, BR, BL] output. Returns
+    (shift_x_frac, shift_y_frac) as fractions of one cell.
+    """
+    tl, tr, br, bl = grid_corners
+    top, bottom = np.linalg.norm(tr - tl), np.linalg.norm(br - bl)
+    left, right = np.linalg.norm(bl - tl), np.linalg.norm(br - tr)
+    y_asym = (bottom - top) / (bottom + top)  # >0: bottom edge nearer (pre-correction)
+    x_asym = (right - left) / (right + left)  # >0: right edge nearer (pre-correction)
+    return -x_asym * magnitude, -y_asym * magnitude
+
+
+def extract_cells(binarized, n=15, expand_frac=0.0, shift_x_frac=0.0, shift_y_frac=0.0):
     """Uniform n x n slice of binarize_tiles()'s output into per-cell crops.
 
     The cell *boundaries* are exact by construction, not an approximation:
@@ -251,17 +309,26 @@ def extract_cells(binarized, n=15, expand_frac=0.0):
     logic still finds the *centre* tile correctly since it's much larger
     than any neighbouring tile's sliver at the crop's edge.
 
+    `shift_x_frac`/`shift_y_frac` (fractions of one cell) additionally
+    offset every cell's read window by the same constant amount -- see
+    estimate_tile_shift() -- to compensate for tile-height parallax,
+    which (unlike the residual keystone expand_frac guards against) is a
+    fairly consistent directional shift across the whole board, not
+    per-cell noise. Left at 0 this is a no-op, identical to the previous
+    behavior.
+
     Returns a list of n rows, each a list of n cell crops (row-major, i.e.
     cells[row][col]).
     """
     h, w = binarized.shape[:2]
     cell_h, cell_w = h / n, w / n
     pad_h, pad_w = int(cell_h * expand_frac), int(cell_w * expand_frac)
+    off_y, off_x = int(cell_h * shift_y_frac), int(cell_w * shift_x_frac)
     return [
         [
             binarized[
-                max(0, int(r * cell_h) - pad_h):min(h, int((r + 1) * cell_h) + pad_h),
-                max(0, int(c * cell_w) - pad_w):min(w, int((c + 1) * cell_w) + pad_w),
+                max(0, int(r * cell_h) - pad_h + off_y) : min(h, int((r + 1) * cell_h) + pad_h + off_y),
+                max(0, int(c * cell_w) - pad_w + off_x) : min(w, int((c + 1) * cell_w) + pad_w + off_x),
             ]
             for c in range(n)
         ]
@@ -278,14 +345,20 @@ def read_grid(warped_board_bgr):
     grid_corners, grid_mask = find_grid_quad(oriented)
     if grid_corners is None:
         return {
-            "oriented": oriented, "panel_edge": panel_edge,
-            "grid_mask": grid_mask, "grid_corners": None,
-            "grid_warp": None, "binarized": None,
+            "oriented": oriented,
+            "panel_edge": panel_edge,
+            "grid_mask": grid_mask,
+            "grid_corners": None,
+            "grid_warp": None,
+            "binarized": None,
         }
     grid_warp = warp_to_grid(oriented, grid_corners)
     binarized = binarize_tiles(grid_warp)
     return {
-        "oriented": oriented, "panel_edge": panel_edge,
-        "grid_mask": grid_mask, "grid_corners": grid_corners,
-        "grid_warp": grid_warp, "binarized": binarized,
+        "oriented": oriented,
+        "panel_edge": panel_edge,
+        "grid_mask": grid_mask,
+        "grid_corners": grid_corners,
+        "grid_warp": grid_warp,
+        "binarized": binarized,
     }

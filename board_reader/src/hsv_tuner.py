@@ -57,7 +57,7 @@ from collections import namedtuple
 
 import cv2
 import numpy as np
-
+from detect_board import signal_handler  # noqa: F401  (registers SIGINT handler on import)
 from detect_board import (
     DETECT_MAX_SIDE,
     PARAM_DEFAULTS,
@@ -69,7 +69,6 @@ from detect_board import (
     order_corners,
     warp_board,
 )
-from detect_board import signal_handler  # noqa: F401  (registers SIGINT handler on import)
 from hsv_config import load_params, load_range, save_params, save_range
 
 WINDOW = "HSV + Grid Tuner (mask | detection | warp)"
@@ -318,8 +317,15 @@ def main():
             f"{'SAVED' if paths[idx] in recordings else 'not saved'}"
         )
         cv2.putText(composite, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        cv2.putText(composite, _selection_status(slider_refs[selected_idx]), (10, 55),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1)
+        cv2.putText(
+            composite,
+            _selection_status(slider_refs[selected_idx]),
+            (10, 55),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 0),
+            1,
+        )
         cv2.imshow(WINDOW, composite)
 
         key = cv2.waitKey(30) & 0xFF

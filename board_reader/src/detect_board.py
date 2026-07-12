@@ -4,7 +4,6 @@ import sys
 
 import cv2
 import numpy as np
-
 from hsv_config import load_params, load_range
 
 # Defaults match hsv_tuner.py's seed values; overridden by a tuned preset

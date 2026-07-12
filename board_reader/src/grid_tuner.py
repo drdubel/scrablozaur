@@ -50,16 +50,9 @@ from collections import namedtuple
 
 import cv2
 import numpy as np
-
-from detect_board import find_board_quad, warp_board
 from detect_board import signal_handler  # noqa: F401  (registers SIGINT handler on import)
-from grid_reader import (
-    PARAM_DEFAULTS,
-    binarize_tiles,
-    find_grid_quad,
-    orient_to_bottom,
-    warp_to_grid,
-)
+from detect_board import find_board_quad, warp_board
+from grid_reader import PARAM_DEFAULTS, binarize_tiles, find_grid_quad, orient_to_bottom, warp_to_grid
 from hsv_config import load_params, save_params
 
 WINDOW = "Grid Tuner (white mask | oriented+grid | binarized)"
@@ -276,8 +269,15 @@ def main():
             f"{'SAVED' if paths[idx] in recordings else 'not saved'}"
         )
         cv2.putText(composite, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        cv2.putText(composite, _selection_status(slider_refs[selected_idx]), (10, 55),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1)
+        cv2.putText(
+            composite,
+            _selection_status(slider_refs[selected_idx]),
+            (10, 55),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 0),
+            1,
+        )
         cv2.imshow(WINDOW, composite)
 
         key = cv2.waitKey(30) & 0xFF
