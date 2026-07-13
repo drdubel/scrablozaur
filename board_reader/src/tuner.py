@@ -33,7 +33,7 @@ point, pick which stage to tune with a subcommand.
         now, [/] select slider, 0 reset selected, r reset all, q/Esc
         quit (combine + validate + save).
 
-    python src/tuner.py red_rectangle [pattern]
+    python src/tuner.py red_rectangle [-d em] [pattern]
         Tune red_rectangle_mask()/find_red_rectangle()'s params (the
         orientation marker on the board) via cv_utils.run_tuner()'s
         generic live-preview harness -- opens one tuner window per
@@ -44,7 +44,7 @@ point, pick which stage to tune with a subcommand.
         Keys: w save now, [/] select slider, 0 reset selected, r reset
         all, q/Esc quit (moves to the next image, if any).
 
-    python src/tuner.py tile_detector [pattern]
+    python src/tuner.py tile_detector [-d em] [pattern]
         Tune tile_detector.detect_tiles()'s params (per-class colour
         z-score, tile-colour-model seeding, accept/reject distance & z
         bounds, glyph floors) via cv_utils.run_tuner()'s generic
@@ -57,6 +57,11 @@ point, pick which stage to tune with a subcommand.
 
         Keys: w save now, [/] select slider, 0 reset selected, r reset
         all, q/Esc quit (moves to the next image, if any).
+
+    All three subcommands accept -d/--difficulty (any combination of 'e'
+    easy, 'm' medium, 'h' hard, default 'e') to match against test/in's
+    imgN_<difficulty>.jpg suffix, or an explicit glob `pattern` positional
+    that overrides it.
 
 Run with plain `python`, not `ipython` -- ipython swallows leading dashes
 as its own flags; use `ipython src/tuner.py -- board -d h` if you want
@@ -88,8 +93,9 @@ from detect_board import (
     order_corners,
     warp_board,
 )
+from grid_detector import detect_grid
 from hsv_config import load_params, load_range, save_params, save_range
-from read_board import draw_tile_overlay, extract_cells
+from read_board import draw_tile_overlay, extract_cells, find_parallax_shift
 from rotate_board import RED_RECT_DEFAULTS, SPECS, find_red_rectangle, red_rectangle_mask, rotate_board
 from tile_detector import PARAM_DEFAULTS as TILE_PARAM_DEFAULTS
 from tile_detector import detect_tiles
@@ -137,6 +143,27 @@ PARAM_SPECS = [
 # (wide) image content, which incidentally keeps every trackbar label
 # above it fully visible without needing a manual minimum window size.
 PANEL_HEIGHT = 520
+
+
+def _resolve_paths(args):
+    """`args.pattern`, if given, overrides `args.difficulty` outright;
+    otherwise every imgN_<c>.jpg for each difficulty letter in
+    args.difficulty, de-duplicated and sorted -- shared by all three
+    subcommands so -d/--difficulty behaves identically everywhere."""
+    if args.pattern:
+        paths = sorted(glob.glob(args.pattern))
+    else:
+        seen = set()
+        paths = []
+        for c in args.difficulty:
+            for path in sorted(glob.glob(f"test/in/img*_{c}.jpg")):
+                if path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+    if not paths:
+        print(f"No images matched (pattern={args.pattern!r}, difficulty={args.difficulty!r})")
+        sys.exit(1)
+    return paths
 
 
 def _nothing(_):
@@ -255,19 +282,7 @@ def _compose(mask, detected, warped):
 
 
 def tune_board(args):
-    if args.pattern:
-        paths = sorted(glob.glob(args.pattern))
-    else:
-        seen = set()
-        paths = []
-        for c in args.difficulty:
-            for path in sorted(glob.glob(f"test/in/img*_{c}.jpg")):
-                if path not in seen:
-                    seen.add(path)
-                    paths.append(path)
-    if not paths:
-        print(f"No images matched (pattern={args.pattern!r}, difficulty={args.difficulty!r})")
-        sys.exit(1)
+    paths = _resolve_paths(args)
 
     seed_lower, seed_upper = load_range("board_teal", TEAL_LOWER_DEFAULT, TEAL_UPPER_DEFAULT)
     seed_params = load_params("board_params", PARAM_DEFAULTS)
@@ -424,10 +439,7 @@ def tune_board(args):
 
 
 def tune_red_rectangle(args):
-    paths = sorted(glob.glob(args.pattern))
-    if not paths:
-        print(f"No images matched (pattern={args.pattern!r})")
-        sys.exit(1)
+    paths = _resolve_paths(args)
     print(paths)
 
     for path in paths:
@@ -461,6 +473,7 @@ TILE_SPECS = [
     ),
     ParamSpec("seed_glyph_high", "seed glyph hi x100", 100, 100, "glyph bar for a confident pass-2 tile-colour seed"),
     ParamSpec("seed_glyph_low", "seed glyph lo x100", 100, 100, "relaxed glyph bar when too few confident seeds exist"),
+    ParamSpec("seed_glyph_fallback", "seed glyph fb x100", 100, 100, "glyph-only bar when colour can't seed the model at all"),
     ParamSpec("seed_max", "seed max", 20, 1, "max candidates used to build the photo's tile-colour model"),
     ParamSpec("seed_min", "seed min", 10, 1, "below this many seeds, fall back to the ivory prior"),
     ParamSpec("same_tile_dist", "same-tile d x10", 50, 10, "distance-to-tile-colour accepted outright"),
@@ -477,10 +490,7 @@ TILE_SPECS = [
 
 
 def tune_tile_detector(args):
-    paths = sorted(glob.glob(args.pattern))
-    if not paths:
-        print(f"No images matched (pattern={args.pattern!r})")
-        sys.exit(1)
+    paths = _resolve_paths(args)
     print(paths)
 
     for path in paths:
@@ -491,11 +501,16 @@ def tune_tile_detector(args):
             continue
 
         rotated = rotate_board(warp_board(image, corners))
-        cells = extract_cells(rotated)
+        grid = detect_grid(rotated)
+        if grid is None:
+            print(f"No grid found in {path}")
+            continue
+        shift = find_parallax_shift(rotated, grid.mesh)
+        cells = extract_cells(rotated, grid.mesh, global_shift=shift)
 
         def render(params):
             verdicts = detect_tiles(cells, **params)
-            overlay = draw_tile_overlay(rotated, verdicts)
+            overlay = draw_tile_overlay(rotated, grid.mesh, verdicts)
             cv2.putText(
                 overlay,
                 f"{sum(v.is_tile for v in verdicts)} tiles",
@@ -516,20 +531,21 @@ def main():
     parser = argparse.ArgumentParser(description="Interactive tuners for board_reader's detection pipeline")
     sub = parser.add_subparsers(dest="target", required=True)
 
-    board_p = sub.add_parser("board", help="tune find_board_quad()'s teal range + Canny/quad params")
-    board_p.add_argument("pattern", nargs="?", default=None, help="glob pattern for images (overrides --difficulty)")
-    board_p.add_argument(
-        "-d",
-        "--difficulty",
-        default="e",
-        help="difficulty suffixes to include: any of 'e' (easy), 'm' (medium), 'h' (hard), e.g. -d emh (default: e)",
+    difficulty_help = (
+        "difficulty suffixes to include: any of 'e' (easy), 'm' (medium), 'h' (hard), e.g. -d emh (default: e)"
     )
 
+    board_p = sub.add_parser("board", help="tune find_board_quad()'s teal range + Canny/quad params")
+    board_p.add_argument("pattern", nargs="?", default=None, help="glob pattern for images (overrides --difficulty)")
+    board_p.add_argument("-d", "--difficulty", default="e", help=difficulty_help)
+
     rect_p = sub.add_parser("red_rectangle", help="tune red_rectangle_mask()/find_red_rectangle()'s params")
-    rect_p.add_argument("pattern", nargs="?", default="test/in/*_e.jpg", help="glob pattern for images")
+    rect_p.add_argument("pattern", nargs="?", default=None, help="glob pattern for images (overrides --difficulty)")
+    rect_p.add_argument("-d", "--difficulty", default="e", help=difficulty_help)
 
     tile_p = sub.add_parser("tile_detector", help="tune detect_tiles()'s params")
-    tile_p.add_argument("pattern", nargs="?", default="test/in/*_e.jpg", help="glob pattern for images")
+    tile_p.add_argument("pattern", nargs="?", default=None, help="glob pattern for images (overrides --difficulty)")
+    tile_p.add_argument("-d", "--difficulty", default="e", help=difficulty_help)
 
     args = parser.parse_args()
     if args.target == "board":

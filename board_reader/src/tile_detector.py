@@ -47,6 +47,7 @@ PARAM_DEFAULTS = {
     "color_z_threshold": 3.5,  # per-class robust z-score above which a cell is a colour outlier
     "seed_glyph_high": 0.45,  # glyph bar for a confident pass-2 tile-colour seed
     "seed_glyph_low": 0.30,  # relaxed glyph bar used when too few confident seeds exist
+    "seed_glyph_fallback": 0.55,  # glyph-only bar when colour alone can't seed the model at all (soft focus)
     "seed_max": 8,  # max candidates used to build the photo's tile-colour model
     "seed_min": 3,  # below this many seeds, fall back to the generic ivory prior
     "same_tile_dist": 0.9,  # distance-to-tile-colour accepted outright (own-class z need not agree)
@@ -82,7 +83,7 @@ def _center(img, frac=0.70):
     return img[mh : h - mh, mw : w - mw]
 
 
-def _glyph_score(patch_gray):
+def glyph_score(patch_gray):
     """Evidence that the square's centre contains a single letter-like blob.
 
     A real tile prints ONE dominant glyph (plus a small score digit); a
@@ -128,7 +129,7 @@ def _glyph_score(patch_gray):
     return float(min(1.0, best) * np.clip(dominance * 1.6, 0.15, 1.0))
 
 
-def _features_batch(cells):
+def features_batch(cells):
     """Per-square feature vectors: L, a, b medians, chroma, edge density.
 
     All centre crops are stacked into one tall image so colour conversion
@@ -164,12 +165,12 @@ def detect_tiles(cells, strict=False, **param_overrides):
     version, which does.
     """
     p = _params(param_overrides)
-    feats = _features_batch(cells)
+    feats = features_batch(cells)
     patches = np.stack([c.patch for c in cells])
     grays = cv2.cvtColor(patches.reshape(-1, patches.shape[2], 3), cv2.COLOR_BGR2GRAY).reshape(
         len(cells), patches.shape[1], patches.shape[2]
     )
-    glyphs = np.array([_glyph_score(g) for g in grays])
+    glyphs = np.array([glyph_score(g) for g in grays])
 
     color = feats[:, :4]  # L, a, b, chroma
     # The centre star counts as a double-word square; on its own it would
@@ -194,7 +195,18 @@ def detect_tiles(cells, strict=False, **param_overrides):
         # Washed-out photos flatten glyph contrast; relax the glyph bar (the
         # z requirement still keeps premium squares out).
         cand = np.where((z > p["color_z_threshold"]) & (glyphs > p["seed_glyph_low"]))[0]
-    cand = cand[np.argsort(-(np.minimum(z[cand], 8.0) * glyphs[cand]))]
+    if len(cand) < p["seed_min"]:
+        # A soft-focus or low-contrast photo can flatten colour differences
+        # enough that literally nothing clears the z bar even on a crowded
+        # board full of real tiles (a heavily-occupied premium class also
+        # inflates its own "empty" MAD, compounding this). Glyph shape
+        # survives blur far better than colour z-score does, so fall back to
+        # strong glyph evidence alone -- sorted by glyph score, since z is
+        # not trustworthy enough here to help rank candidates.
+        cand = np.where(glyphs > p["seed_glyph_fallback"])[0]
+        cand = cand[np.argsort(-glyphs[cand])]
+    else:
+        cand = cand[np.argsort(-(np.minimum(z[cand], 8.0) * glyphs[cand]))]
     seeds = cand[: int(p["seed_max"])]
     model_ok = len(seeds) >= p["seed_min"]
     if model_ok:
