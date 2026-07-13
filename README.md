@@ -250,7 +250,7 @@ The hand is treated as a **multiset**: `"aab"` allows `a` twice but `b` only onc
 1 pt  — A  E  I  N  O  R  S  W  Z
 2 pt  — C  D  K  L  M  P  T  Y
 3 pt  — B  G  H  J  Ł  U
-4 pt  — Ą  Ę  F  Ó  Ś  Ż
+5 pt  — Ą  Ę  F  Ó  Ś  Ż
 6 pt  — Ć
 7 pt  — Ń
 9 pt  — Ź
