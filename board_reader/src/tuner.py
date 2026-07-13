@@ -44,6 +44,20 @@ point, pick which stage to tune with a subcommand.
         Keys: w save now, [/] select slider, 0 reset selected, r reset
         all, q/Esc quit (moves to the next image, if any).
 
+    python src/tuner.py tile_detector [pattern]
+        Tune tile_detector.detect_tiles()'s params (per-class colour
+        z-score, tile-colour-model seeding, accept/reject distance & z
+        bounds, glyph floors) via cv_utils.run_tuner()'s generic
+        live-preview harness -- opens one tuner window per matched image,
+        in sequence. Each preview draws read_board.py's tile/empty overlay
+        (green = tile, red = empty) so a slider change's effect on the
+        whole board is visible at once, not just one cell. Sliders seed
+        from hsv_config.json's saved "tile_detector_params" preset if any
+        exists, otherwise tile_detector.py's PARAM_DEFAULTS.
+
+        Keys: w save now, [/] select slider, 0 reset selected, r reset
+        all, q/Esc quit (moves to the next image, if any).
+
 Run with plain `python`, not `ipython` -- ipython swallows leading dashes
 as its own flags; use `ipython src/tuner.py -- board -d h` if you want
 ipython specifically.
@@ -57,6 +71,7 @@ from collections import namedtuple
 import cv2
 import numpy as np
 from cv_utils import (  # noqa: F401  (signal_handler registers SIGINT handler on import)
+    ParamSpec,
     compose_panels,
     run_tuner,
     signal_handler,
@@ -74,7 +89,10 @@ from detect_board import (
     warp_board,
 )
 from hsv_config import load_params, load_range, save_params, save_range
-from rotate_board import RED_RECT_DEFAULTS, SPECS, find_red_rectangle, red_rectangle_mask
+from read_board import draw_tile_overlay, extract_cells
+from rotate_board import RED_RECT_DEFAULTS, SPECS, find_red_rectangle, red_rectangle_mask, rotate_board
+from tile_detector import PARAM_DEFAULTS as TILE_PARAM_DEFAULTS
+from tile_detector import detect_tiles
 
 # ---------------------------------------------------------------------------
 # "board" subcommand -- find_board_quad()'s teal range + Canny/quad params.
@@ -431,6 +449,69 @@ def tune_red_rectangle(args):
         run_tuner(SPECS, render, RED_RECT_DEFAULTS, window="Red Rectangle Tuner", config_name="red_rectangle_params")
 
 
+# ---------------------------------------------------------------------------
+# "tile_detector" subcommand -- detect_tiles()'s params (per-class colour
+# z-score, tile-colour-model seeding, accept/reject bounds, glyph floors).
+# Same shape as tune_red_rectangle(): small enough to lean on
+# cv_utils.run_tuner()'s generic live-preview harness.
+
+TILE_SPECS = [
+    ParamSpec(
+        "color_z_threshold", "color z x10", 100, 10, "per-class robust z-score above which a cell is a colour outlier"
+    ),
+    ParamSpec("seed_glyph_high", "seed glyph hi x100", 100, 100, "glyph bar for a confident pass-2 tile-colour seed"),
+    ParamSpec("seed_glyph_low", "seed glyph lo x100", 100, 100, "relaxed glyph bar when too few confident seeds exist"),
+    ParamSpec("seed_max", "seed max", 20, 1, "max candidates used to build the photo's tile-colour model"),
+    ParamSpec("seed_min", "seed min", 10, 1, "below this many seeds, fall back to the ivory prior"),
+    ParamSpec("same_tile_dist", "same-tile d x10", 50, 10, "distance-to-tile-colour accepted outright"),
+    ParamSpec("d_accept", "d accept x10", 80, 10, "permissive distance-accept bound"),
+    ParamSpec("z_accept", "z accept x10", 80, 10, "permissive class-z accept bound"),
+    ParamSpec("d_accept_strict", "d accept strict x10", 80, 10, "strict distance-accept bound"),
+    ParamSpec("z_accept_strict", "z accept strict x10", 80, 10, "strict class-z accept bound"),
+    ParamSpec("definitely_empty_d", "empty d x10", 100, 10, "distance above which a cell is confidently empty"),
+    ParamSpec("definitely_empty_z", "empty z x10", 50, 10, "z below which a cell is confidently empty"),
+    ParamSpec("ambiguous_glyph_min", "ambig glyph x100", 100, 100, "glyph bar arbitrating the ambiguous band"),
+    ParamSpec("strict_glyph_min", "strict glyph x100", 100, 100, "strict-mode glyph floor"),
+    ParamSpec("permissive_glyph_min", "permissive glyph x100", 100, 100, "glyph floor for the d/z-accept branch (glare guard)"),
+]
+
+
+def tune_tile_detector(args):
+    paths = sorted(glob.glob(args.pattern))
+    if not paths:
+        print(f"No images matched (pattern={args.pattern!r})")
+        sys.exit(1)
+    print(paths)
+
+    for path in paths:
+        image = cv2.imread(path)
+        corners = find_board_quad(image)
+        if corners is None:
+            print(f"No board found in {path}")
+            continue
+
+        rotated = rotate_board(warp_board(image, corners))
+        cells = extract_cells(rotated)
+
+        def render(params):
+            verdicts = detect_tiles(cells, **params)
+            overlay = draw_tile_overlay(rotated, verdicts)
+            cv2.putText(
+                overlay,
+                f"{sum(v.is_tile for v in verdicts)} tiles",
+                (10, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.2,
+                (0, 255, 255),
+                3,
+            )
+            return overlay
+
+        run_tuner(
+            TILE_SPECS, render, TILE_PARAM_DEFAULTS, window="Tile Detector Tuner", config_name="tile_detector_params"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Interactive tuners for board_reader's detection pipeline")
     sub = parser.add_subparsers(dest="target", required=True)
@@ -447,11 +528,16 @@ def main():
     rect_p = sub.add_parser("red_rectangle", help="tune red_rectangle_mask()/find_red_rectangle()'s params")
     rect_p.add_argument("pattern", nargs="?", default="test/in/*_e.jpg", help="glob pattern for images")
 
+    tile_p = sub.add_parser("tile_detector", help="tune detect_tiles()'s params")
+    tile_p.add_argument("pattern", nargs="?", default="test/in/*_e.jpg", help="glob pattern for images")
+
     args = parser.parse_args()
     if args.target == "board":
         tune_board(args)
-    else:
+    elif args.target == "red_rectangle":
         tune_red_rectangle(args)
+    else:
+        tune_tile_detector(args)
 
 
 if __name__ == "__main__":
