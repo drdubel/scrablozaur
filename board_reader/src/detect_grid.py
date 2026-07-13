@@ -1,17 +1,35 @@
 import glob
 
 import cv2
+import numpy as np
 from cv_utils import ParamSpec, run_tuner
 from detect_board import find_board_quad, warp_board
 from hsv_config import load_params
 
 SPECS = [
-    ParamSpec("hue_low", "hue low", 179, 1, "lower red hue band (wraps at 180)"),
-    ParamSpec("sat_min", "sat min", 255, 1, "minimum saturation to count as red"),
-    ParamSpec("val_min", "val min", 255, 1, "minimum value/brightness to count as red"),
+    ParamSpec(
+        "percentile", "percentile", 100, 1, "keep the reddest N% of pixels (relative to this image, not a fixed cutoff)"
+    ),
+    ParamSpec(
+        "redness_min",
+        "min redness",
+        255,
+        1,
+        "absolute floor so a board with no red rectangle doesn't false-positive on noise",
+    ),
+    ParamSpec(
+        "close_size",
+        "close size",
+        41,
+        1,
+        "morphological closing kernel size -- bridges glare holes/notches in the mask",
+    ),
 ]
 
-RED_RECT_DEFAULTS = {"hue_low": 10, "sat_min": 100, "val_min": 100}
+RED_RECT_DEFAULTS = {"percentile": 95, "redness_min": 10, "close_size": 21}
+
+MIN_ASPECT_RATIO = 4  # the physical marker is a long strip, never square -- rejects blobby false positives
+MIN_AREA = 10000
 
 
 def _params(overrides=None):
@@ -25,39 +43,96 @@ def _params(overrides=None):
 
 
 def red_rectangle_mask(board, **param_overrides):
-    """Return a mask of the red rectangle in the board, if any."""
-    p = _params(param_overrides)
-    hsv = cv2.cvtColor(board, cv2.COLOR_BGR2HSV)
-    lower_red1 = (0, p["sat_min"], p["val_min"])
-    upper_red1 = (p["hue_low"], 255, 255)
-    lower_red2 = (160, p["sat_min"], p["val_min"])
-    upper_red2 = (180, 255, 255)
+    """Return a mask of the red rectangle in the board, if any.
 
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    return cv2.bitwise_or(mask1, mask2)
+    Ranks pixels by how much red dominates over green/blue and keeps the
+    reddest N% of *this* image, rather than testing each pixel against a
+    fixed HSV cutoff. A glare-blown patch on the rectangle rarely regains
+    an absolute "red" saturation/value, but it's still redder than
+    anything on the green background, so the percentile threshold still
+    catches it. Morphological closing then bridges whatever hole/notch
+    the glare leaves in the mask before contour extraction.
+    """
+    p = _params(param_overrides)
+    b, g, r = cv2.split(board.astype(np.int16))
+    redness = np.clip(r - np.maximum(g, b), 0, 255).astype(np.uint8)
+
+    threshold = max(p["redness_min"], np.percentile(redness, p["percentile"]))
+    mask = np.where(redness >= threshold, 255, 0).astype(np.uint8)
+
+    close_size = int(p["close_size"]) | 1  # kernel size must be odd
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size))
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
 
 def find_red_rectangle(board, **param_overrides):
-    """Find the largest red rectangle in the board and return its corners."""
+    """Find the largest red rectangle in the board and return its corners.
+
+    The marker is a long strip (>= MIN_ASPECT_RATIO:1), never square, so
+    candidates are checked largest-area-first and skipped if they're not
+    elongated enough -- this rejects blobby false positives (e.g. a patch
+    of wood-grain glare) that pass the color mask but aren't shaped like
+    the marker, even when they'd otherwise win on area alone.
+    """
     mask = red_rectangle_mask(board, **param_overrides)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    if not contours:
-        return None
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        if len(approx) != 4:
+            continue
 
-    largest_contour = max(contours, key=cv2.contourArea)
-    epsilon = 0.02 * cv2.arcLength(largest_contour, True)
-    approx = cv2.approxPolyDP(largest_contour, epsilon, True)
+        _, (w, h), _ = cv2.minAreaRect(contour)
+        if min(w, h) == 0:
+            continue
 
-    if len(approx) == 4:
-        return approx.reshape(4, 2)
+        if cv2.contourArea(approx) < MIN_AREA:  # ignore tiny contours
+            continue
+
+        if max(w, h) / min(w, h) >= MIN_ASPECT_RATIO:
+            return approx.reshape(4, 2)
 
     return None
 
 
+def get_board_orientation(board):
+    """Determine the orientation of the board (0, 90, 180, or 270 degrees) based on the red rectangle's position. Returns None if no rectangle is found."""
+    corners = find_red_rectangle(board)
+    if corners is None:
+        return None
+
+    # Calculate the center of the red rectangle
+    center = np.mean(corners, axis=0)
+
+    # Determine the orientation based on the position of the center
+    height, width, _ = board.shape
+    if center[0] < width / 4:
+        return 90  # Left side
+    elif center[0] > width * 3 / 4:
+        return 270  # Right side
+    elif center[1] < height / 4:
+        return 180  # Top side
+    else:
+        return 0  # Bottom side
+
+
 def rotate_board(board):
-    return board  # TODO: implement rotation detection
+    """Rotate the board to ensure the red rectangle is in the top-left corner."""
+    orientation = get_board_orientation(board)
+    if orientation is None:
+        print("No red rectangle found; cannot determine orientation.")
+        return board  # Return the original board if no rectangle is found
+
+    # Rotate the board based on the determined orientation
+    if orientation == 0:
+        return board  # No rotation needed
+    elif orientation == 90:
+        return cv2.rotate(board, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif orientation == 180:
+        return cv2.rotate(board, cv2.ROTATE_180)
+    elif orientation == 270:
+        return cv2.rotate(board, cv2.ROTATE_90_CLOCKWISE)
 
 
 def detect_grid(path):
@@ -72,11 +147,13 @@ def detect_grid(path):
     board = warp_board(image, corners)
 
     def render(params):
+        preview = board.copy()
         corners = find_red_rectangle(board, **params)
         if corners is not None:
-            cv2.polylines(board, [corners], True, (255, 255, 0), 5)
+            cv2.polylines(preview, [corners], True, (0, 255, 0), 5)
+        preview = rotate_board(preview)
 
-        return [board, red_rectangle_mask(board, **params)]
+        return [preview, red_rectangle_mask(board, **params)]
 
     run_tuner(SPECS, render, RED_RECT_DEFAULTS, window="Red Rectangle Tuner", config_name="red_rectangle_params")
     return board
