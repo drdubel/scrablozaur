@@ -26,10 +26,11 @@ SPECS = [
     ),
 ]
 
-RED_RECT_DEFAULTS = {"percentile": 95, "redness_min": 10, "close_size": 21}
+RED_RECT_DEFAULTS = {"percentile": 95, "redness_min": 5, "close_size": 30}
 
 MIN_ASPECT_RATIO = 4  # the physical marker is a long strip, never square -- rejects blobby false positives
 MIN_AREA = 10000
+MIN_FILL_RATIO = 0.7  # contour area vs. its minAreaRect box -- rejects non-rectangular blobs
 
 
 def _params(overrides=None):
@@ -68,30 +69,36 @@ def red_rectangle_mask(board, **param_overrides):
 def find_red_rectangle(board, **param_overrides):
     """Find the largest red rectangle in the board and return its corners.
 
-    The marker is a long strip (>= MIN_ASPECT_RATIO:1), never square, so
-    candidates are checked largest-area-first and skipped if they're not
-    elongated enough -- this rejects blobby false positives (e.g. a patch
-    of wood-grain glare) that pass the color mask but aren't shaped like
-    the marker, even when they'd otherwise win on area alone.
+    The marker's corners are visibly rounded, not sharp 90-degree corners,
+    so approxPolyDP rarely collapses its contour to exactly 4 points (a
+    rounded corner gets approximated as several short segments instead of
+    one vertex). minAreaRect doesn't care about corner sharpness -- it
+    fits the smallest enclosing rotated rectangle around the contour
+    either way -- so that's used for the corners directly, and shape is
+    validated via aspect ratio plus how much of that box the contour
+    actually fills (rejects e.g. an L-shaped or diamond blob that happens
+    to share the right bounding-box aspect ratio).
     """
     mask = red_rectangle_mask(board, **param_overrides)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for contour in sorted(contours, key=cv2.contourArea, reverse=True):
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        if len(approx) != 4:
+        area = cv2.contourArea(contour)
+        if area < MIN_AREA:
             continue
 
-        _, (w, h), _ = cv2.minAreaRect(contour)
+        rect = cv2.minAreaRect(contour)
+        w, h = rect[1]
         if min(w, h) == 0:
             continue
 
-        if cv2.contourArea(approx) < MIN_AREA:  # ignore tiny contours
+        if max(w, h) / min(w, h) < MIN_ASPECT_RATIO:
             continue
 
-        if max(w, h) / min(w, h) >= MIN_ASPECT_RATIO:
-            return approx.reshape(4, 2)
+        if area / (w * h) < MIN_FILL_RATIO:
+            continue
+
+        return cv2.boxPoints(rect).astype(np.int32)
 
     return None
 
