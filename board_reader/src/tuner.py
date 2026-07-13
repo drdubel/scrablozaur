@@ -1,50 +1,52 @@
-"""Interactive HSV color-range tuner for finding the board's outer quad in
-a raw photo (detect_board.py's find_board_quad()/warp_board()).
+"""Interactive tuners for board_reader's detection pipeline -- one entry
+point, pick which stage to tune with a subcommand.
 
-Everything lives in one window: all sliders (teal H/S/V range, then every
-other board-detection knob -- dark-bezel thresholds, dilation/close/open
-kernel sizes, Canny blur/thresholds, quad-validity thresholds) stack at the
-top, and three live previews sit side by side below them -- the colour/
-Canny mask, the original image with the detected outline drawn on it, and
-the warped board. Sliders are seeded from hsv_config.json's saved presets
-if any exist, otherwise from detect_board.py's hardcoded defaults.
+    python src/tuner.py board [-d em] [pattern]
+        Tune find_board_quad()'s teal HSV range and every other
+        board-detection knob (dark-bezel thresholds, dilation/close/open
+        kernel sizes, Canny blur/thresholds, quad-validity thresholds).
+        All sliders stack at the top of one window; three live previews
+        (colour/Canny mask, detected outline, warped board) sit below.
+        Sliders seed from hsv_config.json's saved presets if any exist,
+        otherwise from detect_board.py's hardcoded defaults.
 
-Press 's' to record the current teal range as this image's working value,
-repeat across images with 'n'/'p', then 'q'/Esc to combine everything
-recorded (component-wise min of the lower bounds, max of the upper bounds)
-and re-validate the result against every recorded image. The combined teal
-range plus whatever the other sliders currently show -- or, if nothing was
-recorded, just the current teal sliders -- gets written to hsv_config.json
-('w' saves that at any time), which detect_board.py's functions read
-automatically, so no copy-pasting numbers by hand. 'r' resets every slider
-back to its seed.
+        Press 's' to record the current teal range as this image's
+        working value, repeat across images with 'n'/'p', then 'q'/Esc
+        to combine everything recorded (component-wise min of the lower
+        bounds, max of the upper bounds) and re-validate the result
+        against every recorded image. The combined teal range plus
+        whatever the other sliders currently show -- or, if nothing was
+        recorded, just the current teal sliders -- gets written to
+        hsv_config.json ('w' saves that at any time).
 
-Every mask/detection step here calls detect_board.py's actual functions
-(board_color_mask, canny_edge_mask, find_quad_candidates) at the same
-DETECT_MAX_SIDE scale detect_board.py itself searches at, instead of a
-simplified re-implementation -- otherwise a range that looks perfect here
-can still perform worse once it's actually used by detect_board(). The
-colour-mask stage is tried first and, if it finds nothing, the Canny
-fallback is tried too, exactly like find_board_quad().
+        Every mask/detection step calls detect_board.py's actual
+        functions (board_color_mask, canny_edge_mask,
+        find_quad_candidates) at the same DETECT_MAX_SIDE scale
+        detect_board.py itself searches at, instead of a simplified
+        re-implementation -- otherwise a range that looks perfect here
+        can still perform worse once it's actually used by
+        detect_board(). The colour-mask stage is tried first and, if it
+        finds nothing, the Canny fallback is tried too, exactly like
+        find_board_quad().
 
-Usage (run from board_reader/, same convention as detect_board.py):
-    python src/hsv_tuner.py                    # difficulty "e" (easy) only
-    python src/hsv_tuner.py -d em               # easy + medium
-    python src/hsv_tuner.py -d emh              # easy + medium + hard
-    python src/hsv_tuner.py "some/glob/*.jpg"   # explicit pattern, overrides -d
+        Keys: n/p next/previous image, s record working range, w save
+        now, [/] select slider, 0 reset selected, r reset all, q/Esc
+        quit (combine + validate + save).
 
-    (run with plain `python`, not `ipython` -- ipython swallows leading
-    dashes as its own flags; use `ipython src/hsv_tuner.py -- -d h` if you
-    want ipython specifically)
+    python src/tuner.py red_rectangle [pattern]
+        Tune red_rectangle_mask()/find_red_rectangle()'s params (the
+        orientation marker on the board) via cv_utils.run_tuner()'s
+        generic live-preview harness -- opens one tuner window per
+        matched image, in sequence. Sliders seed from hsv_config.json's
+        saved "red_rectangle_params" preset if any exists, otherwise
+        rotate_board.py's RED_RECT_DEFAULTS.
 
-Keys:
-    n / p    next / previous image (keeps current slider positions)
-    s        record current teal range as this image's working value
-    w        save current sliders (teal range + parameters) right now
-    [ / ]    select the previous / next individual slider
-    0        reset only the selected slider back to its seed
-    r        reset every slider back to its seed (saved config or defaults)
-    q / Esc  quit; compute + validate + save the combined range if any were recorded
+        Keys: w save now, [/] select slider, 0 reset selected, r reset
+        all, q/Esc quit (moves to the next image, if any).
+
+Run with plain `python`, not `ipython` -- ipython swallows leading dashes
+as its own flags; use `ipython src/tuner.py -- board -d h` if you want
+ipython specifically.
 """
 
 import argparse
@@ -54,7 +56,11 @@ from collections import namedtuple
 
 import cv2
 import numpy as np
-from cv_utils import compose_panels, signal_handler  # noqa: F401  (signal_handler registers SIGINT handler on import)
+from cv_utils import (  # noqa: F401  (signal_handler registers SIGINT handler on import)
+    compose_panels,
+    run_tuner,
+    signal_handler,
+)
 from detect_board import (
     DETECT_MAX_SIDE,
     PARAM_DEFAULTS,
@@ -62,11 +68,20 @@ from detect_board import (
     TEAL_UPPER_DEFAULT,
     board_color_mask,
     canny_edge_mask,
+    find_board_quad,
     find_quad_candidates,
     order_corners,
     warp_board,
 )
 from hsv_config import load_params, load_range, save_params, save_range
+from rotate_board import RED_RECT_DEFAULTS, SPECS, find_red_rectangle, red_rectangle_mask
+
+# ---------------------------------------------------------------------------
+# "board" subcommand -- find_board_quad()'s teal range + Canny/quad params.
+# Uses its own bespoke multi-image record/combine loop rather than
+# cv_utils.run_tuner(), since finding one HSV range that's robust across
+# many photos needs recording several images' working values and combining
+# them, not just live-previewing a single image.
 
 WINDOW = "HSV Tuner (mask | detection | warp)"
 
@@ -78,25 +93,25 @@ TEAL_TRACKBARS = ("H min", "H max", "S min", "S max", "V min", "V max")
 # position 50); `scale` divides the raw trackbar position back down to the
 # real value, or is 1 for plain integer parameters. Labels are kept short --
 # cv2 clips trackbar labels to the window width.
-ParamSpec = namedtuple("ParamSpec", "key label max_pos scale")
+BoardParamSpec = namedtuple("BoardParamSpec", "key label max_pos scale")
 # One entry per individually selectable/resettable slider, built once in
-# main() from that run's seed values.
-SliderRef = namedtuple("SliderRef", "label seed scale max_pos")
+# tune_board() from that run's seed values.
+BoardSliderRef = namedtuple("BoardSliderRef", "label seed scale max_pos")
 PARAM_SPECS = [
-    ParamSpec("dark_s_max", "dark S max", 255, 1),
-    ParamSpec("dark_v_max", "dark V max", 255, 1),
-    ParamSpec("near_teal_kernel", "bezel dilate k", 61, 1),
-    ParamSpec("close_kernel", "close kernel", 61, 1),
-    ParamSpec("close_iterations", "close iters", 5, 1),
-    ParamSpec("open_kernel", "open kernel", 31, 1),
-    ParamSpec("canny_blur_kernel", "canny blur k", 31, 1),
-    ParamSpec("canny_blur_sigma", "canny blur sig", 20, 1),
-    ParamSpec("canny_low", "canny low", 300, 1),
-    ParamSpec("canny_high", "canny high", 300, 1),
-    ParamSpec("canny_dilate_kernel", "canny dilate k", 31, 1),
-    ParamSpec("quad_side_ratio_max", "quad side x0.1", 100, 10),
-    ParamSpec("quad_angle_tolerance", "quad angle deg", 90, 1),
-    ParamSpec("quad_min_area_frac", "quad area x1e-3", 500, 1000),
+    BoardParamSpec("dark_s_max", "dark S max", 255, 1),
+    BoardParamSpec("dark_v_max", "dark V max", 255, 1),
+    BoardParamSpec("near_teal_kernel", "bezel dilate k", 61, 1),
+    BoardParamSpec("close_kernel", "close kernel", 61, 1),
+    BoardParamSpec("close_iterations", "close iters", 5, 1),
+    BoardParamSpec("open_kernel", "open kernel", 31, 1),
+    BoardParamSpec("canny_blur_kernel", "canny blur k", 31, 1),
+    BoardParamSpec("canny_blur_sigma", "canny blur sig", 20, 1),
+    BoardParamSpec("canny_low", "canny low", 300, 1),
+    BoardParamSpec("canny_high", "canny high", 300, 1),
+    BoardParamSpec("canny_dilate_kernel", "canny dilate k", 31, 1),
+    BoardParamSpec("quad_side_ratio_max", "quad side x0.1", 100, 10),
+    BoardParamSpec("quad_angle_tolerance", "quad angle deg", 90, 1),
+    BoardParamSpec("quad_min_area_frac", "quad area x1e-3", 500, 1000),
 ]
 
 # Each preview panel is resized to this height before being hstacked into
@@ -157,20 +172,20 @@ def _read_params():
 
 
 def _build_slider_refs(seed_lower, seed_upper, seed_params):
-    """One SliderRef per individual trackbar (teal channels + every
+    """One BoardSliderRef per individual trackbar (teal channels + every
     parameter), so any single one can be selected and reset on its own
     instead of only all-at-once via 'r'."""
     refs = [
-        SliderRef("H min", int(seed_lower[0]), 1, 179),
-        SliderRef("H max", int(seed_upper[0]), 1, 179),
-        SliderRef("S min", int(seed_lower[1]), 1, 255),
-        SliderRef("S max", int(seed_upper[1]), 1, 255),
-        SliderRef("V min", int(seed_lower[2]), 1, 255),
-        SliderRef("V max", int(seed_upper[2]), 1, 255),
+        BoardSliderRef("H min", int(seed_lower[0]), 1, 179),
+        BoardSliderRef("H max", int(seed_upper[0]), 1, 179),
+        BoardSliderRef("S min", int(seed_lower[1]), 1, 255),
+        BoardSliderRef("S max", int(seed_upper[1]), 1, 255),
+        BoardSliderRef("V min", int(seed_lower[2]), 1, 255),
+        BoardSliderRef("V max", int(seed_upper[2]), 1, 255),
     ]
     for spec in PARAM_SPECS:
         seed_val = seed_params.get(spec.key, PARAM_DEFAULTS[spec.key])
-        refs.append(SliderRef(spec.label, seed_val, spec.scale, spec.max_pos))
+        refs.append(BoardSliderRef(spec.label, seed_val, spec.scale, spec.max_pos))
     return refs
 
 
@@ -204,7 +219,7 @@ def _find_candidates(image, lower, upper, params):
 
 def _warp_to_board(image, corners):
     """detect_board.warp_board(), with a "no board found" placeholder when
-    there are no corners to warp onto. Not oriented yet -- grid_tuner.py's
+    there are no corners to warp onto. Not oriented yet -- rotate_board.py's
     job."""
     if corners is None:
         blank = np.zeros_like(image)
@@ -221,20 +236,7 @@ def _compose(mask, detected, warped):
     return compose_panels([mask, detected, warped], height=PANEL_HEIGHT)
 
 
-def _parse_args():
-    p = argparse.ArgumentParser(description="Interactive HSV color-range tuner")
-    p.add_argument("pattern", nargs="?", default=None, help="glob pattern for images (overrides --difficulty)")
-    p.add_argument(
-        "-d",
-        "--difficulty",
-        default="e",
-        help="difficulty suffixes to include: any of 'e' (easy), 'm' (medium), 'h' (hard), e.g. -d emh (default: e)",
-    )
-    return p.parse_args()
-
-
-def main():
-    args = _parse_args()
+def tune_board(args):
     if args.pattern:
         paths = sorted(glob.glob(args.pattern))
     else:
@@ -394,6 +396,62 @@ def main():
     save_range("board_teal", combined_lower, combined_upper)
     save_params("board_params", params)
     print("\nSaved to hsv_config.json -- detect_board.py's functions will use it automatically.")
+
+
+# ---------------------------------------------------------------------------
+# "red_rectangle" subcommand -- red_rectangle_mask()/find_red_rectangle()'s
+# params (the orientation marker on the board). Small enough to just lean
+# on cv_utils.run_tuner()'s generic live-preview harness instead of a
+# bespoke loop like tune_board() needs.
+
+
+def tune_red_rectangle(args):
+    paths = sorted(glob.glob(args.pattern))
+    if not paths:
+        print(f"No images matched (pattern={args.pattern!r})")
+        sys.exit(1)
+    print(paths)
+
+    for path in paths:
+        image = cv2.imread(path)
+        corners = find_board_quad(image)
+        if corners is None:
+            print(f"No board found in {path}")
+            continue
+
+        board = warp_board(image, corners)
+
+        def render(params):
+            preview = board.copy()
+            rect_corners = find_red_rectangle(board, **params)
+            if rect_corners is not None:
+                cv2.polylines(preview, [rect_corners], True, (0, 255, 0), 5)
+            return [preview, red_rectangle_mask(board, **params)]
+
+        run_tuner(SPECS, render, RED_RECT_DEFAULTS, window="Red Rectangle Tuner", config_name="red_rectangle_params")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Interactive tuners for board_reader's detection pipeline")
+    sub = parser.add_subparsers(dest="target", required=True)
+
+    board_p = sub.add_parser("board", help="tune find_board_quad()'s teal range + Canny/quad params")
+    board_p.add_argument("pattern", nargs="?", default=None, help="glob pattern for images (overrides --difficulty)")
+    board_p.add_argument(
+        "-d",
+        "--difficulty",
+        default="e",
+        help="difficulty suffixes to include: any of 'e' (easy), 'm' (medium), 'h' (hard), e.g. -d emh (default: e)",
+    )
+
+    rect_p = sub.add_parser("red_rectangle", help="tune red_rectangle_mask()/find_red_rectangle()'s params")
+    rect_p.add_argument("pattern", nargs="?", default="test/in/*_e.jpg", help="glob pattern for images")
+
+    args = parser.parse_args()
+    if args.target == "board":
+        tune_board(args)
+    else:
+        tune_red_rectangle(args)
 
 
 if __name__ == "__main__":

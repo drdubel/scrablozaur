@@ -1,5 +1,5 @@
 """Shared load/save for detection parameters tuned interactively with
-hsv_tuner.py.
+tuner.py.
 
 Values are stored by name in a small JSON file next to this module, so
 detect_board.py can pick up a tuned preset automatically instead of

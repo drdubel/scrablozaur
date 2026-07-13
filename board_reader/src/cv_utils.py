@@ -56,7 +56,7 @@ def resize_to_height(image, height):
 def compose_panels(images, labels=None, height=520):
     """Resize each of `images` to a common height and stack them side by
     side into one image -- the building block behind show_images(). Same
-    idea as hsv_tuner.py's own panel-composing (which predates this
+    idea as tuner.py's own panel-composing (which predates this
     shared version): several previews sharing one window/one set of
     trackbars beats juggling several separate cv2 windows.
 
@@ -89,7 +89,7 @@ def show_images(images, labels=None, title="Preview", height=520):
 
 
 # ---------------------------------------------------------------------------
-# Generic parameter-tuner window -- the trackbar/slider machinery hsv_tuner.py
+# Generic parameter-tuner window -- the trackbar/slider machinery tuner.py
 # and letter_tuner.py each built for themselves, factored out so a new tuner
 # is "describe the sliders + write a render function", not several hundred
 # lines of trackbar bookkeeping.
@@ -155,7 +155,7 @@ def selection_status(window, ref):
 
 
 def run_tuner(specs, render, defaults, *, window="Tuner", config_name=None, on_key=None, help_text=""):
-    """Run a generic interactive trackbar-tuner loop, modeled on hsv_tuner.py
+    """Run a generic interactive trackbar-tuner loop, modeled on tuner.py
     /letter_tuner.py's window (both now thin wrappers around this).
 
     specs: list of ParamSpec -- the sliders to show.

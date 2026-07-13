@@ -11,7 +11,7 @@ tiles) starts from this output.
 Detection works by masking the board's own colour (find_board_quad() ->
 board_color_mask()), falling back to a Canny edge search if the colour
 mask finds nothing usable. Both stages are tunable interactively via
-hsv_tuner.py, which saves its presets to hsv_config.json (see
+tuner.py, which saves its presets to hsv_config.json (see
 hsv_config.py) for these functions to pick up automatically.
 
 Run this file directly for a minimal demo (see detect_board()/main()
@@ -26,7 +26,7 @@ import numpy as np
 from cv_utils import get_grayscale, show_image, show_images  # noqa: F401  (signal handler registered on import; show_images re-exported for callers)
 from hsv_config import load_params, load_range
 
-# Defaults match hsv_tuner.py's seed values; overridden by a tuned preset
+# Defaults match tuner.py's seed values; overridden by a tuned preset
 # saved to hsv_config.json (name "board_teal"), if one exists.
 TEAL_LOWER_DEFAULT = (70, 35, 85)
 TEAL_UPPER_DEFAULT = (125, 255, 255)
@@ -34,7 +34,7 @@ TEAL_UPPER_DEFAULT = (125, 255, 255)
 # Every other board-detection knob (dilation/close/open kernels, Canny blur
 # and thresholds, quad-validity thresholds), overridden by a tuned preset
 # saved to hsv_config.json (name "board_params"), if one exists.
-# hsv_tuner.py exposes all of these as trackbars.
+# tuner.py exposes all of these as trackbars.
 PARAM_DEFAULTS = {
     "dark_s_max": 110,
     "dark_v_max": 90,
@@ -55,7 +55,7 @@ PARAM_DEFAULTS = {
 
 def _params(overrides=None):
     """Merge hsv_config.json's saved "board_params" preset with any
-    explicit overrides -- used by hsv_tuner.py to preview live, not-yet-
+    explicit overrides -- used by tuner.py to preview live, not-yet-
     saved slider values without every function needing its own long
     parameter list."""
     merged = load_params("board_params", PARAM_DEFAULTS)
@@ -146,7 +146,7 @@ def board_color_mask(bgr, teal_lower=None, teal_upper=None, **param_overrides):
     instead of being taken globally across the whole photo.
 
     `teal_lower`/`teal_upper` and any of PARAM_DEFAULTS' keys override the
-    saved/default values when given -- used by hsv_tuner.py to preview this
+    saved/default values when given -- used by tuner.py to preview this
     exact function against live, not-yet-saved slider values instead of
     duplicating its logic.
     """
@@ -225,7 +225,7 @@ def warp_board(image, corners):
     producing the "Warped Board": the warp itself targets a canvas shaped
     like the source image (the board's true corners don't generally span a
     square region of the photo), so a following resize is what actually
-    squares it off. Shared by detect_board() and hsv_tuner.py so this
+    squares it off. Shared by detect_board() and tuner.py so this
     exact warp geometry only lives in one place.
     """
     w, h = image.shape[1], image.shape[0]
@@ -238,7 +238,7 @@ def warp_board(image, corners):
 def detect_board(image_path):
     """Find + warp the board's outer quad, showing each step in its own
     window. A minimal CLI demo of find_board_quad()/warp_board(); see
-    hsv_tuner.py for interactive tuning."""
+    tuner.py for interactive tuning."""
     image = cv2.imread(image_path)
     corners = find_board_quad(image)
 
