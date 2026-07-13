@@ -20,11 +20,10 @@ result for every test/in/*_e.jpg image, one photo at a time.
 """
 
 import glob
-import signal
-import sys
 
 import cv2
 import numpy as np
+from cv_utils import get_grayscale, show_image, show_images  # noqa: F401  (signal handler registered on import; show_images re-exported for callers)
 from hsv_config import load_params, load_range
 
 # Defaults match hsv_tuner.py's seed values; overridden by a tuned preset
@@ -63,33 +62,6 @@ def _params(overrides=None):
     if overrides:
         merged.update({k: v for k, v in overrides.items() if v is not None})
     return merged
-
-
-def get_grayscale(image):
-    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-
-def signal_handler(sig, frame):
-    """Handle Ctrl+C interruption gracefully"""
-    print("\nClosing...")
-    cv2.destroyAllWindows()
-    sys.exit(0)
-
-
-def show_image(title, image):
-    """Display an image in a resizable window."""
-    cv2.namedWindow(title, cv2.WINDOW_NORMAL)
-    cv2.imshow(title, image)
-    # Use shorter wait time to be responsive to Ctrl+C
-    while True:
-        key = cv2.waitKey(100)  # Wait 100ms
-        if key != -1:  # If a key was pressed
-            break
-    cv2.destroyAllWindows()
-
-
-# Register signal handler for SIGINT (Ctrl+C)
-signal.signal(signal.SIGINT, signal_handler)
 
 
 # Detection runs on a copy downscaled so its longer side is this many pixels;

@@ -54,7 +54,7 @@ from collections import namedtuple
 
 import cv2
 import numpy as np
-from detect_board import signal_handler  # noqa: F401  (registers SIGINT handler on import)
+from cv_utils import compose_panels, signal_handler  # noqa: F401  (signal_handler registers SIGINT handler on import)
 from detect_board import (
     DETECT_MAX_SIDE,
     PARAM_DEFAULTS,
@@ -204,7 +204,8 @@ def _find_candidates(image, lower, upper, params):
 
 def _warp_to_board(image, corners):
     """detect_board.warp_board(), with a "no board found" placeholder when
-    there are no corners to warp onto."""
+    there are no corners to warp onto. Not oriented yet -- grid_tuner.py's
+    job."""
     if corners is None:
         blank = np.zeros_like(image)
         cv2.putText(blank, "No board found", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
@@ -212,17 +213,12 @@ def _warp_to_board(image, corners):
     return warp_board(image, corners)
 
 
-def _panel(img, height=PANEL_HEIGHT):
-    h, w = img.shape[:2]
-    scale = height / h
-    return cv2.resize(img, (max(1, int(w * scale)), height))
-
-
 def _compose(mask, detected, warped):
-    """Resize every preview to a common height and hstack them into one
-    composite image, so all three previews and every trackbar live in a
-    single window instead of several separate cv2 windows."""
-    return np.hstack([_panel(cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)), _panel(detected), _panel(warped)])
+    """Resize every preview to a common height and stack them into one
+    composite image (cv_utils.compose_panels()), so all three previews and
+    every trackbar live in a single window instead of several separate
+    cv2 windows."""
+    return compose_panels([mask, detected, warped], height=PANEL_HEIGHT)
 
 
 def _parse_args():
