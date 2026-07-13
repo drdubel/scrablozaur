@@ -1,5 +1,3 @@
-import glob
-
 import cv2
 import numpy as np
 from cv_utils import ParamSpec

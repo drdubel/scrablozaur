@@ -23,7 +23,11 @@ import glob
 
 import cv2
 import numpy as np
-from cv_utils import get_grayscale, show_image, show_images  # noqa: F401  (signal handler registered on import; show_images re-exported for callers)
+from cv_utils import (  # noqa: F401  (signal handler registered on import; show_images re-exported for callers)
+    get_grayscale,
+    show_image,
+    show_images,
+)
 from hsv_config import load_params, load_range
 
 # Defaults match tuner.py's seed values; overridden by a tuned preset
