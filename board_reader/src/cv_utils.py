@@ -201,11 +201,21 @@ def run_tuner(specs, render, defaults, *, window="Tuner", config_name=None, on_k
     print("w: save, [/]: select slider, 0: reset selected, r: reset all, q/Esc: quit." + (f" {help_text}" if help_text else ""))
 
     params = seed_params
+    last_params = None
+    base_composite = None
     while True:
         params = read_params(window, specs)
-        result = render(params)
-        images = result if isinstance(result, list) else [result]
-        composite = compose_panels(images) if len(images) > 1 else images[0]
+        if base_composite is None or params != last_params:
+            # Only re-run render() -- the actual image processing -- when a
+            # slider moved (or on the first frame). Without this, the loop
+            # below redoes the full detection pipeline on every waitKey()
+            # tick (~33x/second) even while the tuner just sits idle.
+            result = render(params)
+            images = result if isinstance(result, list) else [result]
+            base_composite = compose_panels(images) if len(images) > 1 else images[0]
+            last_params = dict(params)
+
+        composite = base_composite.copy()
         cv2.putText(composite, selection_status(window, slider_refs[selected_idx]), (10, composite.shape[0] - 15),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1)
         cv2.imshow(window, composite)
@@ -232,6 +242,7 @@ def run_tuner(specs, render, defaults, *, window="Tuner", config_name=None, on_k
             print(f"  reset {ref.label} to seed {ref.seed:g}")
         elif on_key and key in on_key:
             on_key[key](params)
+            base_composite = None  # callback may have changed state outside params -- force a redraw
 
     cv2.destroyAllWindows()
     return params
