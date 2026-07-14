@@ -10,6 +10,7 @@ from rotate_board import rotate_board
 from tile_detector import Cell, detect_tiles, features_batch, glyph_score
 
 CELL_SIZE = 96  # resolution of the sampled per-cell patch fed to tile_detector
+TILE_SIZE = 160  # resolution of the higher-res patch fed to read_letters.py's recognition stage
 # Cells are sampled with this expansion so tiles that sit slightly off
 # centre / overhang the printed square are fully captured.
 EXPAND_FRACTION = 0.12
@@ -39,7 +40,9 @@ EXPAND_FRACTION = 0.12
 # grid-line noise).
 SHIFT_SEARCH_FRACS = (-0.4, -0.2, 0.0, 0.2, 0.4)  # candidate shift, as a fraction of the cell pitch, per axis
 SHIFT_SCORE_SIZE = 48  # cheap low-res patch size used only to rank candidate shifts
-SHIFT_NO_SHIFT_BONUS = 1.15  # mild preference for zero shift on a near-tie, so well-behaved photos aren't nudged by noise
+SHIFT_NO_SHIFT_BONUS = (
+    1.15  # mild preference for zero shift on a near-tie, so well-behaved photos aren't nudged by noise
+)
 SHIFT_Z_FLOOR = 2.0  # per-cell z-scores below this contribute nothing to a candidate shift's score
 # Measured on the test set: a broken (0, 0) alignment (no real tiles found) scores under 1;
 # a working one scores in the tens, even on a photo too soft-focus to seed its own tile-colour
@@ -82,6 +85,44 @@ def extract_cells(rotated, mesh, global_shift=None):
     must exist before detection runs."""
     shift = np.zeros(2, dtype=np.float32) if global_shift is None else global_shift
     return _cells_at(rotated, mesh, shift, CELL_SIZE)
+
+
+TILE_EXPAND_FRACTION = 0.18  # margin for extract_tile_patches()'s recognition samples -- see its docstring
+
+
+def extract_tile_patches(rotated, mesh, verdicts, global_shift=None):
+    """Second, higher-res (TILE_SIZE) sample per cell -- only for cells
+    `verdicts` flags is_tile, since only those ever reach read_letters.py's
+    recognition stage. Resampling all 225 cells at this size unconditionally
+    would waste several times the perspective-warp work on a typical
+    20-70-tile board for no benefit. Returns {(row, col): patch}, using the
+    same global_shift alignment as extract_cells() so both patch sizes stay
+    registered to the same tile position.
+
+    Uses its own margin, TILE_EXPAND_FRACTION, separate from tile_detector's
+    EXPAND_FRACTION -- but a bigger one is a wash, not a clear win: on one
+    tightly-packed board, a single mis-cropped glyph (the true tile sat
+    close enough to the window edge that glyph_normalizer's re-centring
+    search gave up and fell back to a plain geometric crop landing on the
+    tile seam instead of the letter) was fully fixed by widening to 0.35.
+    But swept against the whole test set, that same widening cost letter
+    accuracy elsewhere (94.4% -> 87.5% at 0.35) -- the extra margin pulls
+    neighbouring tiles' ink into frame often enough to outweigh the odd
+    rescued crop, the same shape of regression EXPAND_FRACTION's own tuning
+    already hit once (see the comment above SHIFT_SEARCH_FRACS). 0.18 is
+    the measured local optimum, and it is a small one (94.36% -> 94.40%) --
+    most of this failure mode is not actually fixable by margin alone.
+    """
+    shift = np.zeros(2, dtype=np.float32) if global_shift is None else global_shift
+    out = {}
+    for v in verdicts:
+        if not v.is_tile:
+            continue
+        quad = _cell_quad(mesh, v.row, v.col)
+        center = quad.mean(axis=0) + shift
+        expanded = (center + (quad - quad.mean(axis=0)) * (1.0 + 2 * TILE_EXPAND_FRACTION)).astype(np.float32)
+        out[(v.row, v.col)] = _sample_quad(rotated, expanded, TILE_SIZE)
+    return out
 
 
 def _shift_score(rotated, mesh, shift):
@@ -161,14 +202,19 @@ def draw_tile_overlay(rotated, mesh, verdicts):
 def read_board(path, show=True):
     """Detect the board in the given image, warp+rotate it, locate the
     15x15 grid, and run tile detection on every square. Returns (rotated,
-    cells, verdicts), or (None, None, None) if no board or no grid was
-    found. `show=False` skips the debug popup -- used by
-    eval_tile_detection.py to batch over the test set."""
+    mesh, cells, verdicts, shift), or (None, None, None, None, None) if no
+    board or no grid was found. `mesh` and `shift` are exposed (not just
+    used internally) so callers needing the raw grid geometry -- e.g.
+    read_letters.py's recognition stage, sampling its own higher-res patches
+    -- don't have to re-run the whole pipeline themselves the way
+    tuner.py's tile_detector subcommand previously had to. `show=False`
+    skips the debug popup -- used by eval scripts to batch over the test
+    set."""
     image = cv2.imread(path)
     corners = find_board_quad(image)
     if corners is None:
         print(f"No board found in {path}")
-        return None, None, None
+        return None, None, None, None, None
 
     board = warp_board(image, corners)
     rotated = rotate_board(board)
@@ -176,7 +222,7 @@ def read_board(path, show=True):
     grid = detect_grid(rotated)
     if grid is None:
         print(f"No grid found in {path}")
-        return None, None, None
+        return None, None, None, None, None
 
     shift = find_parallax_shift(rotated, grid.mesh)
     cells = extract_cells(rotated, grid.mesh, global_shift=shift)
@@ -187,7 +233,7 @@ def read_board(path, show=True):
             [rotated, draw_tile_overlay(rotated, grid.mesh, verdicts)], ["Board", "Tile detection"], height=1200
         )
 
-    return rotated, cells, verdicts
+    return rotated, grid.mesh, cells, verdicts, shift
 
 
 def main():
@@ -196,7 +242,7 @@ def main():
     print(paths)
 
     for path in paths:
-        _, _, verdicts = read_board(path)
+        _, _, _, verdicts, _ = read_board(path)
         if verdicts is not None:
             print(f"{path}: {sum(v.is_tile for v in verdicts)} tiles")
 

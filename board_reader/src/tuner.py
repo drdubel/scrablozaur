@@ -58,7 +58,20 @@ point, pick which stage to tune with a subcommand.
         Keys: w save now, [/] select slider, 0 reset selected, r reset
         all, q/Esc quit (moves to the next image, if any).
 
-    All three subcommands accept -d/--difficulty (any combination of 'e'
+    python src/tuner.py letters [-d em] [pattern]
+        Tune read_letters.classify_tiles()'s params (CNN/template fusion
+        weights, template-matcher/reprocess trigger confidences, whole-
+        board rotation search on/off) via cv_utils.run_tuner()'s generic
+        live-preview harness. Each preview draws read_letters.py's letter
+        overlay (green quad + classified letter per tile, red = empty) so
+        a slider change's effect on the whole board is visible at once.
+        Sliders seed from hsv_config.json's saved "letter_recognition_params"
+        preset if any exists, otherwise letter_classifier.py's PARAM_DEFAULTS.
+
+        Keys: w save now, [/] select slider, 0 reset selected, r reset
+        all, q/Esc quit (moves to the next image, if any).
+
+    All four subcommands accept -d/--difficulty (any combination of 'e'
     easy, 'm' medium, 'h' hard, default 'e') to match against test/in's
     imgN_<difficulty>.jpg suffix, or an explicit glob `pattern` positional
     that overrides it.
@@ -95,7 +108,9 @@ from detect_board import (
 )
 from grid_detector import detect_grid
 from hsv_config import load_params, load_range, save_params, save_range
+from letter_classifier import PARAM_DEFAULTS as LETTER_PARAM_DEFAULTS
 from read_board import draw_tile_overlay, extract_cells, find_parallax_shift
+from read_letters import classify_board, draw_letter_overlay
 from rotate_board import RED_RECT_DEFAULTS, SPECS, find_red_rectangle, red_rectangle_mask, rotate_board
 from tile_detector import PARAM_DEFAULTS as TILE_PARAM_DEFAULTS
 from tile_detector import detect_tiles
@@ -527,6 +542,65 @@ def tune_tile_detector(args):
         )
 
 
+# ---------------------------------------------------------------------------
+# "letters" subcommand -- read_letters.classify_tiles()'s params (fusion
+# weights, template-matcher/reprocess trigger confidences, rotation search).
+# Same shape as tune_tile_detector(): builds verdicts once per image, then
+# lets run_tuner() re-run just classification per slider move.
+
+LETTER_SPECS = [
+    ParamSpec("weight_cnn", "cnn weight x100", 200, 100, "fusion weight for the CNN's vote"),
+    ParamSpec("weight_template", "tmpl weight x100", 200, 100, "fusion weight for the template matcher's vote"),
+    ParamSpec("weight_points", "points weight x100", 200, 100, "fusion weight for the tile's own printed point-value digit"),
+    ParamSpec(
+        "template_trigger_confidence",
+        "tmpl trigger x100",
+        100,
+        100,
+        "template matcher only runs if the CNN's own top prob is below this",
+    ),
+    ParamSpec("reprocess_confidence", "reprocess x100", 100, 100, "fused confidence below this triggers a re-binarize retry"),
+    ParamSpec("resolve_rotation", "resolve rotation 0/1", 1, 1, "search all 4 tile rotations as a single board-wide decision"),
+]
+
+
+def tune_letters(args):
+    paths = _resolve_paths(args)
+    print(paths)
+
+    for path in paths:
+        image = cv2.imread(path)
+        corners = find_board_quad(image)
+        if corners is None:
+            print(f"No board found in {path}")
+            continue
+
+        rotated = rotate_board(warp_board(image, corners))
+        grid = detect_grid(rotated)
+        if grid is None:
+            print(f"No grid found in {path}")
+            continue
+        shift = find_parallax_shift(rotated, grid.mesh)
+        cells = extract_cells(rotated, grid.mesh, global_shift=shift)
+        verdicts = detect_tiles(cells)
+
+        def render(params):
+            board = classify_board(rotated, grid.mesh, verdicts, global_shift=shift, **params)
+            overlay = draw_letter_overlay(rotated, grid.mesh, verdicts, board)
+            cv2.putText(
+                overlay,
+                f"{sum(v.is_tile for v in verdicts)} tiles",
+                (10, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.2,
+                (0, 255, 255),
+                3,
+            )
+            return overlay
+
+        run_tuner(LETTER_SPECS, render, LETTER_PARAM_DEFAULTS, window="Letter Classifier Tuner", config_name="letter_recognition_params")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Interactive tuners for board_reader's detection pipeline")
     sub = parser.add_subparsers(dest="target", required=True)
@@ -547,13 +621,19 @@ def main():
     tile_p.add_argument("pattern", nargs="?", default=None, help="glob pattern for images (overrides --difficulty)")
     tile_p.add_argument("-d", "--difficulty", default="e", help=difficulty_help)
 
+    letters_p = sub.add_parser("letters", help="tune read_letters.classify_tiles()'s params")
+    letters_p.add_argument("pattern", nargs="?", default=None, help="glob pattern for images (overrides --difficulty)")
+    letters_p.add_argument("-d", "--difficulty", default="e", help=difficulty_help)
+
     args = parser.parse_args()
     if args.target == "board":
         tune_board(args)
     elif args.target == "red_rectangle":
         tune_red_rectangle(args)
-    else:
+    elif args.target == "tile_detector":
         tune_tile_detector(args)
+    else:
+        tune_letters(args)
 
 
 if __name__ == "__main__":

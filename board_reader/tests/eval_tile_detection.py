@@ -42,7 +42,7 @@ def main():
 
     for idx in ids:
         gt = set(GROUND_TRUTH[idx])
-        _rotated, _cells, verdicts = read_board(IMAGE_PATHS[idx], show=False)
+        _rotated, _mesh, _cells, verdicts, _shift = read_board(IMAGE_PATHS[idx], show=False)
         if verdicts is None:
             print(f"img{idx:<3}: FAILED (no board found)")
             failures.append(idx)
