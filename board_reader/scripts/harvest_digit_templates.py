@@ -26,11 +26,10 @@ import cv2
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 
+import glyph_normalizer as gn  # noqa: E402
 from ground_truth import DIFFICULTY, GROUND_TRUTH, IMAGE_PATHS  # noqa: E402
 from letter_classifier import LETTER_POINTS  # noqa: E402
 from read_board import extract_tile_patches, read_board  # noqa: E402
-
-import glyph_normalizer as gn  # noqa: E402
 
 STAGING_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "data", "real_digit_templates_staging")
 
