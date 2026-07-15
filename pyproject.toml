@@ -31,3 +31,9 @@ build-backend = "maturin"
 
 [tool.uv]
 package = false
+
+# `extension-module` is off by default in Cargo.toml so `cargo run`/`cargo build`
+# (the DAWG CLI/bench binary) can link against libpython normally; maturin needs
+# it explicitly enabled to build the importable Python extension.
+[tool.maturin]
+features = ["pyo3/extension-module"]
