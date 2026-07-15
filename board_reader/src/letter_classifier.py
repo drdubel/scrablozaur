@@ -63,6 +63,11 @@ POINT_GROUPS = {
     9: "Ź",
 }
 LETTER_POINTS = {ch: pts for pts, letters in POINT_GROUPS.items() for ch in letters}
+# The physical tile set only ever prints these point values -- 0 (no blank
+# tiles in this set), 4, and 8 never appear, so training/matching the digit
+# reader against them would only waste model capacity and confidence mass
+# on classes that can never be the right answer.
+VALID_DIGITS = "".join(str(p) for p in sorted(POINT_GROUPS))
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 CNN_WEIGHTS = os.path.join(_PKG_DIR, "models", "letter_cnn.pt")
@@ -371,11 +376,12 @@ _digit_templates = None  # {digit_str: [mask, ...]}
 
 
 def _get_digit_templates():
-    """Lazily build 0-9 synthetic digit templates once per process."""
+    """Lazily build synthetic digit templates (VALID_DIGITS only) once per
+    process."""
     global _digit_templates
     if _digit_templates is not None:
         return _digit_templates
-    templates = {d: [] for d in "0123456789"}
+    templates = {d: [] for d in VALID_DIGITS}
     if _HAS_PIL:
         fonts = [p for p in TEMPLATE_FONTS if os.path.isfile(p)]
         for path in fonts:

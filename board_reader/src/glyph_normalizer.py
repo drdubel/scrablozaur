@@ -104,11 +104,17 @@ def _locate_tile(patch_bgr, expected_frac=0.8):
         ang = 0.0  # not worth rotating / clearly a bogus estimate
 
     side = float(min(rw, rh))
+    # Off-centre placement alone isn't evidence of a fused neighbour blob --
+    # a fused blob is *oversized* (this tile plus part of another), so the
+    # size bounds above are what actually guards against that; a tile that
+    # merely sits a bit off from the assumed cell centre (grid/mesh slop)
+    # is still a genuine, trustworthy single-tile detection, and rejecting
+    # it here just forces a blind centre_crop that chops the real letter.
     trustworthy = (
         0.70 * exp_side <= side
         and max(rw, rh) <= 1.25 * exp_side
-        and abs(cx - w / 2) < 0.15 * w
-        and abs(cy - h / 2) < 0.15 * h
+        and abs(cx - w / 2) < 0.30 * w
+        and abs(cy - h / 2) < 0.30 * h
     )
     if not trustworthy:
         return _centre_crop(patch_bgr, expected_frac), 0.0
@@ -118,36 +124,106 @@ def _locate_tile(patch_bgr, expected_frac=0.8):
     # Crop the tile interior; shrink to cut the bevelled edge and its shadow.
     shrink = 0.10
     half = side * (0.5 - shrink)
+    # A diacritic (acute, dot) sits right at the top of the letter, so a
+    # detected `side` that's a touch smaller than the true tile (the accent
+    # isn't part of the bright-tile blob the size estimate comes from) costs
+    # the top edge disproportionately -- give it a little extra headroom
+    # that the other three edges, which only ever risk bevel shadow, don't
+    # need.
+    top_extra = side * 0.04
     x0, x1 = int(max(0, cx - half)), int(min(w, cx + half))
-    y0, y1 = int(max(0, cy - half)), int(min(h, cy + half))
+    y0, y1 = int(max(0, cy - half - top_extra)), int(min(h, cy + half))
     if x1 - x0 < 10 or y1 - y0 < 10:
         return _centre_crop(patch_bgr, expected_frac), 0.0
     return rot[y0:y1, x0:x1], float(ang)
 
 
-def _select_glyph_components(ink):
-    """Keep letter body + diacritics; drop the score digit and border junk.
 
-    The score digit is small and sits in the bottom-right corner, outside
-    the main glyph's column span; diacritics sit above (dot/acute) or below
-    within the letter's columns (ogonek).
+# Fraction of the tile crop, measured from its own top-left, where the
+# printed point-value digit sits -- a fixed corner of the physical tile's
+# own layout, the same regardless of which letter is printed. Unlike the
+# old relative-to-main-letter heuristic, searching this fixed window does
+# not depend on having already correctly identified the main letter --
+# which matters because on a bad crop the main-letter search can itself
+# lock onto the wrong blob (see _select_glyph_components), and a
+# relative-position digit test would then misfire right along with it.
+DIGIT_WINDOW_X0 = 0.64
+DIGIT_WINDOW_Y0 = 0.46
+# A digit candidate must have at least this fraction of its own ink inside
+# that window -- a genuine digit is small and sits entirely in the corner,
+# while a letter stroke that merely reaches toward it (Z's diagonal, L's
+# foot) has most of its ink well outside.
+DIGIT_CONTAINMENT = 0.80
 
-    Returns (mask, digit_score, digit_mask) where digit_score is evidence
-    that a score digit was found bottom-right of the letter, and
-    digit_mask is that component's own ink (restricted to the un-bridged
-    `ink`, same as the main mask) for read_letters.py's point-value
-    disambiguation -- or None if no digit-like component was found.
+
+def _extract_digit(ink):
+    """Isolate the tile's own printed point-value digit from its fixed
+    bottom-right window, independent of letter/diacritic selection.
+
+    Digits are always a single continuous shape (unlike letters, which
+    can carry a detached diacritic), so no bridging or "which blob is the
+    real glyph" reasoning is needed here: any component mostly contained
+    in the window *is* the digit.
+
+    Returns (digit_mask, digit_score, ink_without_digit) -- digit_mask/
+    digit_score are None/0.0 when no plausible digit-shaped component sits
+    in the window; ink_without_digit is `ink` with that component's pixels
+    (if any) removed, so it can't leak into or get mistaken for letter ink.
     """
     h, w = ink.shape
+    wx0, wy0 = DIGIT_WINDOW_X0 * w, DIGIT_WINDOW_Y0 * h
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(ink)
+    if n <= 1:
+        return None, 0.0, ink
+
+    best_label, best_frac, best_area = None, 0.0, 0
+    for i in range(1, n):
+        a = stats[i, cv2.CC_STAT_AREA]
+        # Too small to be real ink, or too big to plausibly be one digit
+        # (a single digit is a small mark; anything larger is letter ink
+        # that happens to reach into the window -- Z's diagonal, A's own
+        # leg -- and must be left as letter ink, not stolen as "digit").
+        if a < 0.0015 * h * w or a > 0.045 * h * w:
+            continue
+        ys, xs = np.where(labels == i)
+        frac = float(np.count_nonzero((xs >= wx0) & (ys >= wy0))) / len(xs)
+        if frac < DIGIT_CONTAINMENT:
+            continue
+        if a > best_area:
+            best_label, best_frac, best_area = i, frac, a
+    if best_label is None:
+        return None, 0.0, ink
+
+    digit_mask = np.zeros_like(ink)
+    digit_mask[labels == best_label] = 255
+    remaining = ink.copy()
+    remaining[labels == best_label] = 0
+    return digit_mask, float(best_frac), remaining
+
+
+def _select_glyph_components(ink, gray):
+    """Keep letter body + diacritics; drop the score digit and border junk.
+
+    Diacritics sit above (dot/acute) or below within the letter's columns
+    (ogonek), bounded in area *and* width/height so a long, narrow bevel-
+    shadow line (small area, but spanning most of the tile) can't pass as
+    one. The score digit is handled separately by _extract_digit() before
+    this runs.
+
+    Returns (mask, digit_score, digit_mask) -- digit_score/digit_mask are
+    just threaded through from _extract_digit() for read_letters.py's
+    point-value disambiguation.
+    """
+    h, w = ink.shape
+    digit_mask, digit_score, ink = _extract_digit(ink)
+
     # Bridge accents (acute of O/C/Z, dot of Z) to their base letter so they
     # cannot be lost as separate small components; the kernel is tall and
-    # narrow, so the score digit (offset horizontally) stays separate.
+    # narrow, so it only bridges vertically-stacked marks, never sideways.
     bridged = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(5, h // 16))))
     n, labels, stats, cents = cv2.connectedComponentsWithStats(bridged)
     if n <= 1:
-        return None, 0.0, None
-    areas = stats[1:, cv2.CC_STAT_AREA]
-    order = np.argsort(areas)[::-1] + 1
+        return None, digit_score, digit_mask
 
     def is_ring(i):
         """Tile bevel edges binarise into a thin frame around the glyph:
@@ -155,63 +231,62 @@ def _select_glyph_components(ink):
         x, y, bw, bh, a = stats[i]
         return bw > 0.72 * w and bh > 0.72 * h and a < 0.30 * bw * bh
 
-    main = None
-    for i in order:
+    def is_viable_main(i):
         x, y, bw, bh, a = stats[i]
         # Border-hugging elongated components are bevel shadows.
         touches = int(x <= 1) + int(y <= 1) + int(x + bw >= w - 1) + int(y + bh >= h - 1)
         if touches >= 2 and (bw > 0.9 * w or bh > 0.9 * h):
-            continue
+            return False
         if is_ring(i):
-            continue
+            return False
         if a < 0.01 * h * w or a > 0.55 * h * w:
-            continue
+            return False
+        # A printed letter is always tall enough to read -- a short, wide
+        # strip (a bevel/shadow line running along one edge) can otherwise
+        # out-area and even out-darken the real letter (a shadow can be
+        # genuinely dark too, not just faint) and win main-candidacy.
+        if bh < 0.23 * h:
+            return False
         cx, cy = cents[i]
-        if not (0.15 * w < cx < 0.85 * w and 0.10 * h < cy < 0.90 * h):
-            continue
-        main = i
-        break
-    if main is None:
-        return None, 0.0, None
+        return 0.13 * w < cx < 0.87 * w and 0.08 * h < cy < 0.92 * h
+
+    candidates = [i for i in range(1, n) if is_viable_main(i)]
+    if not candidates:
+        return None, digit_score, digit_mask
+    # A shadow/bevel artefact can pass every size-and-position filter above
+    # (it commonly does -- see glyph_normalizer's design notes) and even
+    # out-*area* the real letter, but it is only ever mildly darker than
+    # the paper tone; genuine ink is dark. So among candidates plausibly
+    # in contention by size, prefer the darkest instead of the largest.
+    max_area = max(stats[i, cv2.CC_STAT_AREA] for i in candidates)
+    contenders = [i for i in candidates if stats[i, cv2.CC_STAT_AREA] >= 0.35 * max_area]
+    main = min(contenders, key=lambda i: float(gray[labels == i].mean()))
 
     mx, my, mw, mh, ma = stats[main]
     keep = np.zeros_like(ink)
     keep[labels == main] = 255
-    digit_score = 0.0
-    digit_label = None
     for i in range(1, n):
         if i == main:
             continue
         x, y, bw, bh, a = stats[i]
         cx, cy = cents[i]
-        if a < 0.02 * ma or a > 1.2 * ma or is_ring(i):
+        if a < 0.02 * ma or a > 0.45 * ma or is_ring(i):
             continue
         overlaps_cols = (cx > mx - 0.15 * mw) and (cx < mx + 1.15 * mw)
         above = cy < my + 0.15 * mh
         below = cy > my + 0.85 * mh
-        big_and_central = a > 0.30 * ma and overlaps_cols and not below
-        # A detached ogonek below the letter is narrow; wide "below"
-        # components are tile-edge bars and must not ride this rule.
-        diacritic = (above or (below and bw < 0.6 * mw)) and overlaps_cols and a < 0.45 * ma
-        # Score digit heuristic: small, in the lower-right, right of the
-        # glyph's midline -> excluded even if it slips the column test.
-        digit_like = a < 0.35 * ma and cx > mx + 0.60 * mw and cy > my + 0.55 * mh
-        if digit_like:
-            score = min(1.0, a / (0.10 * ma))
-            if score > digit_score:
-                digit_score, digit_label = score, i
-        if (big_and_central or diacritic) and not digit_like:
+        # A genuine diacritic (acute, dot, ogonek) is a small mark, bounded
+        # in *every* dimension, not just area -- a long, narrow bevel-shadow
+        # line can have a small area yet span most of the tile's width or
+        # height, so area alone can't rule it out the way a width/height
+        # cap does.
+        small_enough = bw < 0.55 * mw and bh < 0.35 * mh
+        diacritic = small_enough and overlaps_cols and (above or (below and bw < 0.6 * mw))
+        if diacritic:
             keep[labels == i] = 255
     # Selection ran on the accent-bridged image; restrict the final mask to
     # actual ink so the bridging never thickens the glyph itself.
     keep = cv2.bitwise_and(keep, ink)
-    digit_mask = None
-    if digit_label is not None:
-        digit_mask = np.zeros_like(ink)
-        digit_mask[labels == digit_label] = 255
-        digit_mask = cv2.bitwise_and(digit_mask, ink)
-        if digit_mask.sum() == 0:
-            digit_mask = None
     if keep.sum() == 0:
         return None, digit_score, digit_mask
     return keep, digit_score, digit_mask
@@ -261,7 +336,7 @@ def _binarise_and_select(tile_bgr, variant):
         ink = ((gray < thr).astype(np.uint8)) * 255
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
 
-    keep, digit_score, digit_ink = _select_glyph_components(ink)
+    keep, digit_score, digit_ink = _select_glyph_components(ink, gray)
     return gray, keep, digit_score, digit_ink
 
 

@@ -38,9 +38,9 @@ from torch.utils.data import DataLoader, Dataset, random_split
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import glyph_normalizer as gn  # noqa: E402
-from letter_classifier import LetterCNN, normalize_template  # noqa: E402
+from letter_classifier import VALID_DIGITS, LetterCNN, normalize_template  # noqa: E402
 
-DIGITS = "0123456789"
+DIGITS = VALID_DIGITS
 SIZE = gn.DIGIT_SIZE  # 32 -- much smaller than letters' 64, digits are simpler shapes
 
 FONT_CANDIDATES = [
