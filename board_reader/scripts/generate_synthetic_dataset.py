@@ -116,7 +116,9 @@ def augment(mask, rng):
     # Resolution jitter: teach the classifier soft, upsampled strokes too.
     if rng.random() < 0.5:
         small = rng.randint(30, 56)
-        g = cv2.resize(cv2.resize(g, (small, small), interpolation=cv2.INTER_AREA), (SIZE, SIZE), interpolation=cv2.INTER_LINEAR)
+        g = cv2.resize(
+            cv2.resize(g, (small, small), interpolation=cv2.INTER_AREA), (SIZE, SIZE), interpolation=cv2.INTER_LINEAR
+        )
     if rng.random() < 0.7:
         g = cv2.GaussianBlur(g, (0, 0), rng.uniform(0.4, 1.3))
     g += np.random.default_rng(rng.randrange(1 << 30)).normal(0, rng.uniform(2, 10), g.shape)

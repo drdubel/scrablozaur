@@ -53,7 +53,7 @@ def flatten_illumination(gray, sigma_frac=0.25):
     return np.clip(flat, 0, 255).astype(np.uint8)
 
 
-def _centre_crop(patch_bgr, expected_frac):
+def _center_crop(patch_bgr, expected_frac):
     """Geometric tile crop: the mesh placed the tile at the patch centre,
     so take the expected tile extent minus the bevelled edge."""
     h, w = patch_bgr.shape[:2]
@@ -88,7 +88,7 @@ def _locate_tile(patch_bgr, expected_frac=0.8):
         if a > best_area and a > 0.25 * h * w:
             best, best_area = i, a
     if best is None:
-        return _centre_crop(patch_bgr, expected_frac), 0.0
+        return _center_crop(patch_bgr, expected_frac), 0.0
 
     ys_pts, xs_pts = np.where(labels == best)
     # Every 4th pixel is ample for a bounding rectangle of a blob this size.
@@ -117,7 +117,7 @@ def _locate_tile(patch_bgr, expected_frac=0.8):
         and abs(cy - h / 2) < 0.30 * h
     )
     if not trustworthy:
-        return _centre_crop(patch_bgr, expected_frac), 0.0
+        return _center_crop(patch_bgr, expected_frac), 0.0
 
     M = cv2.getRotationMatrix2D((cx, cy), ang, 1.0)
     rot = cv2.warpAffine(patch_bgr, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
@@ -134,9 +134,8 @@ def _locate_tile(patch_bgr, expected_frac=0.8):
     x0, x1 = int(max(0, cx - half)), int(min(w, cx + half))
     y0, y1 = int(max(0, cy - half - top_extra)), int(min(h, cy + half))
     if x1 - x0 < 10 or y1 - y0 < 10:
-        return _centre_crop(patch_bgr, expected_frac), 0.0
+        return _center_crop(patch_bgr, expected_frac), 0.0
     return rot[y0:y1, x0:x1], float(ang)
-
 
 
 # Fraction of the tile crop, measured from its own top-left, where the
@@ -354,8 +353,8 @@ def normalize(tile_patch_bgr, rotation_k=0, variant=0):
         # that omits part of the letter even though its own size/centring
         # narrowly read as trustworthy. Retry once against the mesh-aligned
         # geometric centre crop before giving up on this tile.
-        centre = _centre_crop(patch, EXPECTED_TILE_FRAC)
-        gray2, keep2, digit_score2, digit_ink2 = _binarise_and_select(centre, variant)
+        center = _center_crop(patch, EXPECTED_TILE_FRAC)
+        gray2, keep2, digit_score2, digit_ink2 = _binarise_and_select(center, variant)
         if keep2 is not None and keep2.sum() > 0:
             gray, keep, digit_score, digit_ink = gray2, keep2, digit_score2, digit_ink2
 
@@ -366,8 +365,15 @@ def normalize(tile_patch_bgr, rotation_k=0, variant=0):
     if keep is None or keep.sum() == 0:
         blank = np.full((GLYPH_SIZE, GLYPH_SIZE), 255, np.uint8)
         return NormalizedGlyph(
-            gray=blank, mask=np.zeros_like(blank), tile_gray=gray, has_glyph=False, ink_fraction=0.0, quality=0.0,
-            digit_score=digit_score, digit_mask=digit_mask, digit_gray=digit_gray,
+            gray=blank,
+            mask=np.zeros_like(blank),
+            tile_gray=gray,
+            has_glyph=False,
+            ink_fraction=0.0,
+            quality=0.0,
+            digit_score=digit_score,
+            digit_mask=digit_mask,
+            digit_gray=digit_gray,
         )
 
     glyph_gray, glyph_mask = _compose(gray, keep, GLYPH_SIZE)
@@ -375,6 +381,13 @@ def normalize(tile_patch_bgr, rotation_k=0, variant=0):
     # Quality: penalise extreme ink fractions (speckle or blobs).
     quality = float(np.clip(1.0 - abs(ink_frac - 0.16) / 0.16, 0.05, 1.0))
     return NormalizedGlyph(
-        gray=glyph_gray, mask=glyph_mask, tile_gray=gray, has_glyph=True, ink_fraction=ink_frac, quality=quality,
-        digit_score=digit_score, digit_mask=digit_mask, digit_gray=digit_gray,
+        gray=glyph_gray,
+        mask=glyph_mask,
+        tile_gray=gray,
+        has_glyph=True,
+        ink_fraction=ink_frac,
+        quality=quality,
+        digit_score=digit_score,
+        digit_mask=digit_mask,
+        digit_gray=digit_gray,
     )

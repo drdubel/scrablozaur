@@ -29,7 +29,9 @@ from letter_classifier import LetterCNN  # noqa: E402
 class GlyphDataset(Dataset):
     def __init__(self, root):
         self.samples = []
-        self.classes = sorted(unicodedata.normalize("NFC", d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
+        self.classes = sorted(
+            unicodedata.normalize("NFC", d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))
+        )
         for idx, ch in enumerate(self.classes):
             d = os.path.join(root, ch)
             for f in os.listdir(d):
@@ -91,10 +93,14 @@ def main():
                 correct += int((pred == y).sum())
                 total += len(y)
         acc = correct / max(1, total)
-        print(f"epoch {epoch + 1:2d}/{args.epochs}  loss {loss_sum / seen:.4f}  val acc {acc:.4f}  ({time.time() - t0:.0f}s)")
+        print(
+            f"epoch {epoch + 1:2d}/{args.epochs}  loss {loss_sum / seen:.4f}  val acc {acc:.4f}  ({time.time() - t0:.0f}s)"
+        )
         if acc >= best_acc:
             best_acc = acc
-            torch.save({"state_dict": {k: v.cpu() for k, v in model.state_dict().items()}, "classes": ds.classes}, args.out)
+            torch.save(
+                {"state_dict": {k: v.cpu() for k, v in model.state_dict().items()}, "classes": ds.classes}, args.out
+            )
     print(f"best val acc {best_acc:.4f} -> {args.out}")
 
 

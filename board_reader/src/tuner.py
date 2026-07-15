@@ -488,7 +488,9 @@ TILE_SPECS = [
     ),
     ParamSpec("seed_glyph_high", "seed glyph hi x100", 100, 100, "glyph bar for a confident pass-2 tile-colour seed"),
     ParamSpec("seed_glyph_low", "seed glyph lo x100", 100, 100, "relaxed glyph bar when too few confident seeds exist"),
-    ParamSpec("seed_glyph_fallback", "seed glyph fb x100", 100, 100, "glyph-only bar when colour can't seed the model at all"),
+    ParamSpec(
+        "seed_glyph_fallback", "seed glyph fb x100", 100, 100, "glyph-only bar when colour can't seed the model at all"
+    ),
     ParamSpec("seed_max", "seed max", 20, 1, "max candidates used to build the photo's tile-colour model"),
     ParamSpec("seed_min", "seed min", 10, 1, "below this many seeds, fall back to the ivory prior"),
     ParamSpec("same_tile_dist", "same-tile d x10", 50, 10, "distance-to-tile-colour accepted outright"),
@@ -500,7 +502,9 @@ TILE_SPECS = [
     ParamSpec("definitely_empty_z", "empty z x10", 50, 10, "z below which a cell is confidently empty"),
     ParamSpec("ambiguous_glyph_min", "ambig glyph x100", 100, 100, "glyph bar arbitrating the ambiguous band"),
     ParamSpec("strict_glyph_min", "strict glyph x100", 100, 100, "strict-mode glyph floor"),
-    ParamSpec("permissive_glyph_min", "permissive glyph x100", 100, 100, "glyph floor for the d/z-accept branch (glare guard)"),
+    ParamSpec(
+        "permissive_glyph_min", "permissive glyph x100", 100, 100, "glyph floor for the d/z-accept branch (glare guard)"
+    ),
 ]
 
 
@@ -551,7 +555,9 @@ def tune_tile_detector(args):
 LETTER_SPECS = [
     ParamSpec("weight_cnn", "cnn weight x100", 200, 100, "fusion weight for the CNN's vote"),
     ParamSpec("weight_template", "tmpl weight x100", 200, 100, "fusion weight for the template matcher's vote"),
-    ParamSpec("weight_points", "points weight x100", 200, 100, "fusion weight for the tile's own printed point-value digit"),
+    ParamSpec(
+        "weight_points", "points weight x100", 200, 100, "fusion weight for the tile's own printed point-value digit"
+    ),
     ParamSpec(
         "template_trigger_confidence",
         "tmpl trigger x100",
@@ -559,8 +565,12 @@ LETTER_SPECS = [
         100,
         "template matcher only runs if the CNN's own top prob is below this",
     ),
-    ParamSpec("reprocess_confidence", "reprocess x100", 100, 100, "fused confidence below this triggers a re-binarize retry"),
-    ParamSpec("resolve_rotation", "resolve rotation 0/1", 1, 1, "search all 4 tile rotations as a single board-wide decision"),
+    ParamSpec(
+        "reprocess_confidence", "reprocess x100", 100, 100, "fused confidence below this triggers a re-binarize retry"
+    ),
+    ParamSpec(
+        "resolve_rotation", "resolve rotation 0/1", 1, 1, "search all 4 tile rotations as a single board-wide decision"
+    ),
 ]
 
 
@@ -598,7 +608,13 @@ def tune_letters(args):
             )
             return overlay
 
-        run_tuner(LETTER_SPECS, render, LETTER_PARAM_DEFAULTS, window="Letter Classifier Tuner", config_name="letter_recognition_params")
+        run_tuner(
+            LETTER_SPECS,
+            render,
+            LETTER_PARAM_DEFAULTS,
+            window="Letter Classifier Tuner",
+            config_name="letter_recognition_params",
+        )
 
 
 def main():

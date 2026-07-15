@@ -100,7 +100,9 @@ def augment(mask, rng):
     g = np.where(norm > 127, ink, paper).astype(np.float32)
     if rng.random() < 0.5:
         small = rng.randint(14, 26)
-        g = cv2.resize(cv2.resize(g, (small, small), interpolation=cv2.INTER_AREA), (SIZE, SIZE), interpolation=cv2.INTER_LINEAR)
+        g = cv2.resize(
+            cv2.resize(g, (small, small), interpolation=cv2.INTER_AREA), (SIZE, SIZE), interpolation=cv2.INTER_LINEAR
+        )
     if rng.random() < 0.7:
         g = cv2.GaussianBlur(g, (0, 0), rng.uniform(0.4, 1.1))
     g += np.random.default_rng(rng.randrange(1 << 30)).normal(0, rng.uniform(2, 10), g.shape)
@@ -211,10 +213,14 @@ def train(epochs, batch, lr):
                 correct += int((pred == y).sum())
                 total += len(y)
         acc = correct / max(1, total)
-        print(f"epoch {epoch + 1:2d}/{epochs}  loss {loss_sum / seen:.4f}  val acc {acc:.4f}  ({time.time() - t0:.0f}s)")
+        print(
+            f"epoch {epoch + 1:2d}/{epochs}  loss {loss_sum / seen:.4f}  val acc {acc:.4f}  ({time.time() - t0:.0f}s)"
+        )
         if acc >= best_acc:
             best_acc = acc
-            torch.save({"state_dict": {k: v.cpu() for k, v in model.state_dict().items()}, "classes": ds.classes}, MODEL_OUT)
+            torch.save(
+                {"state_dict": {k: v.cpu() for k, v in model.state_dict().items()}, "classes": ds.classes}, MODEL_OUT
+            )
     print(f"best val acc {best_acc:.4f} -> {MODEL_OUT}")
 
 

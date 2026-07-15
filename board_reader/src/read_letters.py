@@ -143,7 +143,9 @@ def classify_tiles(rotated, mesh, verdicts, global_shift=None, **param_overrides
     patches = extract_tile_patches(rotated, mesh, verdicts, global_shift=global_shift)
     rotation_k = _resolve_rotation(tile_verdicts, patches) if p["resolve_rotation"] else 0
     if rotation_k:
-        print(f"read_letters: board rotated {rotation_k * 90} degrees for recognition (rotate_board.py may have missed it)")
+        print(
+            f"read_letters: board rotated {rotation_k * 90} degrees for recognition (rotate_board.py may have missed it)"
+        )
 
     glyphs = [gn.normalize(patches[(v.row, v.col)], rotation_k=rotation_k) for v in tile_verdicts]
     preds = _fast_sources(glyphs, p)

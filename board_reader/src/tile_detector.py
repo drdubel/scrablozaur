@@ -39,9 +39,7 @@ from hsv_config import load_params
 from premium_layout import premium_class
 
 Cell = namedtuple("Cell", ["row", "col", "patch"])
-TileVerdict = namedtuple(
-    "TileVerdict", ["row", "col", "is_tile", "confidence", "glyph_score", "z_score", "tile_dist"]
-)
+TileVerdict = namedtuple("TileVerdict", ["row", "col", "is_tile", "confidence", "glyph_score", "z_score", "tile_dist"])
 
 PARAM_DEFAULTS = {
     "color_z_threshold": 3.5,  # per-class robust z-score above which a cell is a colour outlier
@@ -94,9 +92,7 @@ def glyph_score(patch_gray):
     g = _center(patch_gray, 0.80)
     h, w = g.shape
     area = h * w
-    th = cv2.adaptiveThreshold(
-        g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, max(9, (h // 3) | 1), 7
-    )
+    th = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, max(9, (h // 3) | 1), 7)
     n, _labels, stats, cents = cv2.connectedComponentsWithStats(th)
     best = 0.0
     best_area = 0.0
@@ -232,7 +228,9 @@ def detect_tiles(cells, strict=False, **param_overrides):
         margin = min(zk, 8.0) - dk
         if strict and gk < p["strict_glyph_min"]:
             verdicts.append(
-                TileVerdict(row=cell.row, col=cell.col, is_tile=False, confidence=0.5, glyph_score=gk, z_score=zk, tile_dist=dk)
+                TileVerdict(
+                    row=cell.row, col=cell.col, is_tile=False, confidence=0.5, glyph_score=gk, z_score=zk, tile_dist=dk
+                )
             )
             continue
         if model_ok and dk < p["same_tile_dist"]:
@@ -264,6 +262,8 @@ def detect_tiles(cells, strict=False, **param_overrides):
             is_tile = gk > p["ambiguous_glyph_min"] and zk > p["color_z_threshold"] / 2
             conf = 0.5
         verdicts.append(
-            TileVerdict(row=cell.row, col=cell.col, is_tile=is_tile, confidence=conf, glyph_score=gk, z_score=zk, tile_dist=dk)
+            TileVerdict(
+                row=cell.row, col=cell.col, is_tile=is_tile, confidence=conf, glyph_score=gk, z_score=zk, tile_dist=dk
+            )
         )
     return verdicts

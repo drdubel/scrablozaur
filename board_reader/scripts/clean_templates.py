@@ -115,7 +115,9 @@ def main():
     if not os.path.isdir(LIVE_DIR):
         print(f"Nothing to clean: {LIVE_DIR} does not exist.")
         return
-    letters = sorted(unicodedata.normalize("NFC", d) for d in os.listdir(LIVE_DIR) if os.path.isdir(os.path.join(LIVE_DIR, d)))
+    letters = sorted(
+        unicodedata.normalize("NFC", d) for d in os.listdir(LIVE_DIR) if os.path.isdir(os.path.join(LIVE_DIR, d))
+    )
 
     tot_total = tot_changed = tot_flagged = 0
     for letter in letters:
@@ -123,7 +125,9 @@ def main():
             continue
         n_total, n_changed, n_flagged = clean_letter(letter)
         if n_changed:
-            print(f"{letter}: {n_changed}/{n_total} cleaned, {n_flagged} flagged back to staging (unclear even after cleaning)")
+            print(
+                f"{letter}: {n_changed}/{n_total} cleaned, {n_flagged} flagged back to staging (unclear even after cleaning)"
+            )
         tot_total += n_total
         tot_changed += n_changed
         tot_flagged += n_flagged

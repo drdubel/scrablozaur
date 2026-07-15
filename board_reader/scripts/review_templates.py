@@ -94,7 +94,9 @@ def _button_rects():
 def _letters():
     if not os.path.isdir(STAGING_DIR):
         return []
-    return sorted(unicodedata.normalize("NFC", d) for d in os.listdir(STAGING_DIR) if os.path.isdir(os.path.join(STAGING_DIR, d)))
+    return sorted(
+        unicodedata.normalize("NFC", d) for d in os.listdir(STAGING_DIR) if os.path.isdir(os.path.join(STAGING_DIR, d))
+    )
 
 
 def _files(letter):
@@ -296,7 +298,9 @@ def _draw(sess):
     mode = "reviewing new" if sess.source == "staging" else "re-checking"
     header = f"{sess.cur_letter}  [{mode}]   page {sess.page + 1}/{sess.n_pages}   {len(sess.files)} glyphs, {len(sess.rejected)} rejected"
     cv2.putText(canvas, header, (SIDEBAR_W + 10, 24), FONT, 0.65, (255, 255, 255), 1)
-    legend = "click a glyph = toggle reject   |   click a letter on the left = jump to it   |   buttons below move around"
+    legend = (
+        "click a glyph = toggle reject   |   click a letter on the left = jump to it   |   buttons below move around"
+    )
     cv2.putText(canvas, legend, (SIDEBAR_W + 10, 46), FONT, 0.42, (160, 160, 160), 1)
 
     cv2.line(canvas, (COL_W, 0), (COL_W, CANVAS_H), (70, 70, 70), 1)
@@ -305,7 +309,14 @@ def _draw(sess):
 
     sidebar_rows = []
     _draw_letter_column(
-        canvas, sess.staging_letters, lambda ltr: f"({sess.staging_counts.get(ltr, 0)})", "staging", sess, 0, COL_W, sidebar_rows
+        canvas,
+        sess.staging_letters,
+        lambda ltr: f"({sess.staging_counts.get(ltr, 0)})",
+        "staging",
+        sess,
+        0,
+        COL_W,
+        sidebar_rows,
     )
     _draw_letter_column(
         canvas,

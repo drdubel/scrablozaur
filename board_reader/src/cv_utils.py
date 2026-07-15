@@ -134,8 +134,10 @@ def build_slider_refs(specs, seed_params, defaults):
     """One SliderRef per spec, remembering its seed value -- for selecting
     ('[' / ']') and resetting a single slider ('0') independently of the
     others."""
-    return [SliderRef(spec.label, seed_params.get(spec.key, defaults[spec.key]), spec.scale, spec.max_pos, spec.desc)
-            for spec in specs]
+    return [
+        SliderRef(spec.label, seed_params.get(spec.key, defaults[spec.key]), spec.scale, spec.max_pos, spec.desc)
+        for spec in specs
+    ]
 
 
 def reset_single_slider(window, ref):
@@ -188,7 +190,9 @@ def run_tuner(specs, render, defaults, *, window="Tuner", config_name=None, on_k
         q / Esc  quit
     """
     seed_params = load_params(config_name, defaults) if config_name else dict(defaults)
-    print(f"seed params: {seed_params} ({'from hsv_config.json' if config_name else 'no config_name -- using defaults'})")
+    print(
+        f"seed params: {seed_params} ({'from hsv_config.json' if config_name else 'no config_name -- using defaults'})"
+    )
     for spec in specs:
         if spec.desc:
             print(f"  {spec.label}: {spec.desc}")
@@ -198,7 +202,10 @@ def run_tuner(specs, render, defaults, *, window="Tuner", config_name=None, on_k
     slider_refs = build_slider_refs(specs, seed_params, defaults)
     selected_idx = 0
 
-    print("w: save, [/]: select slider, 0: reset selected, r: reset all, q/Esc: quit." + (f" {help_text}" if help_text else ""))
+    print(
+        "w: save, [/]: select slider, 0: reset selected, r: reset all, q/Esc: quit."
+        + (f" {help_text}" if help_text else "")
+    )
 
     params = seed_params
     last_params = None
@@ -216,8 +223,15 @@ def run_tuner(specs, render, defaults, *, window="Tuner", config_name=None, on_k
             last_params = dict(params)
 
         composite = base_composite.copy()
-        cv2.putText(composite, selection_status(window, slider_refs[selected_idx]), (10, composite.shape[0] - 15),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 1)
+        cv2.putText(
+            composite,
+            selection_status(window, slider_refs[selected_idx]),
+            (10, composite.shape[0] - 15),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 0),
+            1,
+        )
         cv2.imshow(window, composite)
 
         key = cv2.waitKey(30) & 0xFF

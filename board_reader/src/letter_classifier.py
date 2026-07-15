@@ -188,6 +188,7 @@ def classify_cnn_batch(glyphs):
 # overlap of binary ink masks over a small translation search; a sharpened
 # softmax turns Dice scores into a confidence distribution.
 
+
 def normalize_template(mask, out_size=GLYPH_SIZE, margin=0.12):
     """Centre/scale a binary ink mask exactly like glyph_normalizer._compose."""
     ys, xs = np.where(mask > 0)
@@ -222,7 +223,11 @@ def _build_synthetic(templates):
             d.text((130, 130), ch, fill=255, font=font, anchor="mm")
             mask = np.asarray(img)
             for scale_y in (1.0, 1.15):  # tile fonts are often condensed
-                m = mask if scale_y == 1.0 else cv2.resize(mask, None, fx=1.0, fy=scale_y, interpolation=cv2.INTER_LINEAR)
+                m = (
+                    mask
+                    if scale_y == 1.0
+                    else cv2.resize(mask, None, fx=1.0, fy=scale_y, interpolation=cv2.INTER_LINEAR)
+                )
                 t = normalize_template((m > 127).astype(np.uint8) * 255)
                 if t is not None and t.any():
                     templates[ch].append((t, False))
@@ -446,6 +451,7 @@ def points_distribution(digit_dist):
 
 # ---------------------------------------------------------------------------
 # Fusion
+
 
 def fuse_predictions(preds):
     """Combine {source: (distribution, weight)} into a single ranking.
