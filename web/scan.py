@@ -19,10 +19,14 @@ up and flagging the cells for the user to fix by hand.
 
 from __future__ import annotations
 
+import re
 import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import cv2
+import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BOARD_READER_SRC = PROJECT_ROOT / "board_reader" / "src"
@@ -161,6 +165,89 @@ def scan_board_image(path: str, prior_board: list[list[str]] | None = None) -> d
         for r in range(GRID)
     ]
     return {"cells": cells, "board": grid}
+
+
+# ── Training-set export ───────────────────────────────────────────────────────
+# Lets a user opt in, per photo, to append it to board_reader/'s own eval/
+# retraining set (see [[project-ocr-pipeline]]) -- same imgN_<difficulty>.jpg
+# + boardN.txt layout board_reader/tests/ground_truth.py already expects, so
+# no changes are needed there to pick these up.
+
+BOARD_READER_TEST_IN = PROJECT_ROOT / "board_reader" / "test" / "in"
+BOARD_READER_TEST_OUT = PROJECT_ROOT / "board_reader" / "test" / "out"
+
+_IMG_ID_RE = re.compile(r"img(\d+)_[emh]\.jpg$")
+_BOARD_ID_RE = re.compile(r"board(\d+)\.txt$")
+
+
+def evaluate_raw_recognition(path: str, confirmed_board: list[list[str]]) -> tuple[str, dict]:
+    """Compare this photo's *unassisted* OCR reading (no dictionary
+    correction, no prior-state help -- just what the classifier alone says)
+    against the user's final confirmed board, and bucket the result into a
+    difficulty label for the training set: 'e' if the raw reader got
+    (essentially) every tile right on its own, 'm' if a minority were
+    wrong, 'h' if a majority were wrong. Only cells the confirmed board
+    actually has a tile in count -- there's nothing to grade where both
+    agree on empty."""
+    rotated, mesh, _cells, verdicts, shift = read_board(path, show=False)
+    if verdicts is None:
+        raise ValueError("Nie udało się znaleźć planszy na zdjęciu.")
+
+    readings = classify_tiles(rotated, mesh, verdicts, global_shift=shift)
+    raw = empty_board()
+    for (r, c), (letter, _conf, _alts) in readings.items():
+        raw[r][c] = letter.lower() if letter and letter in POLISH_ALPHABET else "?"
+
+    total = matched = 0
+    for r in range(GRID):
+        for c in range(GRID):
+            if confirmed_board[r][c] == "-":
+                continue
+            total += 1
+            if raw[r][c] == confirmed_board[r][c]:
+                matched += 1
+
+    if total == 0:
+        return "e", {"matched": 0, "total": 0, "match_ratio": 1.0}
+
+    ratio = matched / total
+    difficulty = "e" if ratio == 1.0 else ("m" if ratio >= 0.5 else "h")
+    return difficulty, {"matched": matched, "total": total, "match_ratio": round(ratio, 3)}
+
+
+def _next_training_id() -> int:
+    """One counter shared across test/in and test/out so the two never
+    drift out of sync even if a previous save only half-completed."""
+    ids = [int(m.group(1)) for p in BOARD_READER_TEST_IN.glob("img*_*.jpg") if (m := _IMG_ID_RE.match(p.name))]
+    ids += [int(m.group(1)) for p in BOARD_READER_TEST_OUT.glob("board*.txt") if (m := _BOARD_ID_RE.match(p.name))]
+    return max(ids, default=-1) + 1
+
+
+def _format_ground_truth(board: list[list[str]]) -> str:
+    """board_reader/tests/ground_truth.py's expected format: one row per
+    line, space-separated single-character tokens, uppercase letters
+    (matching classify_board()'s own output alphabet), '-' for empty."""
+    lines = (" ".join(cell.upper() if cell != "-" else "-" for cell in row) for row in board)
+    return "\n".join(lines) + "\n"
+
+
+def save_training_example(image_bytes: bytes, board: list[list[str]], difficulty: str) -> int:
+    """Append this photo + its user-confirmed board to board_reader/'s test
+    set. Re-encodes through cv2 rather than writing *image_bytes* verbatim
+    so the file on disk is genuinely a .jpg regardless of what the browser
+    actually sent (phones/pickers don't always send real JPEGs)."""
+    BOARD_READER_TEST_IN.mkdir(parents=True, exist_ok=True)
+    BOARD_READER_TEST_OUT.mkdir(parents=True, exist_ok=True)
+
+    image_id = _next_training_id()
+
+    img = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("Nie udało się odczytać zdjęcia.")
+    cv2.imwrite(str(BOARD_READER_TEST_IN / f"img{image_id}_{difficulty}.jpg"), img)
+    (BOARD_READER_TEST_OUT / f"board{image_id}.txt").write_text(_format_ground_truth(board), encoding="utf-8")
+
+    return image_id
 
 
 def _runs(grid: list[list[str]]) -> list[list[tuple[int, int]]]:

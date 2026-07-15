@@ -121,3 +121,11 @@ class ScanBoardResponse(BaseModel):
 class ScanStateResponse(BaseModel):
     board: list[list[str]]
     has_session: bool
+
+
+class SaveTrainingResponse(BaseModel):
+    id: int
+    difficulty: Literal["e", "m", "h"]
+    matched: int
+    total: int
+    match_ratio: float
