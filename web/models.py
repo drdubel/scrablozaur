@@ -28,6 +28,14 @@ class SetComputerLettersRequest(BaseModel):
     letters: str = Field(..., max_length=7)
 
 
+class ScanConfirmRequest(BaseModel):
+    board: list[list[str]] = Field(..., min_length=15, max_length=15)
+
+
+class ScanSuggestRequest(BaseModel):
+    letters: str = Field(..., min_length=1, max_length=7)
+
+
 class PlaceComputerWordRequest(BaseModel):
     word: str
     row: int = Field(..., ge=0, le=14)
@@ -94,3 +102,22 @@ class DefinitionResponse(BaseModel):
 class SuggestionsResponse(BaseModel):
     suggestions: list[Suggestion]
     letters: str
+
+
+class ScanCell(BaseModel):
+    letter: str
+    confidence: float = 0.0
+    alternatives: list[str] = Field(default_factory=list)
+    flagged: bool = False
+    carried_over: bool = False
+
+
+class ScanBoardResponse(BaseModel):
+    cells: list[list[ScanCell]] = Field(default_factory=list)
+    flagged_count: int = 0
+    error: str | None = None
+
+
+class ScanStateResponse(BaseModel):
+    board: list[list[str]]
+    has_session: bool

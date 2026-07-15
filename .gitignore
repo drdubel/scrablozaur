@@ -5,6 +5,8 @@
 !*.py
 !*.pyi
 !Cargo.toml
+!pyproject.toml
+!uv.lock
 !*/
 
 # Added by cargo
