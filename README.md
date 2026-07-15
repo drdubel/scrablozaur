@@ -6,7 +6,7 @@ A high-performance Polish-language Scrabble engine written in Rust, exposed to P
 
 ## Features
 
-- **Minimized DAWG** — 3.17 million-word Polish dictionary compressed into a compact binary format; sub-microsecond lookups via a binary-searched, flat node layout
+- **Minimized DAWG** — 2.04 million-word Polish dictionary compressed into a compact binary format; sub-microsecond lookups via a binary-searched, flat node layout
 - **Pattern search** — flexible wildcard syntax (`-` one letter, `*` any number) with blank-tile support
 - **Board-aware scoring** — all bonus squares (Double/Triple Letter and Word), bingo bonus for using all 7 tiles
 - **Cross-word validation** — every candidate placement is checked against all perpendicular words it creates
@@ -18,36 +18,36 @@ A high-performance Polish-language Scrabble engine written in Rust, exposed to P
 
 ## Board
 
-Standard 15 × 15 Polish Scrabble layout. The first word must cover the centre square (★).
+Standard 15 × 15 Polish Scrabble layout. The first word must cover the centre square (⭐).
 
 ```
-      0    1    2    3    4    5    6    7    8    9   10   11   12   13   14
- 0  [ TW]  ·    ·  [ DL]  ·    ·    ·  [ TW]  ·    ·    ·  [ DL]  ·    ·  [ TW]
- 1    ·  [ DW]  ·    ·    ·  [ TL]  ·    ·    ·  [ TL]  ·    ·    ·  [ DW]  ·
- 2    ·    ·  [ DW]  ·    ·    ·  [ DL]  ·  [ DL]  ·    ·    ·  [ DW]  ·    ·
- 3  [ DL]  ·    ·  [ DW]  ·    ·    ·  [ DL]  ·    ·    ·  [ DW]  ·    ·  [ DL]
- 4    ·    ·    ·    ·  [ DW]  ·    ·    ·    ·    ·  [ DW]  ·    ·    ·    ·
- 5    ·  [ TL]  ·    ·    ·  [ TL]  ·    ·    ·  [ TL]  ·    ·    ·  [ TL]  ·
- 6    ·    ·  [ DL]  ·    ·    ·  [ DL]  ·  [ DL]  ·    ·    ·  [ DL]  ·    ·
- 7  [ TW]  ·    ·  [ DL]  ·    ·    ·  [ ★ ]  ·    ·    ·  [ DL]  ·    ·  [ TW]
- 8    ·    ·  [ DL]  ·    ·    ·  [ DL]  ·  [ DL]  ·    ·    ·  [ DL]  ·    ·
- 9    ·  [ TL]  ·    ·    ·  [ TL]  ·    ·    ·  [ TL]  ·    ·    ·  [ TL]  ·
-10    ·    ·    ·    ·  [ DW]  ·    ·    ·    ·    ·  [ DW]  ·    ·    ·    ·
-11  [ DL]  ·    ·  [ DW]  ·    ·    ·  [ DL]  ·    ·    ·  [ DW]  ·    ·  [ DL]
-12    ·    ·  [ DW]  ·    ·    ·  [ DL]  ·  [ DL]  ·    ·    ·  [ DW]  ·    ·
-13    ·  [ DW]  ·    ·    ·  [ TL]  ·    ·    ·  [ TL]  ·    ·    ·  [ DW]  ·
-14  [ TW]  ·    ·  [ DL]  ·    ·    ·  [ TW]  ·    ·    ·  [ DL]  ·    ·  [ TW]
+🟥⬜⬜🟩⬜⬜⬜🟥⬜⬜⬜🟩⬜⬜🟥
+⬜🟧⬜⬜⬜🟦⬜⬜⬜🟦⬜⬜⬜🟧⬜
+⬜⬜🟧⬜⬜⬜🟩⬜🟩⬜⬜⬜🟧⬜⬜
+🟩⬜⬜🟧⬜⬜⬜🟩⬜⬜⬜🟧⬜⬜🟩
+⬜⬜⬜⬜🟧⬜⬜⬜⬜⬜🟧⬜⬜⬜⬜
+⬜🟦⬜⬜⬜🟦⬜⬜⬜🟦⬜⬜⬜🟦⬜
+⬜⬜🟩⬜⬜⬜🟩⬜🟩⬜⬜⬜🟩⬜⬜
+🟥⬜⬜🟩⬜⬜⬜⭐⬜⬜⬜🟩⬜⬜🟥
+⬜⬜🟩⬜⬜⬜🟩⬜🟩⬜⬜⬜🟩⬜⬜
+⬜🟦⬜⬜⬜🟦⬜⬜⬜🟦⬜⬜⬜🟦⬜
+⬜⬜⬜⬜🟧⬜⬜⬜⬜⬜🟧⬜⬜⬜⬜
+🟩⬜⬜🟧⬜⬜⬜🟩⬜⬜⬜🟧⬜⬜🟩
+⬜⬜🟧⬜⬜⬜🟩⬜🟩⬜⬜⬜🟧⬜⬜
+⬜🟧⬜⬜⬜🟦⬜⬜⬜🟦⬜⬜⬜🟧⬜
+🟥⬜⬜🟩⬜⬜⬜🟥⬜⬜⬜🟩⬜⬜🟥
 ```
 
 | Symbol | Bonus         | Effect                          |
 |:------:|:--------------|:--------------------------------|
-| TW     | Triple Word   | word score × 3                  |
-| DW     | Double Word   | word score × 2                  |
-| TL     | Triple Letter | that letter's score × 3         |
-| DL     | Double Letter | that letter's score × 2         |
-| ★      | Centre (DW)   | word score × 2, first move only |
+| 🟥     | Triple Word   | word score × 3                  |
+| 🟧     | Double Word   | word score × 2                  |
+| 🟦     | Triple Letter | that letter's score × 3         |
+| 🟩     | Double Letter | that letter's score × 2         |
+| ⭐     | Centre (DW)   | word score × 2, first move only |
+| ⬜     | —             | plain square                    |
 
-Multipliers apply only to tiles placed on that square during the current move; tiles already on the board always score at face value.
+Multipliers apply only to tiles placed on that square during the current move; tiles already on the board always score at face value. (This exact layout is also encoded programmatically in `board_reader/src/premium_layout.py`, used to register the grid detector against a photographed board.)
 
 ---
 
@@ -76,13 +76,14 @@ A blank tile (`?`) may substitute for any letter during a search but scores 0 po
 
 ## Requirements
 
-| Dependency     | Version | Purpose                              |
-|:---------------|:--------|:-------------------------------------|
-| Rust toolchain | ≥ 1.70  | Compiling the engine                 |
-| Python         | ≥ 3.10  | Running game logic                   |
-| maturin        | ≥ 1.0   | Building the Python extension        |
-| rayon          | 1.12    | Parallel pattern evaluation (bundled)|
-| pyo3           | 0.28    | Python bindings (bundled)            |
+| Dependency     | Version | Purpose                                          |
+|:---------------|:--------|:--------------------------------------------------|
+| Rust toolchain | ≥ 1.70  | Compiling the engine                             |
+| Python         | ≥ 3.10  | Running game logic, the `web/` app, `board_reader/` |
+| [uv](https://docs.astral.sh/uv/) | latest | Managing the Python environment (`.venv`) and dependencies |
+| maturin        | ≥ 1.0   | Building the Python extension (a `uv` dev-dependency, see `pyproject.toml`) |
+| rayon          | 1.12    | Parallel pattern evaluation (bundled)            |
+| pyo3           | 0.28    | Python bindings (bundled)                        |
 
 ---
 
@@ -91,14 +92,13 @@ A blank tile (`?`) may substitute for any letter during a search but scores 0 po
 ### Build the Python extension
 
 ```bash
-# install maturin if needed
-pip install maturin
-
-# build and install into the current Python environment
-maturin develop --release
+uv sync                            # installs Python deps (web/ + board_reader/) into .venv
+uv run maturin develop --release   # compiles the Rust extension into that same .venv
 ```
 
-The compiled `.so` lands in `target/release/` and is registered in your environment automatically.
+The compiled `.so` lands in `target/release/` and is registered into `.venv`
+automatically. Re-run `maturin develop --release` after any change to
+`src/lib.rs`.
 
 ### Rebuild the DAWG dictionary
 
@@ -285,7 +285,7 @@ per node:
     [4] child node ID
 ```
 
-Child edges are stored sorted by codepoint, enabling binary search in O(log k) where k ≤ 33 (Polish alphabet). The offset of each node is precomputed into a flat table at load time so every node access is a direct array index with no pointer chasing.
+Child edges are stored sorted by codepoint, enabling binary search in O(log k) where k ≤ 35 (`words.txt`'s alphabet: 26 Latin letters + 9 Polish diacritics, plus `q`/`v`/`x` from loanwords not used on physical Scrabble tiles). The offset of each node is precomputed into a flat table at load time so every node access is a direct array index with no pointer chasing.
 
 ### Pattern matching
 
@@ -329,17 +329,31 @@ cargo run --release -- lookup words/dawg.bin   hamulec          # single lookup
 cargo run --release -- bench  words/dawg.bin   words/words.txt  # throughput benchmark
 ```
 
-Sample `bench` output:
+Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):
 
 ```
-Results (5 × 317162 = 1585810 lookups):
-  total time  : 183.441ms
-  throughput  : 8647532 lookups/s
-  per lookup  : 115.7 ns
-  hits        : 1585810/1585810 (100.0%)
+Results (5 × 2038454 = 10192270 lookups):
+  total time  : 747.059ms
+  throughput  : 13643190 lookups/s
+  per lookup  : 73.3 ns
+  hits        : 10192270/10192270 (100.0%)
 ```
 
 ---
+
+## Web App & Board Scanner
+
+This engine also powers a FastAPI web app at `web/` (vanilla-JS/HTML frontend
+under `web/static/`): a playable board UI (`web/game.py`) plus a "scan board"
+assistant that reads a real physical board from a photo and suggests the
+best move, backed by the computer-vision pipeline in
+[`board_reader/`](board_reader/README.md).
+
+```bash
+uv sync
+uv run maturin develop --release
+uv run uvicorn web.main:app --reload
+```
 
 ## Project Structure
 
@@ -347,12 +361,21 @@ Results (5 × 317162 = 1585810 lookups):
 scrablozaur/
 ├── src/
 │   ├── lib.rs           # Rust engine: DAWG, Board, pattern search, scoring
-│   └── main.py          # Python game loop (two-player simulation)
+│   ├── main.rs          # thin binary entry point (delegates to lib.rs's CLI)
+│   └── main.py          # Python self-play benchmark script
+├── web/                 # FastAPI web app (game UI + board-photo scanner)
+│   ├── main.py          # app entry point (`uvicorn web.main:app`)
+│   ├── game.py, scan.py, engine.py, models.py
+│   ├── routers/         # game/board/scan API routes
+│   └── static/          # HTML/CSS/vanilla-JS frontend
+├── board_reader/        # photo -> board-state OCR pipeline (see its own README)
 ├── words/
-│   ├── words.txt        # 3.17 M-word Polish dictionary (source)
+│   ├── words.txt        # 2.04 M-word Polish dictionary (source)
 │   └── dawg.bin         # compiled DAWG (pre-built)
-├── test/                # sample board states for manual testing
+├── test/                # sample board states (.in files) for manual testing
+├── tests/               # cli_build.rs -- `cargo test` integration test for the CLI
 ├── scrablozaur.pyi      # Python type stubs
-├── pyrightconfig.json   # Pyright / type-checker configuration
+├── pyproject.toml       # uv-managed Python dependencies (web/ + board_reader/)
+├── uv.lock
 └── Cargo.toml           # Rust package manifest
 ```
