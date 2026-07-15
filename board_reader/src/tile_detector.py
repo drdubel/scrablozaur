@@ -36,6 +36,7 @@ from collections import namedtuple
 import cv2
 import numpy as np
 from hsv_config import load_params
+from parallel_utils import get_executor
 from premium_layout import premium_class
 
 Cell = namedtuple("Cell", ["row", "col", "patch"])
@@ -166,7 +167,7 @@ def detect_tiles(cells, strict=False, **param_overrides):
     grays = cv2.cvtColor(patches.reshape(-1, patches.shape[2], 3), cv2.COLOR_BGR2GRAY).reshape(
         len(cells), patches.shape[1], patches.shape[2]
     )
-    glyphs = np.array([glyph_score(g) for g in grays])
+    glyphs = np.array(list(get_executor().map(glyph_score, grays)))
 
     color = feats[:, :4]  # L, a, b, chroma
     # The centre star counts as a double-word square; on its own it would

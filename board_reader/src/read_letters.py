@@ -13,6 +13,7 @@ normalisation (glyph_normalizer.py), letter classification
 (letter_classifier.py), and assembling the results into a board.
 """
 
+
 import cv2
 import numpy as np
 import glyph_normalizer as gn
@@ -26,6 +27,7 @@ from letter_classifier import (
     fuse_predictions,
     points_distribution,
 )
+from parallel_utils import get_executor
 from premium_layout import GRID
 from read_board import _cell_quad, extract_tile_patches
 
@@ -34,24 +36,21 @@ def _fast_sources(glyphs, p):
     """Run CNN (batched) + template matcher + the tile's own point-value digit.
 
     Template matching only runs for a glyph when the CNN's own top
-    probability is below template_trigger_confidence -- on a typical photo
-    that's one or two tiles, which keeps the (otherwise unbounded)
-    matchTemplate cost cheap. The digit CNN (batched, same as the letter
-    CNN) is the primary point-value reader; per-glyph Dice template
-    matching is only a fallback for when the digit CNN itself has no
-    prediction (weights missing or torch unavailable) -- a first attempt
-    using template matching as the ONLY digit source measured just 82.9%
-    accurate (see letter_classifier.py's classify_digit_templates()
-    docstring), too noisy to trust as independent evidence on its own.
-    Unlike template matching's CNN-uncertainty gating, the point-value
-    reading isn't gated by letter-CNN confidence: it's independent
-    evidence that helps even when the letter CNN is confident but wrong
-    (e.g. confidently reading "A" on a tile that's actually A-with-ogonek).
+    probability is below template_trigger_confidence -- measured on the
+    test set, this actually triggers on a majority of photos (each tile
+    independently gated on its own CNN confidence), so the per-glyph
+    matchTemplate cost -- the biggest single contributor to classify_tiles()'s
+    wall time after gn.normalize -- is run across the shared thread pool
+    below: each glyph's cnn/template/digit lookup is independent of every
+    other glyph's (the batched CNN/digit-CNN calls above already produced
+    every glyph's distribution), so this is a plain parallel map, order
+    preserved via executor.map so the returned list still lines up
+    positionally with `glyphs`.
     """
     cnn = classify_cnn_batch(glyphs)
     digit_cnn = classify_digit_cnn_batch(glyphs)
-    preds = []
-    for glyph, cnn_dist, digit_dist in zip(glyphs, cnn, digit_cnn):
+
+    def _one(glyph, cnn_dist, digit_dist):
         pr = {}
         cnn_top = 0.0
         if cnn_dist:
@@ -67,8 +66,9 @@ def _fast_sources(glyphs, p):
             pts = points_distribution(digit_dist)
             if pts:
                 pr["points"] = (pts, p["weight_points"])
-        preds.append(pr)
-    return preds
+        return pr
+
+    return list(get_executor().map(_one, glyphs, cnn, digit_cnn))
 
 
 ROTATION_SUBSET_SIZE = 10
@@ -89,22 +89,36 @@ def _resolve_rotation(tile_verdicts, patches):
     grid_detector.py's premium-pattern registration already resolve whole-
     board orientation independently, so k=0 should win on nearly every
     photo where those succeeded.
+
+    Benchmarked cost: this runs on nearly every photo (resolve_rotation
+    defaults on) and normalizes up to 4*ROTATION_SUBSET_SIZE glyphs --
+    roughly half of classify_tiles()'s total gn.normalize call volume on a
+    typical photo, despite the "only ~10 tiles" framing above. The 4
+    rotations' glyphs are therefore normalized as one flattened, threaded
+    batch (independent per (tile, k) pair) and classified with a single
+    classify_cnn_batch call instead of 4 separate ones -- a pure batching
+    change, not a behaviour change: the model runs in eval() mode, so
+    BatchNorm uses frozen running stats and a glyph's predicted
+    distribution can't depend on what else shares its batch.
     """
     subset = (
         sorted(tile_verdicts, key=lambda v: -v.glyph_score)[:ROTATION_SUBSET_SIZE]
         if len(tile_verdicts) > ROTATION_SUBSET_MIN_TILES
         else tile_verdicts
     )
+    pairs = [(v, k) for k in range(4) for v in subset]
+    glyphs = list(get_executor().map(lambda vk: gn.normalize(patches[(vk[0].row, vk[0].col)], rotation_k=vk[1]), pairs))
+    cnn = classify_cnn_batch(glyphs)
+
     best_k, best_score = 0, -1.0
     for k in range(4):
-        glyphs = [gn.normalize(patches[(v.row, v.col)], rotation_k=k) for v in subset]
-        cnn = classify_cnn_batch(glyphs)
-        confs = [max(d.values()) for d in cnn if d]
+        idx = [i for i, (_, kk) in enumerate(pairs) if kk == k]
+        confs = [max(cnn[i].values()) for i in idx if cnn[i]]
         conf_score = float(np.mean(confs)) if confs else 0.0
         # The score digit only ever sits bottom-right on a real tile: its
         # position is a letter-independent orientation cue that breaks ties
         # between rotation-symmetric-looking letters (I, Z, N, O, H...).
-        digits = [g.digit_score for g in glyphs if g.has_glyph]
+        digits = [glyphs[i].digit_score for i in idx if glyphs[i].has_glyph]
         digit = float(np.mean(digits)) if digits else 0.0
         score = conf_score + 0.35 * digit
         if score > best_score:
@@ -147,7 +161,7 @@ def classify_tiles(rotated, mesh, verdicts, global_shift=None, **param_overrides
             f"read_letters: board rotated {rotation_k * 90} degrees for recognition (rotate_board.py may have missed it)"
         )
 
-    glyphs = [gn.normalize(patches[(v.row, v.col)], rotation_k=rotation_k) for v in tile_verdicts]
+    glyphs = list(get_executor().map(lambda v: gn.normalize(patches[(v.row, v.col)], rotation_k=rotation_k), tile_verdicts))
     preds = _fast_sources(glyphs, p)
 
     # Reprocess weak glyphs with alternative binarisation variants.

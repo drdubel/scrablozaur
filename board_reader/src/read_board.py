@@ -165,7 +165,20 @@ def find_parallax_shift(rotated, mesh):
     as much aggregate colour+glyph evidence as real tiles would, board-wide
     (measured on the test set: a working 68/69 photo, score 22.7, was
     nearly wrecked to 0/69 by a shift that scored 26 for exactly this
-    reason, before this guard was added)."""
+    reason, before this guard was added).
+
+    The up-to-24 remaining candidates are independent _shift_score() calls,
+    which looks like an obvious win to hand to the shared thread pool --
+    measured instead (isolated before/after timing on the 6 test-set photos
+    that actually trigger this search) and it was consistently *slower*
+    threaded (0.56x-0.96x) than the plain sequential loop below, never
+    faster. Each _shift_score() call is itself dominated by a 225-iteration
+    Python loop of small (48px) cv2 calls (see its own docstring), so the
+    unit of work hitting the pool is too fine-grained for thread-dispatch
+    overhead to pay for itself -- unlike this module's other per-tile loops,
+    which parallelize over coarser, torch-batch-sized or gn.normalize-sized
+    work. Left sequential.
+    """
     baseline_score = _shift_score(rotated, mesh, np.zeros(2, dtype=np.float32))
     if baseline_score >= SHIFT_SEARCH_TRIGGER:
         return np.zeros(2, dtype=np.float32)
