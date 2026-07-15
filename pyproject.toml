@@ -1,14 +1,14 @@
 [project]
 name = "scrablozaur"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
     "pydantic>=2.7.0",
     "python-multipart>=0.0.9",
-    "opencv-python>=4.10",
-    "numpy>=1.26",
+    "opencv-python>=5.0.0.93",
+    "numpy>=2.5.1",
     "torch>=2.9",
     "pillow>=12.3.0",
     "tqdm>=4.66.0",
