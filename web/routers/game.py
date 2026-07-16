@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from web.game import Difficulty, GameMode, GameSession, Player, SessionStore
+from web.engine import Dawg, get_dawg
+from web.game import Difficulty, GameMode, GameSession, Player, SessionStore, computer_auto_play
 from web.models import (BoardStateResponse, LastComputerMove, NewGameRequest,
                         PlayerState)
 
@@ -84,12 +85,22 @@ def _players_from_request(body: NewGameRequest) -> list[Player]:
     return [Player(name=p.name, is_computer=p.is_computer) for p in body.players]
 
 
+def _play_opening_computer_move(session: GameSession, dawg: Dawg) -> None:
+    """First-player draw (SessionStore.create) can land on the computer --
+    every other auto-play trigger is nested inside a human-initiated
+    endpoint, so without this the game would just sit stuck waiting for a
+    human turn that isn't next."""
+    if session.game_mode == GameMode.COMPETITIVE and session.current_player.is_computer:
+        session.last_computer_move = computer_auto_play(session, dawg)
+
+
 @router.post("/new", response_model=BoardStateResponse)
-async def new_game(body: NewGameRequest, response: Response) -> BoardStateResponse:
+async def new_game(body: NewGameRequest, response: Response, dawg: Dawg = Depends(get_dawg)) -> BoardStateResponse:
     players = _players_from_request(body)
     session = SessionStore.create(
         players, game_mode=GameMode(body.game_mode), difficulty=Difficulty(body.difficulty)
     )
+    _play_opening_computer_move(session, dawg)
     _set_session_cookie(response, session.session_id)
     return _state_response(session)
 
@@ -100,7 +111,9 @@ async def get_state(request: Request) -> BoardStateResponse:
 
 
 @router.post("/reset", response_model=BoardStateResponse)
-async def reset_game(body: NewGameRequest, request: Request, response: Response) -> BoardStateResponse:
+async def reset_game(
+    body: NewGameRequest, request: Request, response: Response, dawg: Dawg = Depends(get_dawg)
+) -> BoardStateResponse:
     sid = request.cookies.get("scrablozaur_session")
     if sid:
         SessionStore.delete(sid)
@@ -108,6 +121,7 @@ async def reset_game(body: NewGameRequest, request: Request, response: Response)
     session = SessionStore.create(
         players, game_mode=GameMode(body.game_mode), difficulty=Difficulty(body.difficulty)
     )
+    _play_opening_computer_move(session, dawg)
     _set_session_cookie(response, session.session_id)
     return _state_response(session)
 

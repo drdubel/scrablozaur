@@ -92,6 +92,21 @@ static BONUS_TABLE: [[(u8, u8); 8]; 8] = [
     ],
 ];
 
+// Polish letter point values, shared by calculate_word_points and rack_value
+// so the two can never drift apart.
+fn letter_points(c: char) -> u32 {
+    match c.to_uppercase().next().unwrap_or(c) {
+        'A' | 'E' | 'I' | 'O' | 'Z' | 'W' | 'N' | 'S' | 'R' => 1,
+        'D' | 'Y' | 'C' | 'K' | 'L' | 'M' | 'P' | 'T' => 2,
+        'B' | 'G' | 'H' | 'J' | 'Ł' | 'U' => 3,
+        'Ą' | 'Ę' | 'F' | 'Ó' | 'Ś' | 'Ż' => 5,
+        'Ć' => 6,
+        'Ń' => 7,
+        'Ź' => 9,
+        _ => 0,
+    }
+}
+
 // Covers all Polish letters (max 'ż' = U+017C = 380) and the blank tile '?' (U+003F = 63).
 const FREQ_SIZE: usize = 400;
 type LetterFreq = [u8; FREQ_SIZE];
@@ -506,6 +521,45 @@ impl Board {
         drawn
     }
 
+    /// Standard Scrabble rule: exchanging tiles for new ones from the bag is
+    /// only allowed while at least 7 tiles remain in the bag, regardless of
+    /// how many tiles the player wants to exchange.
+    #[staticmethod]
+    fn can_exchange(bag_remaining: usize) -> bool {
+        bag_remaining >= 7
+    }
+
+    /// Sum of face point values of a rack (blank tiles score 0, matching
+    /// their in-play scoring) -- used for the standard end-of-game scoring
+    /// adjustment: the player who goes out gains this value from each
+    /// opponent's rack, everyone else loses it from their own.
+    #[staticmethod]
+    fn rack_value(letters: &str) -> u32 {
+        letters.chars().map(letter_points).sum()
+    }
+
+    /// Standard rule for who goes first: each player draws one tile, the
+    /// one closest to 'A' in alphabet order goes first, and a blank beats
+    /// every letter. Returns the *index* into `draws` of the winner (first
+    /// index wins ties). Drawn tiles are not consumed here -- the caller is
+    /// responsible for returning them to the bag before dealing real racks.
+    #[staticmethod]
+    fn first_draw_winner(draws: Vec<char>) -> usize {
+        const ALPHABET: &str = "aąbcćdeęfghijklłmnńoóprsśtuwyzźż";
+        let rank = |c: char| -> i32 {
+            if c == '?' {
+                -1
+            } else {
+                ALPHABET.chars().position(|a| a == c).map_or(i32::MAX, |p| p as i32)
+            }
+        };
+        draws
+            .iter()
+            .enumerate()
+            .min_by_key(|&(_, &c)| rank(c))
+            .map_or(0, |(i, _)| i)
+    }
+
     fn calculate_word_points(
         &self,
         word: &str,
@@ -514,19 +568,15 @@ impl Board {
         horizontal: bool,
         letters: &str,
     ) -> PyResult<u32> {
-        let letter_points = |c: char| match c.to_uppercase().next().unwrap_or(c) {
-            'A' | 'E' | 'I' | 'O' | 'Z' | 'W' | 'N' | 'S' | 'R' => 1,
-            'D' | 'Y' | 'C' | 'K' | 'L' | 'M' | 'P' | 'T' => 2,
-            'B' | 'G' | 'H' | 'J' | 'Ł' | 'U' => 3,
-            'Ą' | 'Ę' | 'F' | 'Ó' | 'Ś' | 'Ż' => 5,
-            'Ć' => 6,
-            'Ń' => 7,
-            'Ź' => 9,
-            _ => 0,
-        };
-
-        let mut total = 0u32;
-        let mut word_mul = 1u32;
+        // The main word and every cross-word it forms are each scored
+        // independently (own letter multipliers + own word multiplier, from
+        // only the one square where the shared new tile lands), then summed
+        // — never merge their tile totals before multiplying, or a word
+        // multiplier from elsewhere in the main word would incorrectly leak
+        // into an unrelated cross-word's score.
+        let mut main_total = 0u32;
+        let mut main_word_mul = 1u32;
+        let mut cross_words_total = 0u32;
         let mut tiles_from_hand = 0usize;
 
         for (i, ch) in word.chars().enumerate() {
@@ -542,39 +592,55 @@ impl Board {
             let bonus = BONUS_TABLE[r2 as usize][c2 as usize];
 
             if self.board[r][c] == '-' {
-                // new tile placed from hand
-                if letters.contains(ch) {
-                    total += letter_points(ch) * bonus.0 as u32;
-                    tiles_from_hand += 1;
+                // new tile placed from hand — blank tiles count as the
+                // letter for word-building but always score 0
+                let this_letter_value = if letters.contains(ch) {
+                    letter_points(ch)
                 } else {
-                    // blank tile — counts as the letter but scores 0
-                    tiles_from_hand += 1;
-                }
-                word_mul *= bonus.1 as u32;
+                    0
+                };
+                tiles_from_hand += 1;
 
-                // add perpendicular cross-word tiles
+                main_total += this_letter_value * bonus.0 as u32;
+                main_word_mul *= bonus.1 as u32;
+
+                // cross-word formed by this newly placed letter, if any,
+                // scored on its own (this tile's value + existing
+                // perpendicular neighbours), multiplied only by this tile's
+                // own word bonus.
+                let mut cross_total = this_letter_value * bonus.0 as u32;
+                let mut has_cross_neighbor = false;
+
                 if !horizontal {
                     let mut x = 1;
                     while x <= c && self.board[r][c - x] != '-' {
-                        total += letter_points(self.board[r][c - x]);
+                        cross_total += letter_points(self.board[r][c - x]);
+                        has_cross_neighbor = true;
                         x += 1;
                     }
                     let mut x = 1;
                     while c + x < 15 && self.board[r][c + x] != '-' {
-                        total += letter_points(self.board[r][c + x]);
+                        cross_total += letter_points(self.board[r][c + x]);
+                        has_cross_neighbor = true;
                         x += 1;
                     }
                 } else {
                     let mut y = 1;
                     while y <= r && self.board[r - y][c] != '-' {
-                        total += letter_points(self.board[r - y][c]);
+                        cross_total += letter_points(self.board[r - y][c]);
+                        has_cross_neighbor = true;
                         y += 1;
                     }
                     let mut y = 1;
                     while r + y < 15 && self.board[r + y][c] != '-' {
-                        total += letter_points(self.board[r + y][c]);
+                        cross_total += letter_points(self.board[r + y][c]);
+                        has_cross_neighbor = true;
                         y += 1;
                     }
+                }
+
+                if has_cross_neighbor {
+                    cross_words_total += cross_total * bonus.1 as u32;
                 }
             } else {
                 if ch != self.board[r][c] {
@@ -583,12 +649,14 @@ impl Board {
                         self.board[r][c], ch,
                     )));
                 }
-                total += letter_points(ch);
+                main_total += letter_points(ch);
             }
         }
 
         // 50-point bonus for using all 7 tiles in one move
-        Ok(total * word_mul + if tiles_from_hand == 7 { 50 } else { 0 })
+        Ok(main_total * main_word_mul
+            + cross_words_total
+            + if tiles_from_hand == 7 { 50 } else { 0 })
     }
 
     fn check_word_placement(
@@ -599,6 +667,14 @@ impl Board {
         col: usize,
         horizontal: bool,
     ) -> PyResult<()> {
+        // Standard rule: a play must be at least 2 letters -- enforced
+        // explicitly rather than relying on the dictionary happening to
+        // have no 1-letter entries.
+        if word.chars().count() < 2 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "word must be at least 2 letters",
+            ));
+        }
         for (i, ch) in word.chars().enumerate() {
             let r = if horizontal { row } else { row + i };
             let c = if horizontal { col + i } else { col };
@@ -646,6 +722,9 @@ impl Board {
         let valid_end = |i: usize| i == n - 1 || empty(i + 1);
 
         let mut patterns = Vec::new();
+
+        // "Crossing" patterns: spans within this row that mix empty and
+        // filled cells -- a new word overlaps an existing tile in this row.
         for start in 0..n {
             for end in (start + 1)..n {
                 if !valid_start(start) || !valid_end(end) {
@@ -657,6 +736,43 @@ impl Board {
                 }
             }
         }
+
+        // "Parallel" patterns: fully-empty spans in this row that connect
+        // to the board only via a filled neighbour directly above/below --
+        // e.g. a new word running alongside an existing one, one row over,
+        // touching it only through the cross-words it forms. `get_all_patterns`
+        // fed only the "crossing" patterns above would never find these.
+        let has_adjacent_tile =
+            |i: usize| (row_idx > 0 && self.board[row_idx - 1][i] != '-') || (row_idx < n - 1 && self.board[row_idx + 1][i] != '-');
+        let mut run_start = 0;
+        while run_start < n {
+            if !empty(run_start) {
+                run_start += 1;
+                continue;
+            }
+            let mut run_end = run_start;
+            while run_end + 1 < n && empty(run_end + 1) {
+                run_end += 1;
+            }
+            for start in run_start..=run_end {
+                for end in start..=run_end {
+                    // Same boundary rule as "crossing" patterns: a sub-span
+                    // touching a same-row tile right at its start/end would
+                    // silently glue that tile onto the new word (e.g. "nitowa"
+                    // ending right before an existing 'c' becomes "nitowac"
+                    // on the board) -- that case belongs to a "crossing"
+                    // pattern that includes the tile, not this one.
+                    if !valid_start(start) || !valid_end(end) {
+                        continue;
+                    }
+                    if (start..=end).any(has_adjacent_tile) {
+                        patterns.push((start, end));
+                    }
+                }
+            }
+            run_start = run_end + 1;
+        }
+
         patterns
     }
 
@@ -667,6 +783,9 @@ impl Board {
         let valid_end = |i: usize| i == n - 1 || empty(i + 1);
 
         let mut patterns = Vec::new();
+
+        // "Crossing" patterns: spans within this column that mix empty and
+        // filled cells -- a new word overlaps an existing tile in this column.
         for start in 0..n {
             for end in (start + 1)..n {
                 if !valid_start(start) || !valid_end(end) {
@@ -689,6 +808,37 @@ impl Board {
                 }
             }
         }
+
+        // "Parallel" patterns: fully-empty spans in this column that connect
+        // to the board only via a filled neighbour directly left/right --
+        // see get_row_patterns for the full rationale.
+        let has_adjacent_tile =
+            |i: usize| (col_idx > 0 && self.board[i][col_idx - 1] != '-') || (col_idx < n - 1 && self.board[i][col_idx + 1] != '-');
+        let mut run_start = 0;
+        while run_start < n {
+            if !empty(run_start) {
+                run_start += 1;
+                continue;
+            }
+            let mut run_end = run_start;
+            while run_end + 1 < n && empty(run_end + 1) {
+                run_end += 1;
+            }
+            for start in run_start..=run_end {
+                for end in start..=run_end {
+                    // Same boundary rule as "crossing" patterns -- see the
+                    // matching comment in get_row_patterns.
+                    if !valid_start(start) || !valid_end(end) {
+                        continue;
+                    }
+                    if (start..=end).any(has_adjacent_tile) {
+                        patterns.push((start, end));
+                    }
+                }
+            }
+            run_start = run_end + 1;
+        }
+
         patterns
     }
 
@@ -734,7 +884,7 @@ impl Board {
         if first {
             // First move must cover the centre square (7, 7); try all offsets.
             for word in dawg.search("*", letters) {
-                for offset in 1..7usize {
+                for offset in 0..7usize {
                     if offset >= word.len() {
                         break;
                     }

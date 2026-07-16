@@ -45,6 +45,13 @@ class TileBag:
         drawn, self.tiles = self.tiles[:n], self.tiles[n:]
         return drawn
 
+    def exchange(self, return_tiles: list[str]) -> list[str]:
+        """Return `return_tiles` to the bag, shuffle, then draw the same
+        count of new tiles. Caller must check Board.can_exchange first."""
+        self.tiles.extend(return_tiles)
+        random.shuffle(self.tiles)
+        return self.draw(len(return_tiles))
+
     def remaining(self) -> int:
         return len(self.tiles)
 
@@ -78,6 +85,7 @@ class UndoEntry:
     tile_bag_tiles: list[str] | None
     last_computer_move: ComputerMoveInfo | None
     tile_owners: list[list[int | None]]
+    consecutive_no_play: int
 
 
 @dataclass
@@ -97,7 +105,7 @@ class GameSession:
         default_factory=lambda: [[None] * 15 for _ in range(15)]
     )
     game_over: bool = False
-    passed_players: set[int] = field(default_factory=set)
+    consecutive_no_play: int = 0
     last_move_rating: int | None = None
 
     @property
@@ -122,6 +130,7 @@ class GameSession:
             tile_bag_tiles=list(self.tile_bag.tiles) if self.tile_bag else None,
             last_computer_move=self.last_computer_move,
             tile_owners=[row[:] for row in self.tile_owners],
+            consecutive_no_play=self.consecutive_no_play,
         ))
 
     def pop_undo(self) -> bool:
@@ -139,6 +148,8 @@ class GameSession:
             self.tile_bag.tiles = entry.tile_bag_tiles
         self.last_computer_move = entry.last_computer_move
         self.tile_owners = [row[:] for row in entry.tile_owners]
+        self.consecutive_no_play = entry.consecutive_no_play
+        self.game_over = False
         return True
 
     def record_placement(self, word: str, row: int, col: int, horizontal: bool, player_idx: int) -> None:
@@ -169,9 +180,17 @@ class SessionStore:
     ) -> GameSession:
         player_list = [Player(p.name, p.is_computer) for p in (players or _DEFAULT_PLAYERS)]
         tile_bag: TileBag | None = None
+        first_player_idx = 0
 
         if game_mode == GameMode.COMPETITIVE:
             tile_bag = TileBag.full()
+            # Standard rule: each player draws one tile, closest to 'A'
+            # (blank beats everything) goes first; drawn tiles go back to
+            # the bag and get reshuffled in before dealing real racks.
+            draws = tile_bag.draw(len(player_list))
+            first_player_idx = Board.first_draw_winner(draws)
+            tile_bag.tiles.extend(draws)
+            random.shuffle(tile_bag.tiles)
             for p in player_list:
                 p.letters = "".join(tile_bag.draw(7))
 
@@ -179,6 +198,7 @@ class SessionStore:
             session_id=str(uuid.uuid4()),
             board=Board([["-"] * 15 for _ in range(15)]),
             players=player_list,
+            current_player_idx=first_player_idx,
             game_mode=game_mode,
             difficulty=difficulty,
             tile_bag=tile_bag,
@@ -221,6 +241,18 @@ def validate_rack_for_word(
     return True
 
 
+def rack_contains(rack: str, letters: str) -> bool:
+    """Return True if rack contains at least the exact tiles in *letters*
+    (no blank substitution — exchanging a blank means giving up that exact
+    tile, not standing in for something else)."""
+    rack_chars = list(rack)
+    for ch in letters:
+        if ch not in rack_chars:
+            return False
+        rack_chars.remove(ch)
+    return True
+
+
 def _deduct_tiles(
     player: Player,
     word: str,
@@ -248,6 +280,48 @@ def _refill_rack(session: GameSession, player: Player) -> None:
     needed = 7 - len(player.letters)
     if needed > 0:
         player.letters += "".join(session.tile_bag.draw(needed))
+
+
+# ── End of game (COMPETITIVE only — SANDBOX has no real bag/opponent) ────────
+
+# Standard rule: the game ends once nobody has played a word for this many
+# consecutive turns in a row (pass/exchange both count as "no play").
+CONSECUTIVE_NO_PLAY_LIMIT = 2
+
+
+def _apply_end_of_game_scoring(session: GameSession, went_out_idx: int | None) -> None:
+    """Standard end-of-game score adjustment. If `went_out_idx` is given,
+    that player gains the summed rack value of every other player and is
+    the only one who doesn't lose their own (they have none left); with no
+    `went_out_idx` (game ended by mutual no-play), every player loses their
+    own remaining rack value instead."""
+    if went_out_idx is not None:
+        others_value = sum(
+            Board.rack_value(p.letters) for i, p in enumerate(session.players) if i != went_out_idx
+        )
+        session.players[went_out_idx].score += others_value
+        for i, p in enumerate(session.players):
+            if i != went_out_idx:
+                p.score -= Board.rack_value(p.letters)
+    else:
+        for p in session.players:
+            p.score -= Board.rack_value(p.letters)
+
+
+def _check_game_over(session: GameSession, just_played_idx: int) -> None:
+    """Call after every real turn (move/pass/exchange) in COMPETITIVE mode.
+    Ends the game immediately if the player who just moved emptied their
+    rack with an empty bag (going out), or if enough consecutive turns have
+    passed with no one playing a word."""
+    if session.game_over or session.tile_bag is None:
+        return
+    player = session.players[just_played_idx]
+    if not player.letters and session.tile_bag.remaining() == 0:
+        _apply_end_of_game_scoring(session, went_out_idx=just_played_idx)
+        session.game_over = True
+    elif session.consecutive_no_play >= CONSECUTIVE_NO_PLAY_LIMIT:
+        _apply_end_of_game_scoring(session, went_out_idx=None)
+        session.game_over = True
 
 
 def _pick_by_difficulty(suggestions: list[dict], difficulty: Difficulty) -> dict:
@@ -283,26 +357,33 @@ def _pick_by_difficulty(suggestions: list[dict], difficulty: Difficulty) -> dict
 
 def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
     """Play a move for the computer weighted by difficulty, then advance the turn."""
+    player_idx = session.current_player_idx
     # Fetch enough candidates so difficulty has real choices; cap at 30 for speed
     n_candidates = 1 if session.difficulty == Difficulty.IMPOSSIBLE else 30
     suggestions = get_suggestions(session, dawg, n=n_candidates)
 
     if not suggestions:
-        session.advance_turn()
+        session.consecutive_no_play += 1
+        _check_game_over(session, player_idx)
+        if not session.game_over:
+            session.advance_turn()
         return ComputerMoveInfo(word="", score=0, row=0, col=0, horizontal=True, passed=True)
 
     sug = _pick_by_difficulty(suggestions, session.difficulty)
     word, row, col, horizontal = sug["word"], sug["row"], sug["col"], sug["horizontal"]
 
     grid = session.board_grid()
-    session.record_placement(word, row, col, horizontal, session.current_player_idx)
+    session.record_placement(word, row, col, horizontal, player_idx)
     session.board.place_word(word, row, col, horizontal)
     session.current_player.score += sug["score"]
     session.is_first_move = False
 
     _deduct_tiles(session.current_player, word, grid, row, col, horizontal)
     _refill_rack(session, session.current_player)
-    session.advance_turn()
+    session.consecutive_no_play = 0
+    _check_game_over(session, player_idx)
+    if not session.game_over:
+        session.advance_turn()
 
     return ComputerMoveInfo(
         word=word, score=sug["score"], row=row, col=col, horizontal=horizontal

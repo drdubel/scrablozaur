@@ -6,13 +6,13 @@ import urllib.request
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from web.engine import Dawg, get_dawg
-from web.game import (GameMode, _deduct_tiles, _refill_rack, computer_auto_play,
-                      compute_move_rating, get_suggestions, get_suggestions_for_letters,
-                      validate_rack_for_word)
-from web.models import (BoardStateResponse, DefinitionResponse, PlaceComputerWordRequest,
-                        PlaceHumanWordRequest, PreviewScoreResponse, SetComputerLettersRequest,
-                        Suggestion, SuggestionsResponse)
+from web.engine import Board, Dawg, get_dawg
+from web.game import (GameMode, _check_game_over, _deduct_tiles, _refill_rack,
+                      computer_auto_play, compute_move_rating, get_suggestions,
+                      get_suggestions_for_letters, rack_contains, validate_rack_for_word)
+from web.models import (BoardStateResponse, DefinitionResponse, ExchangeTilesRequest,
+                        PlaceComputerWordRequest, PlaceHumanWordRequest, PreviewScoreResponse,
+                        SetComputerLettersRequest, Suggestion, SuggestionsResponse)
 from web.routers.game import _require_session, _state_response
 
 router = APIRouter(prefix="/board")
@@ -107,16 +107,14 @@ async def place_human_word(
     if session.game_mode == GameMode.COMPETITIVE:
         _deduct_tiles(session.current_player, word, pre_grid, body.row, body.col, body.horizontal)
         _refill_rack(session, session.current_player)
+        session.consecutive_no_play = 0
+        _check_game_over(session, session.current_player_idx)
 
-    session.advance_turn()
+    if not session.game_over:
+        session.advance_turn()
 
-    if session.game_mode == GameMode.COMPETITIVE:
+    if session.game_mode == GameMode.COMPETITIVE and not session.game_over:
         session.last_computer_move = computer_auto_play(session, dawg)
-        # Auto-end: if human has no moves left, game is over
-        if not session.game_over:
-            human = next((p for p in session.players if not p.is_computer), None)
-            if human and not get_suggestions_for_letters(session, dawg, human.letters, n=1):
-                session.game_over = True
 
     return _state_response(session)
 
@@ -138,20 +136,63 @@ async def skip_turn(
     return _state_response(session)
 
 
+@router.post("/exchange", response_model=BoardStateResponse)
+async def exchange_tiles(
+    body: ExchangeTilesRequest,
+    request: Request,
+    dawg: Dawg = Depends(get_dawg),
+) -> BoardStateResponse:
+    """Return the given tiles to the bag and draw the same number of new
+    ones instead of playing a word — only legal in COMPETITIVE mode while
+    at least 7 tiles remain in the bag (Board.can_exchange)."""
+    session = _require_session(request)
+    if session.game_over:
+        raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
+    if session.game_mode != GameMode.COMPETITIVE or not session.tile_bag:
+        raise HTTPException(status_code=400, detail="Wymiana liter jest dostępna tylko w trybie rywalizacji.")
+
+    letters = body.letters.lower()
+    if not Board.can_exchange(session.tile_bag.remaining()):
+        raise HTTPException(status_code=400, detail="Za mało liter w worku, żeby wymienić (potrzeba co najmniej 7).")
+
+    player = session.current_player
+    if not rack_contains(player.letters, letters):
+        raise HTTPException(status_code=400, detail="Nie masz tych liter na stojaku.")
+
+    session.push_undo()
+    rack_chars = list(player.letters)
+    for ch in letters:
+        rack_chars.remove(ch)
+    player.letters = "".join(rack_chars) + "".join(session.tile_bag.exchange(list(letters)))
+    session.consecutive_no_play += 1
+    _check_game_over(session, session.current_player_idx)
+
+    if not session.game_over:
+        session.advance_turn()
+        session.last_computer_move = computer_auto_play(session, dawg)
+
+    return _state_response(session)
+
+
 @router.post("/pass", response_model=BoardStateResponse)
-async def pass_turn(request: Request) -> BoardStateResponse:
-    """Current human player passes (resigns). If all humans pass, game ends."""
+async def pass_turn(request: Request, dawg: Dawg = Depends(get_dawg)) -> BoardStateResponse:
+    """Current player passes their turn (plays no word). Standard rule: the
+    game ends once nobody has played a word for CONSECUTIVE_NO_PLAY_LIMIT
+    turns in a row, not after a single pass."""
     session = _require_session(request)
     if session.game_over:
         raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
 
-    session.passed_players.add(session.current_player_idx)
-    human_idxs = {i for i, p in enumerate(session.players) if not p.is_computer}
+    session.push_undo()
 
-    if human_idxs <= session.passed_players:
-        session.game_over = True
-    else:
+    if session.game_mode == GameMode.COMPETITIVE:
+        session.consecutive_no_play += 1
+        _check_game_over(session, session.current_player_idx)
+
+    if not session.game_over:
         session.advance_turn()
+        if session.game_mode == GameMode.COMPETITIVE:
+            session.last_computer_move = computer_auto_play(session, dawg)
 
     return _state_response(session)
 

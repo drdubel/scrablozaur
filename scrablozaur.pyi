@@ -127,3 +127,28 @@ class Board:
         This method returns a string of new letters drawn from the bag, ensuring
         that the total number of letters (current + drawn) does not exceed 7.
         """
+
+    @staticmethod
+    def can_exchange(bag_remaining: int) -> bool:
+        """Whether exchanging tiles for new ones is currently allowed.
+
+        Standard Scrabble rule: exchanging is only permitted while at least 7
+        tiles remain in the bag, regardless of how many tiles are exchanged.
+        """
+
+    @staticmethod
+    def rack_value(letters: str) -> int:
+        """Sum of face point values of the given rack (blanks score 0).
+
+        Used for the standard end-of-game scoring adjustment: the player who
+        goes out gains this value from each opponent's rack; everyone else
+        loses it from their own.
+        """
+
+    @staticmethod
+    def first_draw_winner(draws: list[str]) -> int:
+        """Index into `draws` of who goes first: each player draws one tile,
+        closest to 'A' in alphabet order wins, a blank ('?') beats every
+        letter, first index wins ties. Does not consume/mutate any bag —
+        the caller returns the drawn tiles before dealing real racks.
+        """

@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 # ── Requests ─────────────────────────────────────────────────────────────────
 
+
 class NewPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     is_computer: bool = False
@@ -28,6 +29,10 @@ class SetComputerLettersRequest(BaseModel):
     letters: str = Field(..., max_length=7)
 
 
+class ExchangeTilesRequest(BaseModel):
+    letters: str = Field(..., min_length=1, max_length=7)
+
+
 class ScanConfirmRequest(BaseModel):
     board: list[list[str]] = Field(..., min_length=15, max_length=15)
 
@@ -45,6 +50,7 @@ class PlaceComputerWordRequest(BaseModel):
 
 
 # ── Responses ─────────────────────────────────────────────────────────────────
+
 
 class PlayerState(BaseModel):
     name: str
