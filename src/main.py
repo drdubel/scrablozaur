@@ -1,3 +1,6 @@
+import statistics
+
+from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 from scrablozaur import Board, Dawg
@@ -25,7 +28,7 @@ class Player:
             the player's letters and fits one of the patterns.
           - Place the word on the board and update the player's letters.
         """
-        w = self.board.get_best_word(dawg, self.letters, first, parallel=False)
+        w = self.board.get_best_word(dawg, self.letters, first, parallel=True)
         self.score += w[1]
         self.board.place_word(w[0], w[2][0], w[2][1], w[2][2])
         for ch in w[3]:
@@ -34,7 +37,7 @@ class Player:
         return w[0]
 
 
-def graj(debug: bool = False) -> float:
+def graj(debug: bool = False) -> tuple[int, int]:
     b = Board([["-" for _ in range(15)] for _ in range(15)])
 
     p1 = Player(b)
@@ -69,19 +72,32 @@ def graj(debug: bool = False) -> float:
         print(f"Final Scores: Player 1: {p1.score}, Player 2: {p2.score}")
         print(b)
 
-    return (p1.score + p2.score) / 2
+    return p1.score, p2.score
 
 
 def speed_test() -> None:
-    N = 1000
-    avg = 0.0
+    N = 100
+    scores = []
 
     with tqdm(total=N) as pbar:
         for _ in range(N):
-            avg += graj(debug=False)
+            p1, p2 = graj(debug=True)
+            if p1 == 0 and p2 == 0:
+                print("Both players scored 0. Ending test early.")
+                break
+            scores.extend([p1, p2])
             pbar.update(1)
 
-    print(f"Average score: {avg / N}")
+    print(f"Average score: {sum(scores) / len(scores):.2f}")
+    print(f"Median score: {statistics.median(scores)}")
+    print(f"Max score: {max(scores)}")
+    print(f"Min score: {min(scores)}")
+
+    plt.hist(scores, bins=20)
+    plt.xlabel("Score")
+    plt.ylabel("Frequency")
+    plt.title("Distribution of Scores")
+    plt.show()
 
 
 if __name__ == "__main__":
