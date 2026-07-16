@@ -106,6 +106,7 @@ class GameSession:
     )
     game_over: bool = False
     consecutive_no_play: int = 0
+    passed_players: set[int] = field(default_factory=set)
     last_move_rating: int | None = None
 
     @property

@@ -124,14 +124,22 @@ async def skip_turn(
     request: Request,
     dawg: Dawg = Depends(get_dawg),
 ) -> BoardStateResponse:
+    """Current player skips their turn (plays no word) -- the standard
+    Scrabble "pass". The game only ends once nobody has played a word for
+    CONSECUTIVE_NO_PLAY_LIMIT turns in a row, not after a single skip."""
     session = _require_session(request)
     if session.game_over:
         raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
     session.push_undo()
-    session.advance_turn()
 
     if session.game_mode == GameMode.COMPETITIVE:
-        session.last_computer_move = computer_auto_play(session, dawg)
+        session.consecutive_no_play += 1
+        _check_game_over(session, session.current_player_idx)
+
+    if not session.game_over:
+        session.advance_turn()
+        if session.game_mode == GameMode.COMPETITIVE:
+            session.last_computer_move = computer_auto_play(session, dawg)
 
     return _state_response(session)
 
@@ -175,24 +183,22 @@ async def exchange_tiles(
 
 
 @router.post("/pass", response_model=BoardStateResponse)
-async def pass_turn(request: Request, dawg: Dawg = Depends(get_dawg)) -> BoardStateResponse:
-    """Current player passes their turn (plays no word). Standard rule: the
-    game ends once nobody has played a word for CONSECUTIVE_NO_PLAY_LIMIT
-    turns in a row, not after a single pass."""
+async def pass_turn(request: Request) -> BoardStateResponse:
+    """Current human player resigns ("Poddaj się") -- a deliberate,
+    immediate stop, distinct from /board/skip's ordinary Scrabble pass. If
+    all humans resign, the game ends. Not to be confused with a standard
+    pass, which never ends the game after just one turn."""
     session = _require_session(request)
     if session.game_over:
         raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
 
-    session.push_undo()
+    session.passed_players.add(session.current_player_idx)
+    human_idxs = {i for i, p in enumerate(session.players) if not p.is_computer}
 
-    if session.game_mode == GameMode.COMPETITIVE:
-        session.consecutive_no_play += 1
-        _check_game_over(session, session.current_player_idx)
-
-    if not session.game_over:
+    if human_idxs <= session.passed_players:
+        session.game_over = True
+    else:
         session.advance_turn()
-        if session.game_mode == GameMode.COMPETITIVE:
-            session.last_computer_move = computer_auto_play(session, dawg)
 
     return _state_response(session)
 
