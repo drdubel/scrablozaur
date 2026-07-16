@@ -1,6 +1,6 @@
 import statistics
 
-from matplotlib import pyplot as plt
+from matplotlib import pyplot as plt  # type: ignore
 from tqdm import tqdm
 
 from scrablozaur import Board, Dawg
@@ -76,15 +76,12 @@ def graj(debug: bool = False) -> tuple[int, int]:
 
 
 def speed_test() -> None:
-    N = 100
+    N = 1000
     scores = []
 
     with tqdm(total=N) as pbar:
         for _ in range(N):
-            p1, p2 = graj(debug=True)
-            if p1 == 0 and p2 == 0:
-                print("Both players scored 0. Ending test early.")
-                break
+            p1, p2 = graj(debug=False)
             scores.extend([p1, p2])
             pbar.update(1)
 
