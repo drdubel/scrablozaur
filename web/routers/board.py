@@ -144,6 +144,25 @@ async def skip_turn(
     return _state_response(session)
 
 
+@router.post("/next-move", response_model=BoardStateResponse)
+async def next_auto_move(
+    request: Request,
+    dawg: Dawg = Depends(get_dawg),
+) -> BoardStateResponse:
+    """Advance a SANDBOX_AUTO game by one turn -- every player in this mode
+    is a computer, so this is the only kind of turn it has. The live
+    auto-play UI calls this once per step, or repeatedly for autoplay."""
+    session = _require_session(request)
+    if session.game_mode != GameMode.SANDBOX_AUTO:
+        raise HTTPException(status_code=400, detail="Dostępne tylko w trybie automatycznym.")
+    if session.game_over:
+        raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
+
+    session.push_undo()
+    session.last_computer_move = computer_auto_play(session, dawg)
+    return _state_response(session)
+
+
 @router.post("/exchange", response_model=BoardStateResponse)
 async def exchange_tiles(
     body: ExchangeTilesRequest,

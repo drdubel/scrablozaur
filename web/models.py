@@ -10,11 +10,12 @@ from pydantic import BaseModel, Field
 class NewPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     is_computer: bool = False
+    difficulty: Literal["easy", "medium", "hard", "impossible"] = "hard"
 
 
 class NewGameRequest(BaseModel):
     players: list[NewPlayerConfig] = Field(..., min_length=1, max_length=4)
-    game_mode: Literal["sandbox", "competitive"] = "sandbox"
+    game_mode: Literal["sandbox", "sandbox_auto", "competitive"] = "sandbox"
     difficulty: Literal["easy", "medium", "hard", "impossible"] = "hard"
 
 
@@ -49,6 +50,16 @@ class PlaceComputerWordRequest(BaseModel):
     score: int = Field(..., ge=0)
 
 
+class BenchmarkPlayerConfig(BaseModel):
+    name: str = Field(..., min_length=1, max_length=20)
+    difficulty: Literal["easy", "medium", "hard", "impossible"] = "hard"
+
+
+class BenchmarkRequest(BaseModel):
+    players: list[BenchmarkPlayerConfig] = Field(..., min_length=2, max_length=4)
+    games: int = Field(20, ge=1)
+
+
 # ── Responses ─────────────────────────────────────────────────────────────────
 
 
@@ -57,6 +68,7 @@ class PlayerState(BaseModel):
     is_computer: bool
     score: int
     letters: str
+    difficulty: str = "hard"
 
 
 class LastComputerMove(BaseModel):
@@ -135,3 +147,63 @@ class SaveTrainingResponse(BaseModel):
     matched: int
     total: int
     match_ratio: float
+
+
+# ── Benchmark ─────────────────────────────────────────────────────────────────
+
+
+class BenchmarkMoveRecord(BaseModel):
+    player_idx: int
+    word: str
+    score: int
+    row: int
+    col: int
+    horizontal: bool
+    passed: bool
+    board: list[list[str]]
+    scores_after: list[int]
+    letters_after: list[str]
+    tile_owners: list[list[int | None]]
+
+
+class BenchmarkPlayerStats(BaseModel):
+    name: str
+    difficulty: str
+    games_played: int
+    wins: int
+    ties: int
+    avg_score: float
+    high_score: int
+    low_score: int
+    words_played: int
+    avg_word_score: float
+
+
+class BenchmarkBestGame(BaseModel):
+    winner_name: str
+    winner_score: int
+    final_scores: list[PlayerState]
+    moves: list[BenchmarkMoveRecord]
+
+
+class BenchmarkResultResponse(BaseModel):
+    games_played: int
+    duration_ms: int
+    player_stats: list[BenchmarkPlayerStats]
+    best_game: BenchmarkBestGame | None = None
+    avg_game_length: float
+    longest_word: str | None = None
+    longest_word_score: int | None = None
+    highest_single_move_score: int | None = None
+
+
+class BenchmarkJobStartResponse(BaseModel):
+    job_id: str
+
+
+class BenchmarkJobStatusResponse(BaseModel):
+    status: Literal["running", "done", "error"]
+    games_done: int
+    games_total: int
+    result: BenchmarkResultResponse | None = None
+    error: str | None = None

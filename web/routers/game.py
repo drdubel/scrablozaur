@@ -24,6 +24,7 @@ def _state_response(session: GameSession) -> BoardStateResponse:
                     if session.game_mode == GameMode.COMPETITIVE and p.is_computer
                     else p.letters
                 ),
+                difficulty=p.difficulty.value,
             )
             for p in session.players
         ],
@@ -77,12 +78,25 @@ def _players_from_request(body: NewGameRequest) -> list[Player]:
             )
         return [
             Player(name=non_computer[0].name, is_computer=False),
-            Player(name="Komputer", is_computer=True),
+            Player(name="Komputer", is_computer=True, difficulty=Difficulty(body.difficulty)),
+        ]
+    if body.game_mode == "sandbox_auto":
+        if len(body.players) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="Tryb automatyczny wymaga co najmniej dwóch graczy-komputerów.",
+            )
+        return [
+            Player(name=p.name, is_computer=True, difficulty=Difficulty(p.difficulty))
+            for p in body.players
         ]
     computer_count = sum(1 for p in body.players if p.is_computer)
     if computer_count != 1:
         raise HTTPException(status_code=400, detail="Exactly one player must be the computer.")
-    return [Player(name=p.name, is_computer=p.is_computer) for p in body.players]
+    return [
+        Player(name=p.name, is_computer=p.is_computer, difficulty=Difficulty(p.difficulty))
+        for p in body.players
+    ]
 
 
 def _play_opening_computer_move(session: GameSession, dawg: Dawg) -> None:
@@ -97,9 +111,7 @@ def _play_opening_computer_move(session: GameSession, dawg: Dawg) -> None:
 @router.post("/new", response_model=BoardStateResponse)
 async def new_game(body: NewGameRequest, response: Response, dawg: Dawg = Depends(get_dawg)) -> BoardStateResponse:
     players = _players_from_request(body)
-    session = SessionStore.create(
-        players, game_mode=GameMode(body.game_mode), difficulty=Difficulty(body.difficulty)
-    )
+    session = SessionStore.create(players, game_mode=GameMode(body.game_mode))
     _play_opening_computer_move(session, dawg)
     _set_session_cookie(response, session.session_id)
     return _state_response(session)
@@ -118,9 +130,7 @@ async def reset_game(
     if sid:
         SessionStore.delete(sid)
     players = _players_from_request(body)
-    session = SessionStore.create(
-        players, game_mode=GameMode(body.game_mode), difficulty=Difficulty(body.difficulty)
-    )
+    session = SessionStore.create(players, game_mode=GameMode(body.game_mode))
     _play_opening_computer_move(session, dawg)
     _set_session_cookie(response, session.session_id)
     return _state_response(session)

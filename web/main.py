@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from web.engine import get_dawg
+from web.routers import benchmark as benchmark_router
 from web.routers import board as board_router
 from web.routers import game as game_router
 from web.routers import scan as scan_router
@@ -24,6 +25,7 @@ app = FastAPI(title="Scrablozaur", lifespan=lifespan)
 app.include_router(game_router.router, prefix="/api")
 app.include_router(board_router.router, prefix="/api")
 app.include_router(scan_router.router, prefix="/api")
+app.include_router(benchmark_router.router, prefix="/api")
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

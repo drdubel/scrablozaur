@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import random
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -10,6 +12,7 @@ from scrablozaur import Board, Dawg
 
 class GameMode(str, Enum):
     SANDBOX = "sandbox"
+    SANDBOX_AUTO = "sandbox_auto"
     COMPETITIVE = "competitive"
 
 
@@ -72,6 +75,7 @@ class Player:
     is_computer: bool
     score: int = 0
     letters: str = ""
+    difficulty: Difficulty = Difficulty.HARD
 
 
 @dataclass
@@ -98,7 +102,6 @@ class GameSession:
     move_number: int = 0
     move_history: list[UndoEntry] = field(default_factory=list)
     game_mode: GameMode = GameMode.SANDBOX
-    difficulty: Difficulty = Difficulty.HARD
     tile_bag: TileBag | None = None
     last_computer_move: ComputerMoveInfo | None = None
     tile_owners: list[list[int | None]] = field(
@@ -169,6 +172,39 @@ _DEFAULT_PLAYERS = [
 ]
 
 
+def _deal_new_game(players: list[Player], game_mode: GameMode) -> GameSession:
+    """Build a fresh GameSession for *players*, dealing a real bag + random
+    racks for the modes that use one. Shared by SessionStore.create (a real,
+    registered game) and run_benchmark (ephemeral simulated games that never
+    touch the session store)."""
+    tile_bag: TileBag | None = None
+    first_player_idx = 0
+
+    # COMPETITIVE (1 human + 1 computer) and SANDBOX_AUTO (2-4 computers)
+    # both play with a real bag and random racks -- only the referee-style
+    # plain SANDBOX mode has no bag at all.
+    if game_mode in (GameMode.COMPETITIVE, GameMode.SANDBOX_AUTO):
+        tile_bag = TileBag.full()
+        # Standard rule: each player draws one tile, closest to 'A'
+        # (blank beats everything) goes first; drawn tiles go back to
+        # the bag and get reshuffled in before dealing real racks.
+        draws = tile_bag.draw(len(players))
+        first_player_idx = Board.first_draw_winner(draws)
+        tile_bag.tiles.extend(draws)
+        random.shuffle(tile_bag.tiles)
+        for p in players:
+            p.letters = "".join(tile_bag.draw(7))
+
+    return GameSession(
+        session_id=str(uuid.uuid4()),
+        board=Board([["-"] * 15 for _ in range(15)]),
+        players=players,
+        current_player_idx=first_player_idx,
+        game_mode=game_mode,
+        tile_bag=tile_bag,
+    )
+
+
 class SessionStore:
     _sessions: dict[str, GameSession] = {}
 
@@ -177,33 +213,12 @@ class SessionStore:
         cls,
         players: list[Player] | None = None,
         game_mode: GameMode = GameMode.SANDBOX,
-        difficulty: Difficulty = Difficulty.HARD,
     ) -> GameSession:
-        player_list = [Player(p.name, p.is_computer) for p in (players or _DEFAULT_PLAYERS)]
-        tile_bag: TileBag | None = None
-        first_player_idx = 0
-
-        if game_mode == GameMode.COMPETITIVE:
-            tile_bag = TileBag.full()
-            # Standard rule: each player draws one tile, closest to 'A'
-            # (blank beats everything) goes first; drawn tiles go back to
-            # the bag and get reshuffled in before dealing real racks.
-            draws = tile_bag.draw(len(player_list))
-            first_player_idx = Board.first_draw_winner(draws)
-            tile_bag.tiles.extend(draws)
-            random.shuffle(tile_bag.tiles)
-            for p in player_list:
-                p.letters = "".join(tile_bag.draw(7))
-
-        session = GameSession(
-            session_id=str(uuid.uuid4()),
-            board=Board([["-"] * 15 for _ in range(15)]),
-            players=player_list,
-            current_player_idx=first_player_idx,
-            game_mode=game_mode,
-            difficulty=difficulty,
-            tile_bag=tile_bag,
-        )
+        player_list = [
+            Player(p.name, p.is_computer, difficulty=p.difficulty)
+            for p in (players or _DEFAULT_PLAYERS)
+        ]
+        session = _deal_new_game(player_list, game_mode)
         cls._sessions[session.session_id] = session
         return session
 
@@ -357,10 +372,11 @@ def _pick_by_difficulty(suggestions: list[dict], difficulty: Difficulty) -> dict
 
 
 def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
-    """Play a move for the computer weighted by difficulty, then advance the turn."""
+    """Play a move for the computer weighted by its own difficulty, then advance the turn."""
     player_idx = session.current_player_idx
+    difficulty = session.current_player.difficulty
     # Fetch enough candidates so difficulty has real choices; cap at 30 for speed
-    n_candidates = 1 if session.difficulty == Difficulty.IMPOSSIBLE else 30
+    n_candidates = 1 if difficulty == Difficulty.IMPOSSIBLE else 30
     suggestions = get_suggestions(session, dawg, n=n_candidates)
 
     if not suggestions:
@@ -370,7 +386,7 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
             session.advance_turn()
         return ComputerMoveInfo(word="", score=0, row=0, col=0, horizontal=True, passed=True)
 
-    sug = _pick_by_difficulty(suggestions, session.difficulty)
+    sug = _pick_by_difficulty(suggestions, difficulty)
     word, row, col, horizontal = sug["word"], sug["row"], sug["col"], sug["horizontal"]
 
     grid = session.board_grid()
@@ -489,3 +505,169 @@ def compute_move_rating(session: GameSession, dawg: Dawg, letters: str, actual_s
         return 100
     rating = (actual_score - worst) / (best - worst) * 100
     return max(0, min(100, round(rating)))
+
+
+# ── Benchmark simulation (SANDBOX_AUTO, no human ever involved) ──────────────
+
+# Defensive cap on moves per simulated game -- CONSECUTIVE_NO_PLAY_LIMIT and
+# going-out-with-an-empty-bag always end a real game long before this, it
+# only guards against an unforeseen non-terminating edge case.
+MAX_BENCHMARK_GAME_MOVES = 200
+
+
+@dataclass
+class BenchmarkMoveRecord:
+    player_idx: int
+    word: str
+    score: int
+    row: int
+    col: int
+    horizontal: bool
+    passed: bool
+    board: list[list[str]]
+    scores_after: list[int]
+    letters_after: list[str]
+    tile_owners: list[list[int | None]]
+
+
+@dataclass
+class BenchmarkPlayerStats:
+    name: str
+    difficulty: str
+    games_played: int = 0
+    wins: int = 0
+    ties: int = 0
+    total_score: int = 0
+    high_score: int = 0
+    low_score: int = 0
+    words_played: int = 0
+    total_word_score: int = 0
+
+    @property
+    def avg_score(self) -> float:
+        return self.total_score / self.games_played if self.games_played else 0.0
+
+    @property
+    def avg_word_score(self) -> float:
+        return self.total_word_score / self.words_played if self.words_played else 0.0
+
+
+@dataclass
+class BenchmarkBestGame:
+    winner_name: str
+    winner_score: int
+    final_players: list[Player]
+    moves: list[BenchmarkMoveRecord]
+
+
+@dataclass
+class BenchmarkResult:
+    games_played: int
+    duration_ms: int
+    player_stats: list[BenchmarkPlayerStats]
+    best_game: BenchmarkBestGame | None
+    avg_game_length: float
+    longest_word: str | None
+    longest_word_score: int | None
+    highest_single_move_score: int | None
+
+
+def run_benchmark(
+    player_specs: list[tuple[str, Difficulty]],
+    games: int,
+    dawg: Dawg,
+    on_game_done: Callable[[int], None] | None = None,
+) -> BenchmarkResult:
+    """Simulate *games* full SANDBOX_AUTO games with the given (name,
+    difficulty) players end-to-end using the same engine primitives as a
+    live game (_deal_new_game + computer_auto_play), never touching
+    SessionStore. Returns aggregate per-player stats plus the full
+    move-by-move detail of whichever single game had the highest final
+    score for any one player."""
+    start = time.perf_counter()
+    stats = [
+        BenchmarkPlayerStats(name=name, difficulty=difficulty.value)
+        for name, difficulty in player_specs
+    ]
+    best_game: BenchmarkBestGame | None = None
+    best_score = -1
+    total_moves = 0
+    longest_word: str | None = None
+    longest_word_score = 0
+    highest_single_move_score = 0
+
+    for game_idx in range(games):
+        players = [
+            Player(name=name, is_computer=True, difficulty=difficulty)
+            for name, difficulty in player_specs
+        ]
+        session = _deal_new_game(players, GameMode.SANDBOX_AUTO)
+
+        moves: list[BenchmarkMoveRecord] = []
+        move_count = 0
+        while not session.game_over and move_count < MAX_BENCHMARK_GAME_MOVES:
+            player_idx = session.current_player_idx
+            move = computer_auto_play(session, dawg)
+            move_count += 1
+            total_moves += 1
+            if not move.passed:
+                s = stats[player_idx]
+                s.words_played += 1
+                s.total_word_score += move.score
+                highest_single_move_score = max(highest_single_move_score, move.score)
+                if longest_word is None or len(move.word) > len(longest_word):
+                    longest_word, longest_word_score = move.word, move.score
+            moves.append(BenchmarkMoveRecord(
+                player_idx=player_idx,
+                word=move.word,
+                score=move.score,
+                row=move.row,
+                col=move.col,
+                horizontal=move.horizontal,
+                passed=move.passed,
+                board=session.board_grid(),
+                scores_after=[p.score for p in players],
+                letters_after=[p.letters for p in players],
+                tile_owners=[row[:] for row in session.tile_owners],
+            ))
+
+        top_score = max(p.score for p in players)
+        winners = [p for p in players if p.score == top_score]
+        for i, p in enumerate(players):
+            s = stats[i]
+            s.games_played += 1
+            s.total_score += p.score
+            if s.games_played == 1:
+                s.high_score, s.low_score = p.score, p.score
+            else:
+                s.high_score = max(s.high_score, p.score)
+                s.low_score = min(s.low_score, p.score)
+            if p.score == top_score:
+                if len(winners) > 1:
+                    s.ties += 1
+                else:
+                    s.wins += 1
+
+        if top_score > best_score:
+            best_score = top_score
+            best_game = BenchmarkBestGame(
+                winner_name=winners[0].name if len(winners) == 1 else "Remis",
+                winner_score=top_score,
+                final_players=list(players),
+                moves=moves,
+            )
+
+        if on_game_done:
+            on_game_done(game_idx + 1)
+
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    return BenchmarkResult(
+        games_played=games,
+        duration_ms=duration_ms,
+        player_stats=stats,
+        best_game=best_game,
+        avg_game_length=total_moves / games if games else 0.0,
+        longest_word=longest_word,
+        longest_word_score=longest_word_score if longest_word else None,
+        highest_single_move_score=highest_single_move_score or None,
+    )
