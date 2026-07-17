@@ -32,7 +32,16 @@ class Player:
         self.score += w[1]
         self.board.place_word(w[0], w[2][0], w[2][1], w[2][2])
         for ch in w[3]:
-            self.letters = self.letters.replace(ch, "", 1)
+            # `ch` is the literal letter placed on the board, but if a blank
+            # stood in for it, the rack only has '?' -- not `ch` -- so fall
+            # back to removing the blank instead. Without this, `replace()`
+            # silently no-ops on a literal it can't find, the blank never
+            # actually leaves the rack, and it gets "reused" as a fresh
+            # wildcard every subsequent turn for the rest of the game.
+            if ch in self.letters:
+                self.letters = self.letters.replace(ch, "", 1)
+            else:
+                self.letters = self.letters.replace("?", "", 1)
         self.draw_letters()
         return w[0]
 
@@ -42,29 +51,43 @@ def graj(debug: bool = False) -> tuple[int, int]:
 
     p1 = Player(b)
     p2 = Player(b)
-    w = p1.play_word(d, first=True)
+    opener, second = p1, p2
+    w = opener.play_word(d, first=True)
     if debug:
         print(f"Player 1 plays: {w}")
         print(b)
 
-    while w:
-        w = p2.play_word(d)
-        if w:
-            if debug:
-                print(f"Player 2 plays: {w}")
-                print(b)
-        else:
-            if debug:
-                print("Player 2 cannot play.")
+    if not w:
+        # The opener's rack couldn't form any word through the centre (rare,
+        # but happens -- e.g. an all-consonant draw). Give the other player a
+        # shot at the opening instead of ending the game 0-0 before it starts.
+        opener, second = p2, p1
+        w = opener.play_word(d, first=True)
+        if debug:
+            print("Player 1 cannot open -- Player 2 plays:", w)
+            print(b)
+        if not w:
+            # Neither player's opening rack is playable -- genuinely stuck.
+            return p1.score, p2.score
 
-        w = p1.play_word(d)
+    while w:
+        w = second.play_word(d)
         if w:
             if debug:
-                print(f"Player 1 plays: {w}")
+                print(f"{'Player 2' if second is p2 else 'Player 1'} plays: {w}")
                 print(b)
         else:
             if debug:
-                print("Player 1 cannot play.")
+                print(f"{'Player 2' if second is p2 else 'Player 1'} cannot play.")
+
+        w = opener.play_word(d)
+        if w:
+            if debug:
+                print(f"{'Player 1' if opener is p1 else 'Player 2'} plays: {w}")
+                print(b)
+        else:
+            if debug:
+                print(f"{'Player 1' if opener is p1 else 'Player 2'} cannot play.")
                 print(b)
             break
 
@@ -76,7 +99,7 @@ def graj(debug: bool = False) -> tuple[int, int]:
 
 
 def speed_test() -> None:
-    N = 1000
+    N = 2000
     scores = []
 
     with tqdm(total=N) as pbar:
