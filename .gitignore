@@ -5,10 +5,15 @@
 !*.py
 !*.pyi
 !Cargo.toml
+!Cargo.lock
 !pyproject.toml
 !uv.lock
 !*.toml
 !*.md
+!*.html
+!*.js
+!*.css
+!*.json
 !*/
 
 # Added by cargo

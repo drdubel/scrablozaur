@@ -355,13 +355,29 @@ _SKIP_P = re.compile(
 )
 _HTML_TAG = re.compile(r"<[^>]+>")
 _ENTITIES = {"&quot;": '"', "&amp;": "&", "&nbsp;": " ", "&lt;": "<", "&gt;": ">"}
+_SENSE_BREAK = re.compile(r"\s*;?\s*(?=\d{1,2}\.\s)")
 
 
 def _clean_html(s: str) -> str:
-    s = _HTML_TAG.sub("", s)
+    # A space (not "") for stripped tags -- source markup uses bare `<br />`
+    # between numbered senses with no surrounding whitespace, so dropping tags
+    # outright glues the tail of one sense to the next one's digit, e.g.
+    # "...kotwica<br />5. ..." would collapse into "...kotwica5. ...".
+    s = _HTML_TAG.sub(" ", s)
     for ent, ch in _ENTITIES.items():
         s = s.replace(ent, ch)
     return " ".join(s.split())
+
+
+def _break_senses(text: str) -> str:
+    """Put each numbered sense ("1. ...", "2. ...") on its own line.
+
+    Source dictionaries separate senses with `;` or a lone `<br>` in the raw
+    HTML, which `_clean_html` flattens to plain whitespace -- this restores
+    readable line breaks without touching unnumbered single-sense entries.
+    """
+    parts = [p for p in _SENSE_BREAK.split(text) if p]
+    return "<br>".join(parts)
 
 
 def _fetch_sjp(word: str) -> list[tuple[str, str]]:
@@ -418,14 +434,54 @@ def _fetch_sjp(word: str) -> list[tuple[str, str]]:
     return entries[:3]
 
 
+_PWN_HEADWORD = re.compile(
+    r'<span class="tytul"><a[^>]*title="([^"]*)"[^>]*>.*?</a></span>.*?<li[^>]*>(.*?)</li>',
+    re.DOTALL,
+)
+_PWN_SENSE = re.compile(r'<div class="znacz">(.*?)</div>', re.DOTALL)
+
+
+def _fetch_pwn(word: str) -> list[tuple[str, str]]:
+    """Fetch entries from sjp.pwn.pl for *word* -- fallback for words sjp.pl has no entry for.
+
+    A word absent from PWN's dictionary responds with a 307 that has no
+    `Location` header (a same-URL "not found" render, not a real redirect),
+    which urllib surfaces as an HTTPError -- treated the same as any other
+    fetch failure, i.e. no entries.
+    """
+    url = f"https://sjp.pwn.pl/slowniki/{urllib.parse.quote(word)}.html"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "scrablozaur/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            html = resp.read().decode("utf-8")
+    except Exception:
+        return []
+
+    entries: list[tuple[str, str]] = []
+    for m in _PWN_HEADWORD.finditer(html):
+        lemma = _clean_html(m.group(1))
+        li = m.group(2)
+        senses = _PWN_SENSE.findall(li)
+        if senses:
+            # Leave line-breaking to _break_senses (applied uniformly in
+            # get_definition) instead of inserting <br> here directly.
+            defn = " ".join(_clean_html(s) for s in senses)
+        else:
+            body = re.split(r'<br|<div class="s-przykl"', li)[0]
+            defn = _clean_html(body)
+        if defn:
+            entries.append((lemma, defn))
+    return entries[:3]
+
+
 @router.get("/definition/{word}", response_model=DefinitionResponse)
 async def get_definition(word: str) -> DefinitionResponse:
     word = word.lower()
-    entries = _fetch_sjp(word)
+    entries = _fetch_sjp(word) or _fetch_pwn(word)
     if not entries:
         return DefinitionResponse(word=word, definitions=[], found=False)
-    definitions = [
-        f"{lemma} — {defn}" if lemma.lower() != word else defn
-        for lemma, defn in entries
-    ]
+    definitions = []
+    for lemma, defn in entries:
+        defn = _break_senses(defn)
+        definitions.append(f"{lemma} — {defn}" if lemma.lower() != word else defn)
     return DefinitionResponse(word=word, definitions=definitions, found=True)

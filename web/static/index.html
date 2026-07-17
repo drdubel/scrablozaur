@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scrablozaur</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <!-- ── Setup dialog ────────────────────────────────────────────────────── -->
+  <dialog id="dialog-setup" aria-labelledby="dialog-title">
+    <h2 id="dialog-title">Nowa gra</h2>
+
+    <!-- Hidden selects kept for JS compatibility -->
+    <select id="setup-mode" hidden>
+      <option value="sandbox">sandbox</option>
+      <option value="competitive" selected>competitive</option>
+    </select>
+    <select id="setup-difficulty" hidden>
+      <option value="easy">easy</option>
+      <option value="medium">medium</option>
+      <option value="hard" selected>hard</option>
+      <option value="impossible">impossible</option>
+    </select>
+
+    <!-- Mode picker cards -->
+    <p class="setup-section-label">Tryb gry</p>
+    <div class="setup-mode-cards">
+      <button type="button" class="mode-card mode-card--active" data-mode="competitive">
+        <span class="mode-card-icon">🎮</span>
+        <span class="mode-card-name">Rywalizacja</span>
+        <span class="mode-card-desc">Ty vs. Komputer · litery z worka</span>
+      </button>
+      <button type="button" class="mode-card" data-mode="sandbox">
+        <span class="mode-card-icon">🔧</span>
+        <span class="mode-card-name">Sandbox</span>
+        <span class="mode-card-desc">Pełna kontrola · bez losowania</span>
+      </button>
+      <button type="button" class="mode-card" data-mode="scan">
+        <span class="mode-card-icon">📷</span>
+        <span class="mode-card-name">Skanuj planszę</span>
+        <span class="mode-card-desc">Zdjęcie prawdziwej planszy</span>
+      </button>
+    </div>
+
+    <!-- Sandbox: multi-player config -->
+    <div id="setup-sandbox-config" hidden>
+      <div class="sandbox-sub-toggle" role="group" aria-label="Tryb sandboxa">
+        <button type="button" class="sub-toggle-btn sub-toggle-btn--active" data-sandbox-sub="manual">✋ Ręczny</button>
+        <button type="button" class="sub-toggle-btn" data-sandbox-sub="auto">🤖 Automatyczny</button>
+      </div>
+      <p id="sandbox-sub-desc" class="sandbox-sub-desc">
+        Ty sterujesz każdym graczem — wpisujesz słowa albo litery komputera ręcznie.
+      </p>
+
+      <div class="setup-player-count">
+        <label class="setup-section-label">
+          Liczba graczy
+          <select id="setup-count">
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+      </div>
+      <div id="setup-players" class="setup-players"></div>
+
+      <div id="setup-benchmark-row" class="setup-benchmark-row" hidden>
+        <label class="setup-field-label" for="setup-benchmark-games">Ile gier?</label>
+        <input type="number" id="setup-benchmark-games" min="1" value="20" />
+        <button type="button" id="btn-run-benchmark" class="btn btn-secondary">🧪 Uruchom benchmark</button>
+      </div>
+    </div>
+
+    <!-- Competitive: name + difficulty -->
+    <div id="setup-competitive-config">
+      <label class="setup-field">
+        <span class="setup-field-label">Twoje imię</span>
+        <input id="setup-player-name" type="text" maxlength="20" value="Gracz" class="setup-name-input" />
+      </label>
+
+      <p class="setup-section-label">Poziom trudności</p>
+      <div class="setup-difficulty-cards">
+        <button type="button" class="diff-card" data-diff="easy">
+          <span class="diff-card-icon">🌱</span>
+          <span class="diff-card-name">Łatwy</span>
+        </button>
+        <button type="button" class="diff-card" data-diff="medium">
+          <span class="diff-card-icon">🎯</span>
+          <span class="diff-card-name">Średni</span>
+        </button>
+        <button type="button" class="diff-card diff-card--active" data-diff="hard">
+          <span class="diff-card-icon">🔥</span>
+          <span class="diff-card-name">Trudny</span>
+        </button>
+        <button type="button" class="diff-card" data-diff="impossible">
+          <span class="diff-card-icon">💀</span>
+          <span class="diff-card-name">Niemożliwy</span>
+        </button>
+      </div>
+    </div>
+
+    <p id="setup-error" class="error" hidden></p>
+
+    <div class="btn-row setup-btn-row">
+      <button id="btn-start-game" class="btn btn-primary btn-start">Rozpocznij grę</button>
+    </div>
+  </dialog>
+
+  <header>
+    <h1>Scrablozaur</h1>
+    <div class="header-actions">
+      <button id="btn-undo" class="btn btn-ghost" disabled>↩ Cofnij ruch</button>
+      <button id="btn-scan-board" class="btn btn-secondary">📷 Skanuj planszę</button>
+      <button id="btn-new-game" class="btn btn-secondary">Nowa gra</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ── Normal game view (sandbox/competitive) ──────────────────────────── -->
+    <div id="game-view">
+      <!-- ── Scoreboard ───────────────────────────────────────────────────── -->
+      <section id="scoreboard" class="scoreboard"></section>
+
+      <!-- ── Three-column layout: def | board | rating ───────────────────── -->
+      <div class="board-layout">
+
+        <!-- LEFT: word definition panel -->
+        <aside id="word-def-panel" class="word-def-panel side-panel" style="visibility:hidden">
+          <div class="word-def-header">
+            <strong id="word-def-title"></strong>
+            <button id="btn-close-def" class="btn btn-ghost btn-sm">✕</button>
+          </div>
+          <div id="word-def-text" class="word-def-text"></div>
+        </aside>
+
+        <!-- CENTER: board + rack + panels -->
+        <div class="board-center">
+          <div id="board" role="grid" aria-label="Plansza Scrabble"></div>
+
+          <!-- Competitive: tile rack + computer move info -->
+          <div id="tile-rack-wrap" hidden>
+            <p class="rack-label">Twoje litery</p>
+            <div id="tile-rack" class="tile-rack"></div>
+          </div>
+
+          <div id="computer-move-info" class="computer-move-info" hidden></div>
+
+          <!-- Action panels -->
+          <div class="panels">
+
+            <!-- Human turn -->
+            <section id="panel-human" class="panel" hidden>
+              <h2 id="panel-human-title">Ruch gracza</h2>
+              <p class="typing-hint">Kliknij pole startowe · pisz litery · spacja zmienia kierunek · Enter zatwierdza</p>
+              <div class="form-row">
+                <label>
+                  Kierunek <small>(spacja)</small>
+                  <select id="human-dir">
+                    <option value="true">Poziomo →</option>
+                    <option value="false">Pionowo ↓</option>
+                  </select>
+                </label>
+                <div class="typing-word-wrap">
+                  <span class="typing-word-label">Słowo</span>
+                  <span id="human-word-display" class="typing-word-display">—</span>
+                </div>
+                <div class="typing-word-wrap">
+                  <span class="typing-word-label">Punkty</span>
+                  <span id="human-score-preview" class="typing-word-display score-preview">—</span>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button id="btn-place-human" class="btn btn-primary">Zatwierdź ↵</button>
+                <button id="btn-hints" class="btn btn-ghost">Pokaż podpowiedzi</button>
+                <button id="btn-skip-human" class="btn btn-ghost">Pomiń ruch</button>
+                <button id="btn-pass-human" class="btn btn-danger">Poddaj się</button>
+              </div>
+              <p id="human-error" class="error" hidden></p>
+              <ol id="hint-list" class="hint-list" hidden></ol>
+            </section>
+
+            <!-- Computer turn (sandbox only) -->
+            <section id="panel-computer" class="panel" hidden>
+              <h2 id="panel-computer-title">Ruch komputera</h2>
+              <div class="form-row">
+                <label>
+                  Litery komputera
+                  <input id="computer-letters" type="text" maxlength="7" autocomplete="off"
+                         placeholder="np. aeinrst" />
+                </label>
+                <button id="btn-suggest" class="btn btn-primary">Znajdź słowa</button>
+                <button id="btn-skip-computer" class="btn btn-ghost">Pomiń ruch</button>
+              </div>
+              <p id="suggest-error" class="error" hidden></p>
+              <ol id="suggestion-list" class="suggestion-list" hidden></ol>
+            </section>
+
+            <!-- Auto turn (sandbox_auto: every player is a computer, no
+                 human ever waits on a turn -- just step or watch) -->
+            <section id="panel-auto" class="panel" hidden>
+              <h2 id="panel-auto-title">Gra automatyczna</h2>
+              <p id="panel-auto-current" class="typing-hint"></p>
+              <div class="btn-row">
+                <button id="btn-auto-next" class="btn btn-primary">▶ Kolejny ruch</button>
+                <button id="btn-auto-play" class="btn btn-secondary">⏩ Autoodtwarzanie</button>
+              </div>
+              <ol id="auto-move-log" class="auto-move-log"></ol>
+            </section>
+
+          </div><!-- .panels -->
+        </div><!-- .board-center -->
+
+        <!-- RIGHT: move rating + history -->
+        <aside id="rating-panel" class="rating-panel side-panel" style="visibility:hidden">
+          <h3 class="rating-title">Ostatni ruch</h3>
+          <div class="rating-gauge-wrap">
+            <svg class="rating-gauge" viewBox="0 0 120 70" aria-hidden="true">
+              <path d="M10,65 A55,55 0 0,1 110,65" fill="none" stroke="#e5e7eb" stroke-width="12" stroke-linecap="round"/>
+              <path id="rating-arc" d="M10,65 A55,55 0 0,1 110,65" fill="none" stroke="#22c55e" stroke-width="12" stroke-linecap="round"
+                    stroke-dasharray="0 173"/>
+            </svg>
+            <div class="rating-value-wrap">
+              <span id="rating-value" class="rating-value">—</span>
+              <span class="rating-label">/100</span>
+            </div>
+          </div>
+          <p id="rating-desc" class="rating-desc"></p>
+          <div class="rating-history-wrap" id="rating-history-wrap" hidden>
+            <h4 class="rating-history-title">Historia</h4>
+            <ol id="rating-history" class="rating-history"></ol>
+          </div>
+        </aside>
+
+      </div><!-- .board-layout -->
+    </div><!-- #game-view -->
+
+    <!-- ── Scan assistant view: not a game -- a scanning assistant. Loop is
+         photo -> review -> confirm -> enter your letters -> best word -> place
+         it on the REAL board -> photo again. The confirmed board persists
+         server-side (ScanSession) across that loop and across leaving and
+         returning to this view. A peer of game-view, not a modal on top of
+         it -- toggled by #btn-scan-board / the setup dialog's "scan" card,
+         never trapping the user with no way back. ──────────────────────── -->
+    <div id="scan-view" class="scan-view" hidden>
+      <div class="scan-view-header">
+        <button id="btn-scan-back" class="btn btn-ghost btn-sm">← Wróć</button>
+        <h2>Asystent planszy</h2>
+      </div>
+
+      <div id="scan-step-upload">
+      <p class="setup-section-label">Zrób zdjęcie planszy Scrabble albo wybierz plik ze zdjęciem</p>
+      <p class="scan-hint">Sfotografuj całą planszę z góry, przy dobrym oświetleniu.</p>
+      <input type="file" id="scan-file-input" accept="image/*" capture="environment" hidden />
+      <div class="btn-row setup-btn-row">
+        <button id="btn-scan-choose" class="btn btn-primary">📷 Wybierz zdjęcie</button>
+      </div>
+      <p id="scan-upload-error" class="error" hidden></p>
+    </div>
+
+    <div id="scan-step-loading" class="scan-loading" hidden>
+      <div class="scan-spinner"></div>
+      <p>Analizuję zdjęcie…</p>
+    </div>
+
+    <!-- Board + cell editor: shared by the review and assistant steps below,
+         so re-scanning doesn't throw away the on-screen board. -->
+    <div id="scan-board-area" hidden>
+      <p id="scan-flag-summary" class="scan-flag-summary" hidden></p>
+      <div id="scan-board" class="scan-board" role="grid" aria-label="Zeskanowana plansza"></div>
+      <div id="scan-cell-editor" class="scan-cell-editor" hidden>
+        <span id="scan-cell-editor-label" class="scan-cell-editor-label"></span>
+        <input id="scan-cell-editor-input" type="text" maxlength="1" autocomplete="off" />
+        <div id="scan-cell-editor-alts" class="scan-cell-editor-alts"></div>
+        <button id="btn-scan-cell-clear" class="btn btn-ghost btn-sm" type="button">Wyczyść pole</button>
+      </div>
+    </div>
+
+    <div id="scan-step-review" hidden>
+      <p class="setup-section-label">Sprawdź odczytaną planszę</p>
+      <p class="scan-hint">
+        Kliknij pole, aby poprawić literę (Backspace czyści, Escape anuluje zaznaczenie).
+        Pola oznaczone na czerwono mogły zostać odczytane błędnie; przerywana niebieska ramka
+        oznacza pole przeniesione z poprzedniego zdjęcia, którego to zdjęcie nie potwierdziło.
+      </p>
+      <p id="scan-review-error" class="error" hidden></p>
+      <label class="scan-save-training-label">
+        <input type="checkbox" id="scan-save-training-checkbox" />
+        Zapisz to zdjęcie i planszę do zbioru treningowego OCR
+      </label>
+      <div class="btn-row setup-btn-row">
+        <button id="btn-scan-rescan" class="btn btn-ghost">↺ Inne zdjęcie</button>
+        <button id="btn-scan-confirm" class="btn btn-primary">Zatwierdź planszę ▶</button>
+      </div>
+    </div>
+
+    <div id="scan-step-assistant" hidden>
+      <p id="scan-training-save-status" class="scan-hint" hidden></p>
+      <p class="setup-section-label">Twoje litery</p>
+      <div class="form-row">
+        <input id="scan-rack-input" type="text" maxlength="7" autocomplete="off" placeholder="np. aeinrst" />
+        <button id="btn-scan-suggest" class="btn btn-primary">Znajdź słowa</button>
+      </div>
+      <p id="scan-suggest-error" class="error" hidden></p>
+      <ol id="scan-suggestion-list" class="hint-list scan-suggestion-list" hidden></ol>
+
+      <div class="btn-row setup-btn-row">
+        <button id="btn-scan-next-photo" class="btn btn-secondary">📷 Zrób kolejne zdjęcie</button>
+        <button id="btn-scan-new-session" class="btn btn-ghost">🗑 Nowa sesja</button>
+      </div>
+    </div>
+    </div><!-- #scan-view -->
+
+    <!-- ── Benchmark results view: peer of game-view/scan-view, same
+         show/hide convention as ScanController -- simulates N SANDBOX_AUTO
+         games headlessly, then shows aggregate stats plus a move-by-move
+         replay of whichever single game had the highest player score. ──── -->
+    <div id="benchmark-view" class="benchmark-view" hidden>
+      <div class="scan-view-header">
+        <button id="btn-benchmark-back" class="btn btn-ghost btn-sm">← Wróć</button>
+        <h2>Wyniki benchmarku</h2>
+      </div>
+
+      <div id="benchmark-loading" class="scan-loading" hidden>
+        <div class="scan-spinner"></div>
+        <p id="benchmark-loading-text">Rozgrywam gry…</p>
+        <div class="benchmark-progress-bar-wrap">
+          <div id="benchmark-progress-bar" class="benchmark-progress-bar" style="width:0%"></div>
+        </div>
+      </div>
+
+      <p id="benchmark-error" class="error" hidden></p>
+
+      <div id="benchmark-results" hidden>
+        <p id="benchmark-summary" class="setup-section-label"></p>
+
+        <div id="benchmark-stats" class="benchmark-stats"></div>
+
+        <div id="benchmark-best-game" class="benchmark-best-game">
+          <h3 id="benchmark-best-title" class="rating-title"></h3>
+          <div class="benchmark-replay-layout">
+            <div id="benchmark-board" role="grid" aria-label="Powtórka najlepszej gry"></div>
+            <div class="benchmark-replay-side">
+              <div id="benchmark-replay-scoreboard" class="scoreboard benchmark-replay-scoreboard"></div>
+              <p id="benchmark-move-detail" class="benchmark-move-detail">—</p>
+              <div class="btn-row">
+                <button id="btn-replay-prev" class="btn btn-ghost btn-sm">◀</button>
+                <button id="btn-replay-play" class="btn btn-secondary btn-sm">⏩ Odtwórz</button>
+                <button id="btn-replay-next" class="btn btn-ghost btn-sm">▶</button>
+                <span id="benchmark-move-counter" class="benchmark-move-counter"></span>
+              </div>
+              <!-- Click any placed tile on #benchmark-board to look this up,
+                   same word-definition lookup as the live board. -->
+              <div id="benchmark-word-def" class="word-def-panel" style="visibility:hidden">
+                <div class="word-def-header">
+                  <strong id="benchmark-word-def-title"></strong>
+                  <button id="btn-benchmark-close-def" class="btn btn-ghost btn-sm">✕</button>
+                </div>
+                <div id="benchmark-word-def-text" class="word-def-text"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="btn-row setup-btn-row">
+          <button id="btn-benchmark-rerun" class="btn btn-secondary">🔁 Nowy benchmark</button>
+          <button id="btn-benchmark-to-sandbox" class="btn btn-ghost">↩ Wróć do sandboxa</button>
+        </div>
+      </div>
+    </div><!-- #benchmark-view -->
+  </main>
+
+  <!-- ── Suggestion item template ───────────────────────────────────────── -->
+  <template id="tpl-suggestion">
+    <li class="suggestion-item">
+      <span class="sug-rank"></span>
+      <span class="sug-word"></span>
+      <span class="sug-score"></span>
+      <span class="sug-pos"></span>
+      <div class="sug-actions">
+        <button class="btn btn-ghost btn-sm btn-preview">Podgląd</button>
+        <button class="btn btn-primary btn-sm btn-place">Połóż ▶</button>
+      </div>
+    </li>
+  </template>
+
+  <!-- Scan assistant: click to highlight on #scan-board -- there's no in-app
+       board to place onto, the user places the tiles on their real board. -->
+  <template id="tpl-scan-suggestion">
+    <li class="hint-item">
+      <span class="hint-rank"></span>
+      <span class="hint-word"></span>
+      <span class="hint-score"></span>
+      <span class="hint-pos"></span>
+    </li>
+  </template>
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/board.js"></script>
+  <script src="/static/js/game.js"></script>
+  <script src="/static/js/scan.js"></script>
+  <script src="/static/js/benchmark.js"></script>
+  <script src="/static/js/main.js"></script>
+</body>
+</html>
