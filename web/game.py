@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import random
+import threading
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 
 from scrablozaur import Board, Dawg
+from web.engine import DAWG_PATH
 
 
 class GameMode(str, Enum):
@@ -572,18 +575,87 @@ class BenchmarkResult:
     highest_single_move_score: int | None
 
 
+@dataclass
+class _SimulatedGame:
+    players: list[Player]
+    moves: list[BenchmarkMoveRecord]
+    move_count: int
+
+
+# Each simulated game runs in its own process (games are independent, so this
+# is embarrassingly parallel). `Dawg`/`Board` are Rust (pyo3) objects that
+# can't be pickled across the process boundary, so instead of passing one in,
+# every worker loads its own copy once at startup and keeps it in a
+# process-local global -- mirrors how src/main.py's `speed_test` gets a fresh
+# `d = Dawg(...)` per worker for free via module re-import under spawn.
+_worker_dawg: Dawg | None = None
+
+
+def _init_worker(dawg_path: str) -> None:
+    global _worker_dawg
+    _worker_dawg = Dawg(dawg_path)
+
+
+def _simulate_game(player_specs: list[tuple[str, Difficulty]]) -> _SimulatedGame:
+    assert _worker_dawg is not None, "worker executor initializer did not run"
+    players = [
+        Player(name=name, is_computer=True, difficulty=difficulty)
+        for name, difficulty in player_specs
+    ]
+    session = _deal_new_game(players, GameMode.SANDBOX_AUTO)
+
+    moves: list[BenchmarkMoveRecord] = []
+    move_count = 0
+    while not session.game_over and move_count < MAX_BENCHMARK_GAME_MOVES:
+        player_idx = session.current_player_idx
+        move = computer_auto_play(session, _worker_dawg)
+        move_count += 1
+        moves.append(BenchmarkMoveRecord(
+            player_idx=player_idx,
+            word=move.word,
+            score=move.score,
+            row=move.row,
+            col=move.col,
+            horizontal=move.horizontal,
+            passed=move.passed,
+            board=session.board_grid(),
+            scores_after=[p.score for p in players],
+            letters_after=[p.letters for p in players],
+            tile_owners=[row[:] for row in session.tile_owners],
+        ))
+
+    return _SimulatedGame(players=players, moves=moves, move_count=move_count)
+
+
+# Lazily-created, process-lifetime pool shared by every benchmark run so
+# repeated benchmarks (e.g. clicking "Run again" on the website) don't pay
+# process-spawn + Dawg-load cost every time.
+_executor: ProcessPoolExecutor | None = None
+_executor_lock = threading.Lock()
+
+
+def _get_executor() -> ProcessPoolExecutor:
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = ProcessPoolExecutor(
+                initializer=_init_worker, initargs=(str(DAWG_PATH),)
+            )
+        return _executor
+
+
 def run_benchmark(
     player_specs: list[tuple[str, Difficulty]],
     games: int,
-    dawg: Dawg,
     on_game_done: Callable[[int], None] | None = None,
 ) -> BenchmarkResult:
     """Simulate *games* full SANDBOX_AUTO games with the given (name,
     difficulty) players end-to-end using the same engine primitives as a
     live game (_deal_new_game + computer_auto_play), never touching
-    SessionStore. Returns aggregate per-player stats plus the full
-    move-by-move detail of whichever single game had the highest final
-    score for any one player."""
+    SessionStore. Games are independent, so they're farmed out across a
+    process pool (see _get_executor) instead of run one at a time. Returns
+    aggregate per-player stats plus the full move-by-move detail of whichever
+    single game had the highest final score for any one player."""
     start = time.perf_counter()
     stats = [
         BenchmarkPlayerStats(name=name, difficulty=difficulty.value)
@@ -596,40 +668,21 @@ def run_benchmark(
     longest_word_score = 0
     highest_single_move_score = 0
 
-    for game_idx in range(games):
-        players = [
-            Player(name=name, is_computer=True, difficulty=difficulty)
-            for name, difficulty in player_specs
-        ]
-        session = _deal_new_game(players, GameMode.SANDBOX_AUTO)
+    executor = _get_executor()
+    futures = [executor.submit(_simulate_game, player_specs) for _ in range(games)]
+    for done, future in enumerate(as_completed(futures), start=1):
+        sim = future.result()
+        players, moves = sim.players, sim.moves
+        total_moves += sim.move_count
 
-        moves: list[BenchmarkMoveRecord] = []
-        move_count = 0
-        while not session.game_over and move_count < MAX_BENCHMARK_GAME_MOVES:
-            player_idx = session.current_player_idx
-            move = computer_auto_play(session, dawg)
-            move_count += 1
-            total_moves += 1
+        for move in moves:
             if not move.passed:
-                s = stats[player_idx]
+                s = stats[move.player_idx]
                 s.words_played += 1
                 s.total_word_score += move.score
                 highest_single_move_score = max(highest_single_move_score, move.score)
                 if longest_word is None or len(move.word) > len(longest_word):
                     longest_word, longest_word_score = move.word, move.score
-            moves.append(BenchmarkMoveRecord(
-                player_idx=player_idx,
-                word=move.word,
-                score=move.score,
-                row=move.row,
-                col=move.col,
-                horizontal=move.horizontal,
-                passed=move.passed,
-                board=session.board_grid(),
-                scores_after=[p.score for p in players],
-                letters_after=[p.letters for p in players],
-                tile_owners=[row[:] for row in session.tile_owners],
-            ))
 
         top_score = max(p.score for p in players)
         winners = [p for p in players if p.score == top_score]
@@ -658,7 +711,7 @@ def run_benchmark(
             )
 
         if on_game_done:
-            on_game_done(game_idx + 1)
+            on_game_done(done)
 
     duration_ms = int((time.perf_counter() - start) * 1000)
     return BenchmarkResult(
