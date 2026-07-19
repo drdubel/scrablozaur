@@ -6,7 +6,7 @@ A high-performance Polish-language Scrabble engine written in Rust, exposed to P
 
 ## Features
 
-- **Minimized DAWG** — 2.04 million-word Polish dictionary compressed into a compact binary format; sub-microsecond lookups via a binary-searched, flat node layout
+- **Minimized DAWG** — 2.75 million-word Polish dictionary compressed into a compact binary format; sub-microsecond lookups via a binary-searched, flat node layout
 - **Pattern search** — flexible wildcard syntax (`-` one letter, `*` any number) with blank-tile support
 - **Board-aware scoring** — all bonus squares (Double/Triple Letter and Word), bingo bonus for using all 7 tiles
 - **Cross-word validation** — every candidate placement is checked against all perpendicular words it creates
@@ -79,7 +79,7 @@ A blank tile (`?`) may substitute for any letter during a search but scores 0 po
 | Dependency     | Version | Purpose                                          |
 |:---------------|:--------|:--------------------------------------------------|
 | Rust toolchain | ≥ 1.70  | Compiling the engine                             |
-| Python         | ≥ 3.10  | Running game logic, the `web/` app, `board_reader/` |
+| Python         | ≥ 3.12  | Running game logic, the `web/` app, `board_reader/` |
 | [uv](https://docs.astral.sh/uv/) | latest | Managing the Python environment (`.venv`) and dependencies |
 | maturin        | ≥ 1.0   | Building the Python extension (a `uv` dev-dependency, see `pyproject.toml`) |
 | rayon          | 1.12    | Parallel pattern evaluation (bundled)            |
@@ -285,7 +285,7 @@ per node:
     [4] child node ID
 ```
 
-Child edges are stored sorted by codepoint, enabling binary search in O(log k) where k ≤ 35 (`words.txt`'s alphabet: 26 Latin letters + 9 Polish diacritics, plus `q`/`v`/`x` from loanwords not used on physical Scrabble tiles). The offset of each node is precomputed into a flat table at load time so every node access is a direct array index with no pointer chasing.
+Child edges are stored sorted by codepoint, enabling binary search in O(log k) where k ≤ 32 (`words.txt`'s alphabet: 23 Latin letters + 9 Polish diacritics. The offset of each node is precomputed into a flat table at load time so every node access is a direct array index with no pointer chasing.
 
 ### Pattern matching
 
@@ -332,11 +332,11 @@ cargo run --release -- bench  words/dawg.bin   words/words.txt  # throughput ben
 Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):
 
 ```
-Results (5 × 2038454 = 10192270 lookups):
-  total time  : 747.059ms
-  throughput  : 13643190 lookups/s
-  per lookup  : 73.3 ns
-  hits        : 10192270/10192270 (100.0%)
+Results (5 × 2759379 = 13796895 lookups):
+  total time  : 1.052s
+  throughput  : 13119246 lookups/s
+  per lookup  : 76.2 ns
+  hits        : 13796895/13796895 (100.0%)
 ```
 
 ---
@@ -370,7 +370,7 @@ scrablozaur/
 │   └── static/          # HTML/CSS/vanilla-JS frontend
 ├── board_reader/        # photo -> board-state OCR pipeline (see its own README)
 ├── words/
-│   ├── words.txt        # 2.04 M-word Polish dictionary (source)
+│   ├── words.txt        # 2.75 M-word Polish dictionary (source)
 │   └── dawg.bin         # compiled DAWG (pre-built)
 ├── test/                # sample board states (.in files) for manual testing
 ├── tests/               # cli_build.rs -- `cargo test` integration test for the CLI
