@@ -99,16 +99,31 @@ class Board:
         returns the one with the highest score.
         """
 
-    def get_best_word(
-        self, dawg: Dawg, letters: str, first: bool, parallel: bool
-    ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
-        """Find the best scoring word that can be placed on the board with the given letters.
+    def get_best_words(
+        self, dawg: Dawg, letters: str, first: bool, n: int, parallel: bool = True
+    ) -> list[tuple[str, int, tuple[int, int, bool], list[str]]]:
+        """Find the `n` best scoring words that can be placed on the board with the given letters.
 
         This method searches through all valid patterns on the board and uses the DAWG
         to find matching words that can be formed with the provided letters. It returns
-        the best scoring word along with its position and orientation.
+        up to `n` candidates, best scoring first, each with its position and orientation.
         The `first` parameter indicates whether this is the first move of the game, which affects the validity of placements (the first word must cover the center cell).
-        The returned list contains the letters used from the player's hand.
+        Each returned list contains the letters used from the player's hand for that candidate,
+        one entry per newly placed tile. Real tiles are allocated before blanks, so a letter
+        used more times than the hand has real copies of it reports `'?'` (a blank standing in
+        for it, scoring 0) for the extra occurrences rather than the literal letter.
+        """
+
+    def get_best_word(
+        self, dawg: Dawg, letters: str, first: bool, parallel: bool = True
+    ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
+        """Find the best scoring word that can be placed on the board with the given letters.
+
+        Equivalent to `get_best_words(dawg, letters, first, n=1, parallel=parallel)[0]`,
+        or `("", 0, (0, 0, True), [])` if no valid word can be placed.
+        The `first` parameter indicates whether this is the first move of the game, which affects the validity of placements (the first word must cover the center cell).
+        The returned list contains the letters used from the player's hand, one entry per newly
+        placed tile, with `'?'` for any tile a blank had to stand in for (see `get_best_words`).
         """
 
     def check_word_placement(self, dawg: Dawg, word: str, row: int, col: int, horizontal: bool) -> None:
@@ -143,6 +158,15 @@ class Board:
         Used for the standard end-of-game scoring adjustment: the player who
         goes out gains this value from each opponent's rack; everyone else
         loses it from their own.
+        """
+
+    @staticmethod
+    def letter_points(letter: str) -> int:
+        """Face point value of a single letter.
+
+        `letter` must be exactly one character. Blanks ('?') score 0, the
+        same fixed value they always score in-play (see
+        `calculate_word_points`).
         """
 
     @staticmethod

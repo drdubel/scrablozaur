@@ -92,8 +92,55 @@ static BONUS_TABLE: [[(u8, u8); 8]; 8] = [
     ],
 ];
 
+const BOARD_SIZE: usize = 15;
+const CENTER: usize = BOARD_SIZE / 2;
+// Standard Scrabble rack capacity; also the tile count that earns the
+// end-of-move bonus and the bag-size exchange threshold.
+const RACK_SIZE: usize = 7;
+
+/// Board coordinates of the `i`-th letter of a word placed at (row, col)
+/// running horizontally or vertically from there.
+fn word_cell(row: usize, col: usize, horizontal: bool, i: usize) -> (usize, usize) {
+    if horizontal {
+        (row, col + i)
+    } else {
+        (row + i, col)
+    }
+}
+
+fn in_bounds(row: usize, col: usize) -> bool {
+    row < BOARD_SIZE && col < BOARD_SIZE
+}
+
+/// A candidate move: the word, its score, its (row, col, horizontal)
+/// placement, and the letters drawn from the player's hand to play it.
+type BestWord = (String, u32, (usize, usize, bool), Vec<char>);
+
+/// Count of each non-blank letter in a rack. Used to allocate a word's
+/// letters to real tiles before falling back to blanks, so a letter that
+/// appears in the word more times than the rack has real copies of it
+/// correctly runs out and defers the extra occurrences to a blank.
+fn real_letter_counts(letters: &str) -> HashMap<char, u32> {
+    let mut freq = HashMap::new();
+    for c in letters.chars().filter(|&c| c != '?') {
+        *freq.entry(c).or_insert(0) += 1;
+    }
+    freq
+}
+
+/// Letter- and word-multiplier for the board square at (row, col), read via
+/// the BONUS_TABLE's single quadrant (the table is symmetric, so every
+/// square maps to one of its 8x8 entries by mirroring across the centre).
+fn quadrant_bonus(row: usize, col: usize) -> (u8, u8) {
+    let last = (BOARD_SIZE - 1) as u8;
+    let r = (row as u8).min(last - row as u8);
+    let c = (col as u8).min(last - col as u8);
+    BONUS_TABLE[r as usize][c as usize]
+}
+
 // Polish letter point values, shared by calculate_word_points and rack_value
 // so the two can never drift apart.
+#[pyfunction]
 fn letter_points(c: char) -> u32 {
     match c.to_uppercase().next().unwrap_or(c) {
         'A' | 'E' | 'I' | 'O' | 'Z' | 'W' | 'N' | 'S' | 'R' => 1,
@@ -269,6 +316,7 @@ impl Dawg {
     ///
     /// `freq` / `bag_count` represent the current bag state. `mandatory_slots` counts
     /// how many `-` tokens remain so `*` expansions cannot starve them.
+    #[allow(clippy::too_many_arguments)]
     fn match_pattern(
         &self,
         pattern: &[char],
@@ -292,42 +340,17 @@ impl Dawg {
                 let n = self.node_children_count(node_id);
                 for i in 0..n {
                     let (c, child_id) = self.node_child(node_id, i);
-                    let ci = c as usize;
-                    // try the exact letter
-                    if ci < FREQ_SIZE && freq[ci] > 0 {
-                        freq[ci] -= 1;
-                        current.push(c);
-                        self.match_pattern(
-                            pattern,
-                            pat_pos + 1,
-                            child_id,
-                            freq,
-                            bag_count - 1,
-                            mandatory_slots - 1,
-                            results,
-                            current,
-                        );
-                        current.pop();
-                        freq[ci] += 1;
-                    }
-                    // try blank tile ('?') as this letter
-                    let qi = '?' as usize;
-                    if freq[qi] > 0 {
-                        freq[qi] -= 1;
-                        current.push(c);
-                        self.match_pattern(
-                            pattern,
-                            pat_pos + 1,
-                            child_id,
-                            freq,
-                            bag_count - 1,
-                            mandatory_slots - 1,
-                            results,
-                            current,
-                        );
-                        current.pop();
-                        freq[qi] += 1;
-                    }
+                    self.try_consume_letter(
+                        pattern,
+                        pat_pos + 1,
+                        child_id,
+                        c,
+                        freq,
+                        bag_count - 1,
+                        mandatory_slots - 1,
+                        results,
+                        current,
+                    );
                 }
             }
             '*' => {
@@ -347,40 +370,17 @@ impl Dawg {
                     let n = self.node_children_count(node_id);
                     for i in 0..n {
                         let (c, child_id) = self.node_child(node_id, i);
-                        let ci = c as usize;
-                        if ci < FREQ_SIZE && freq[ci] > 0 {
-                            freq[ci] -= 1;
-                            current.push(c);
-                            self.match_pattern(
-                                pattern,
-                                pat_pos,
-                                child_id,
-                                freq,
-                                bag_count - 1,
-                                mandatory_slots,
-                                results,
-                                current,
-                            );
-                            current.pop();
-                            freq[ci] += 1;
-                        }
-                        let qi = '?' as usize;
-                        if freq[qi] > 0 {
-                            freq[qi] -= 1;
-                            current.push(c);
-                            self.match_pattern(
-                                pattern,
-                                pat_pos,
-                                child_id,
-                                freq,
-                                bag_count - 1,
-                                mandatory_slots,
-                                results,
-                                current,
-                            );
-                            current.pop();
-                            freq[qi] += 1;
-                        }
+                        self.try_consume_letter(
+                            pattern,
+                            pat_pos,
+                            child_id,
+                            c,
+                            freq,
+                            bag_count - 1,
+                            mandatory_slots,
+                            results,
+                            current,
+                        );
                     }
                 }
             }
@@ -400,6 +400,61 @@ impl Dawg {
                     current.pop();
                 }
             }
+        }
+    }
+
+    /// Recurse into `child_id` for letter `c`, once as the exact drawn tile
+    /// and once as a blank standing in for it, backtracking `freq` after
+    /// each. Shared by the `'-'` and `'*'` branches of `match_pattern`,
+    /// which differ only in which pattern position and bag counts to
+    /// recurse with.
+    #[allow(clippy::too_many_arguments)]
+    fn try_consume_letter(
+        &self,
+        pattern: &[char],
+        next_pat_pos: usize,
+        child_id: u32,
+        c: char,
+        freq: &mut LetterFreq,
+        next_bag_count: usize,
+        next_mandatory_slots: usize,
+        results: &mut Vec<String>,
+        current: &mut String,
+    ) {
+        let ci = c as usize;
+        if ci < FREQ_SIZE && freq[ci] > 0 {
+            freq[ci] -= 1;
+            current.push(c);
+            self.match_pattern(
+                pattern,
+                next_pat_pos,
+                child_id,
+                freq,
+                next_bag_count,
+                next_mandatory_slots,
+                results,
+                current,
+            );
+            current.pop();
+            freq[ci] += 1;
+        }
+
+        let qi = '?' as usize;
+        if freq[qi] > 0 {
+            freq[qi] -= 1;
+            current.push(c);
+            self.match_pattern(
+                pattern,
+                next_pat_pos,
+                child_id,
+                freq,
+                next_bag_count,
+                next_mandatory_slots,
+                results,
+                current,
+            );
+            current.pop();
+            freq[qi] += 1;
         }
     }
 }
@@ -439,9 +494,48 @@ impl DawgPy {
     }
 }
 
+fn row_to_string(row: &[char; BOARD_SIZE]) -> String {
+    row.iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One step of a xorshift64 PRNG, used to draw tiles without pulling in a
+/// full RNG crate for something this simple.
+fn xorshift(seed: &mut u64) {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+}
+
+/// Seed for `give_letters`' draw, from the current time mixed with the bag
+/// size so repeated draws (even within the same nanosecond) don't collide.
+fn draw_seed(bag_len: usize) -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ (bag_len as u64)
+}
+
+/// Alphabetical rank of `c` for `first_draw_winner`'s "closest to 'A'"
+/// tiebreak: a blank outranks every letter, unknown characters sort last.
+fn alphabet_rank(c: char) -> i32 {
+    const ALPHABET: &str = "aąbcćdeęfghijklłmnńoóprsśtuwyzźż";
+    if c == '?' {
+        -1
+    } else {
+        ALPHABET
+            .chars()
+            .position(|a| a == c)
+            .map_or(i32::MAX, |p| p as i32)
+    }
+}
+
 #[pyclass(name = "Board")]
 struct Board {
-    board: [[char; 15]; 15],
+    board: [[char; BOARD_SIZE]; BOARD_SIZE],
     tile_bag: Vec<char>,
 }
 
@@ -449,14 +543,14 @@ struct Board {
 impl Board {
     #[new]
     fn new(board: Vec<Vec<String>>) -> PyResult<Self> {
-        if board.len() != 15 {
+        if board.len() != BOARD_SIZE {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "board must have exactly 15 rows",
             ));
         }
-        let mut result = [['-'; 15]; 15];
+        let mut result = [['-'; BOARD_SIZE]; BOARD_SIZE];
         for (r, row) in board.iter().enumerate() {
-            if row.len() != 15 {
+            if row.len() != BOARD_SIZE {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "each row must have exactly 15 columns",
                 ));
@@ -491,30 +585,17 @@ impl Board {
     fn __str__(&self) -> String {
         self.board
             .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
+            .map(row_to_string)
             .collect::<Vec<_>>()
             .join("\n")
     }
 
     fn give_letters(&mut self, letters: &str) -> String {
-        // XOR-shift seeded by time + bag size to avoid repeated draws.
-        let mut seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0)
-            ^ (self.tile_bag.len() as u64);
-
+        let mut seed = draw_seed(self.tile_bag.len());
         let mut drawn = String::new();
-        let draw_count = (7 - letters.chars().count()).min(self.tile_bag.len());
+        let draw_count = (RACK_SIZE - letters.chars().count()).min(self.tile_bag.len());
         for _ in 0..draw_count {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
+            xorshift(&mut seed);
             let idx = (seed as usize) % self.tile_bag.len();
             drawn.push(self.tile_bag.swap_remove(idx));
         }
@@ -522,11 +603,11 @@ impl Board {
     }
 
     /// Standard Scrabble rule: exchanging tiles for new ones from the bag is
-    /// only allowed while at least 7 tiles remain in the bag, regardless of
-    /// how many tiles the player wants to exchange.
+    /// only allowed while at least a full rack's worth of tiles remain in
+    /// the bag, regardless of how many tiles the player wants to exchange.
     #[staticmethod]
     fn can_exchange(bag_remaining: usize) -> bool {
-        bag_remaining >= 7
+        bag_remaining >= RACK_SIZE
     }
 
     /// Sum of face point values of a rack (blank tiles score 0, matching
@@ -538,6 +619,13 @@ impl Board {
         letters.chars().map(letter_points).sum()
     }
 
+    /// Face point value of a single letter. Blanks (`'?'`) score 0 here,
+    /// same as their fixed in-play scoring in `calculate_word_points`.
+    #[staticmethod]
+    fn letter_points(letter: char) -> u32 {
+        letter_points(letter)
+    }
+
     /// Standard rule for who goes first: each player draws one tile, the
     /// one closest to 'A' in alphabet order goes first, and a blank beats
     /// every letter. Returns the *index* into `draws` of the winner (first
@@ -545,18 +633,10 @@ impl Board {
     /// responsible for returning them to the bag before dealing real racks.
     #[staticmethod]
     fn first_draw_winner(draws: Vec<char>) -> usize {
-        const ALPHABET: &str = "aąbcćdeęfghijklłmnńoóprsśtuwyzźż";
-        let rank = |c: char| -> i32 {
-            if c == '?' {
-                -1
-            } else {
-                ALPHABET.chars().position(|a| a == c).map_or(i32::MAX, |p| p as i32)
-            }
-        };
         draws
             .iter()
             .enumerate()
-            .min_by_key(|&(_, &c)| rank(c))
+            .min_by_key(|&(_, &c)| alphabet_rank(c))
             .map_or(0, |(i, _)| i)
     }
 
@@ -578,26 +658,30 @@ impl Board {
         let mut main_word_mul = 1u32;
         let mut cross_words_total = 0u32;
         let mut tiles_from_hand = 0usize;
+        // Depleted as real letters are claimed by earlier tiles in the
+        // word, so a letter repeated more times than the rack has real
+        // copies of it correctly falls back to a blank (0 points) for the
+        // extra occurrences instead of being scored as real every time.
+        let mut hand_freq = real_letter_counts(letters);
 
         for (i, ch) in word.chars().enumerate() {
-            let r = if horizontal { row } else { row + i };
-            let c = if horizontal { col + i } else { col };
-            if r >= 15 || c >= 15 {
+            let (r, c) = word_cell(row, col, horizontal, i);
+            if !in_bounds(r, c) {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "word out of bounds",
                 ));
             }
-
-            let (r2, c2) = ((r as u8).min(14 - r as u8), (c as u8).min(14 - c as u8));
-            let bonus = BONUS_TABLE[r2 as usize][c2 as usize];
+            let bonus = quadrant_bonus(r, c);
 
             if self.board[r][c] == '-' {
-                // new tile placed from hand — blank tiles count as the
-                // letter for word-building but always score 0
-                let this_letter_value = if letters.contains(ch) {
-                    letter_points(ch)
-                } else {
-                    0
+                let this_letter_value = match hand_freq.get_mut(&ch) {
+                    Some(count) if *count > 0 => {
+                        *count -= 1;
+                        letter_points(ch)
+                    }
+                    // No real copy left in hand — a blank stands in for
+                    // this letter and always scores 0.
+                    _ => 0,
                 };
                 tiles_from_hand += 1;
 
@@ -608,38 +692,8 @@ impl Board {
                 // scored on its own (this tile's value + existing
                 // perpendicular neighbours), multiplied only by this tile's
                 // own word bonus.
-                let mut cross_total = this_letter_value * bonus.0 as u32;
-                let mut has_cross_neighbor = false;
-
-                if !horizontal {
-                    let mut x = 1;
-                    while x <= c && self.board[r][c - x] != '-' {
-                        cross_total += letter_points(self.board[r][c - x]);
-                        has_cross_neighbor = true;
-                        x += 1;
-                    }
-                    let mut x = 1;
-                    while c + x < 15 && self.board[r][c + x] != '-' {
-                        cross_total += letter_points(self.board[r][c + x]);
-                        has_cross_neighbor = true;
-                        x += 1;
-                    }
-                } else {
-                    let mut y = 1;
-                    while y <= r && self.board[r - y][c] != '-' {
-                        cross_total += letter_points(self.board[r - y][c]);
-                        has_cross_neighbor = true;
-                        y += 1;
-                    }
-                    let mut y = 1;
-                    while r + y < 15 && self.board[r + y][c] != '-' {
-                        cross_total += letter_points(self.board[r + y][c]);
-                        has_cross_neighbor = true;
-                        y += 1;
-                    }
-                }
-
-                if has_cross_neighbor {
+                if let Some(neighbor_points) = self.cross_neighbor_points(r, c, horizontal, ch) {
+                    let cross_total = this_letter_value * bonus.0 as u32 + neighbor_points;
                     cross_words_total += cross_total * bonus.1 as u32;
                 }
             } else {
@@ -653,10 +707,10 @@ impl Board {
             }
         }
 
-        // 50-point bonus for using all 7 tiles in one move
+        // Bonus for using the whole rack in one move
         Ok(main_total * main_word_mul
             + cross_words_total
-            + if tiles_from_hand == 7 { 50 } else { 0 })
+            + if tiles_from_hand == RACK_SIZE { 50 } else { 0 })
     }
 
     fn check_word_placement(
@@ -676,9 +730,8 @@ impl Board {
             ));
         }
         for (i, ch) in word.chars().enumerate() {
-            let r = if horizontal { row } else { row + i };
-            let c = if horizontal { col + i } else { col };
-            if r >= 15 || c >= 15 {
+            let (r, c) = word_cell(row, col, horizontal, i);
+            if !in_bounds(r, c) {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "word out of bounds",
                 ));
@@ -688,13 +741,10 @@ impl Board {
             }
 
             let adjacent = self.cross_word(r, c, horizontal, ch);
-            if adjacent.len() > 1 {
-                dawg.contains(&adjacent).then_some(()).ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(format!(
-                        "cross-word '{adjacent}' formed by '{}' is not in the dictionary",
-                        ch,
-                    ))
-                })?;
+            if adjacent.len() > 1 && !dawg.contains(&adjacent) {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "cross-word '{adjacent}' formed by '{ch}' is not in the dictionary",
+                )));
             }
         }
         Ok(())
@@ -702,9 +752,8 @@ impl Board {
 
     fn place_word(&mut self, word: &str, row: usize, col: usize, horizontal: bool) -> PyResult<()> {
         for (i, ch) in word.chars().enumerate() {
-            let r = if horizontal { row } else { row + i };
-            let c = if horizontal { col + i } else { col };
-            if r >= 15 || c >= 15 {
+            let (r, c) = word_cell(row, col, horizontal, i);
+            if !in_bounds(r, c) {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "word out of bounds",
                 ));
@@ -731,7 +780,7 @@ impl Board {
                     continue;
                 }
                 let slice = &row[start..=end];
-                if slice.iter().any(|&c| c == '-') && slice.iter().any(|&c| c != '-') {
+                if slice.contains(&'-') && slice.iter().any(|&c| c != '-') {
                     patterns.push((start, end));
                 }
             }
@@ -742,8 +791,10 @@ impl Board {
         // e.g. a new word running alongside an existing one, one row over,
         // touching it only through the cross-words it forms. `get_all_patterns`
         // fed only the "crossing" patterns above would never find these.
-        let has_adjacent_tile =
-            |i: usize| (row_idx > 0 && self.board[row_idx - 1][i] != '-') || (row_idx < n - 1 && self.board[row_idx + 1][i] != '-');
+        let has_adjacent_tile = |i: usize| {
+            (row_idx > 0 && self.board[row_idx - 1][i] != '-')
+                || (row_idx < n - 1 && self.board[row_idx + 1][i] != '-')
+        };
         let mut run_start = 0;
         while run_start < n {
             if !empty(run_start) {
@@ -777,7 +828,7 @@ impl Board {
     }
 
     fn get_col_patterns(&self, col_idx: usize) -> Vec<(usize, usize)> {
-        let n = 15usize;
+        let n = BOARD_SIZE;
         let empty = |i: usize| self.board[i][col_idx] == '-';
         let valid_start = |i: usize| i == 0 || empty(i - 1);
         let valid_end = |i: usize| i == n - 1 || empty(i + 1);
@@ -812,8 +863,10 @@ impl Board {
         // "Parallel" patterns: fully-empty spans in this column that connect
         // to the board only via a filled neighbour directly left/right --
         // see get_row_patterns for the full rationale.
-        let has_adjacent_tile =
-            |i: usize| (col_idx > 0 && self.board[i][col_idx - 1] != '-') || (col_idx < n - 1 && self.board[i][col_idx + 1] != '-');
+        let has_adjacent_tile = |i: usize| {
+            (col_idx > 0 && self.board[i][col_idx - 1] != '-')
+                || (col_idx < n - 1 && self.board[i][col_idx + 1] != '-')
+        };
         let mut run_start = 0;
         while run_start < n {
             if !empty(run_start) {
@@ -844,7 +897,7 @@ impl Board {
 
     fn get_all_patterns(&self) -> Vec<(usize, usize, usize, bool)> {
         let mut patterns = Vec::new();
-        for i in 0..15 {
+        for i in 0..BOARD_SIZE {
             for (start, end) in self.get_row_patterns(i) {
                 patterns.push((i, start, end, true));
             }
@@ -868,109 +921,93 @@ impl Board {
             .0
     }
 
-    #[pyo3(signature = (dawg, letters, first, parallel=true))]
-    fn get_best_word(
+    #[pyo3(signature = (dawg, letters, first, n, parallel=true))]
+    fn get_best_words(
         &self,
         dawg: &DawgPy,
         letters: &str,
         first: bool,
+        n: usize,
         parallel: bool,
-    ) -> (String, u32, (usize, usize, bool), Vec<char>) {
-        let mut best_word = String::new();
-        let mut best_pos = (0usize, 0usize, true);
-        let mut best_score = 0u32;
-        let mut used: Vec<char> = Vec::new();
-
+    ) -> Vec<BestWord> {
         if first {
-            // First move must cover the centre square (7, 7); try all offsets.
-            for word in dawg.search("*", letters) {
-                for offset in 0..7usize {
-                    if offset >= word.len() {
-                        break;
-                    }
-                    let score = self
-                        .calculate_word_points(&word, 7, 7 - offset, true, letters)
-                        .unwrap_or(0);
-                    if score > best_score {
-                        best_score = score;
-                        best_pos = (7, 7 - offset, true);
-                        best_word = word.clone();
-                        used = best_word.chars().collect();
-                    }
-                }
-            }
+            self.best_opening_words(dawg, letters, n)
         } else {
-            let patterns = self.get_all_patterns();
-            let best = if parallel {
-                patterns
-                    .into_par_iter()
-                    .filter_map(|(row, start, end, horizontal)| {
-                        let (ar, ac) = if horizontal {
-                            (row, start)
-                        } else {
-                            (start, row)
-                        };
-                        let (word, score) = self.best_word_from_pattern_inner(
-                            &dawg.inner,
-                            ar,
-                            ac,
-                            end,
-                            horizontal,
-                            letters,
-                        );
-                        if word.is_empty() {
-                            None
-                        } else {
-                            Some((word, score, ar, ac, horizontal))
-                        }
-                    })
-                    .max_by_key(|&(_, score, ..)| score)
-            } else {
-                patterns
-                    .into_iter()
-                    .filter_map(|(row, start, end, horizontal)| {
-                        let (ar, ac) = if horizontal {
-                            (row, start)
-                        } else {
-                            (start, row)
-                        };
-                        let (word, score) = self.best_word_from_pattern_inner(
-                            &dawg.inner,
-                            ar,
-                            ac,
-                            end,
-                            horizontal,
-                            letters,
-                        );
-                        if word.is_empty() {
-                            None
-                        } else {
-                            Some((word, score, ar, ac, horizontal))
-                        }
-                    })
-                    .max_by_key(|&(_, score, ..)| score)
-            };
-            if let Some((word, score, ar, ac, horiz)) = best {
-                best_score = score;
-                best_pos = (ar, ac, horiz);
-                used = word
-                    .chars()
-                    .enumerate()
-                    .filter_map(|(i, ch)| {
-                        let r = if horiz { ar } else { ar + i };
-                        let c = if horiz { ac + i } else { ac };
-                        if self.board[r][c] == '-' {
-                            Some(ch)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                best_word = word;
+            self.best_words_from_patterns(dawg, letters, n, parallel)
+        }
+    }
+
+    /// Best-scoring first moves: the centre square must be covered, so
+    /// every word/offset combination that does so is a candidate.
+    fn best_opening_words(&self, dawg: &DawgPy, letters: &str, n: usize) -> Vec<BestWord> {
+        let mut candidates: Vec<BestWord> = Vec::new();
+        for word in dawg.search("*", letters) {
+            for offset in 0..CENTER {
+                if offset >= word.len() {
+                    break;
+                }
+                let col = CENTER - offset;
+                let score = self
+                    .calculate_word_points(&word, CENTER, col, true, letters)
+                    .unwrap_or(0);
+                if score == 0 {
+                    continue;
+                }
+                let used = self.hand_tiles_for_word(&word, CENTER, col, true, letters);
+                candidates.push((word.clone(), score, (CENTER, col, true), used));
             }
         }
+        candidates.sort_by_key(|&(_, score, ..)| std::cmp::Reverse(score));
+        candidates.truncate(n);
+        candidates
+    }
 
-        (best_word, best_score, best_pos, used)
+    /// Best-scoring moves across every valid placement pattern already on
+    /// the board (i.e. every move but the opening one).
+    fn best_words_from_patterns(
+        &self,
+        dawg: &DawgPy,
+        letters: &str,
+        n: usize,
+        parallel: bool,
+    ) -> Vec<BestWord> {
+        let patterns = self.get_all_patterns();
+        let compute = |(row, start, end, horizontal): (usize, usize, usize, bool)| {
+            let (ar, ac) = if horizontal {
+                (row, start)
+            } else {
+                (start, row)
+            };
+            let (word, score) =
+                self.best_word_from_pattern_inner(&dawg.inner, ar, ac, end, horizontal, letters);
+            if word.is_empty() {
+                None
+            } else {
+                Some((word, score, ar, ac, horizontal))
+            }
+        };
+        let mut best: Vec<(String, u32, usize, usize, bool)> = if parallel {
+            patterns.into_par_iter().filter_map(compute).collect()
+        } else {
+            patterns.into_iter().filter_map(compute).collect()
+        };
+        best.sort_by_key(|&(_, score, ..)| std::cmp::Reverse(score));
+        best.truncate(n);
+
+        best.into_iter()
+            .map(|(word, score, ar, ac, horiz)| {
+                let used = self.hand_tiles_for_word(&word, ar, ac, horiz, letters);
+                (word, score, (ar, ac, horiz), used)
+            })
+            .collect()
+    }
+
+    #[pyo3(signature = (dawg, letters, first, parallel=true))]
+    fn get_best_word(&self, dawg: &DawgPy, letters: &str, first: bool, parallel: bool) -> BestWord {
+        self.get_best_words(dawg, letters, first, 1, parallel)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| (String::new(), 0, (0, 0, true), Vec::new()))
     }
 }
 
@@ -989,7 +1026,7 @@ impl Board {
             }
             let start = col - x + 1;
             let mut x = 1;
-            while col + x < 15 && self.board[row][col + x] != '-' {
+            while col + x < BOARD_SIZE && self.board[row][col + x] != '-' {
                 x += 1;
             }
             let end = col + x - 1;
@@ -1006,7 +1043,7 @@ impl Board {
             }
             let start = row - y + 1;
             let mut y = 1;
-            while row + y < 15 && self.board[row + y][col] != '-' {
+            while row + y < BOARD_SIZE && self.board[row + y][col] != '-' {
                 y += 1;
             }
             let end = row + y - 1;
@@ -1019,6 +1056,27 @@ impl Board {
         word
     }
 
+    /// Sum of face point values of the cross-word formed at `(row, col)`
+    /// when placing `ch`, excluding `ch`'s own value — i.e. just the
+    /// existing perpendicular neighbours. `None` if no cross-word forms
+    /// here (no adjacent tiles). Reuses `cross_word` rather than
+    /// re-walking the neighbours, since `ch` appears in that string
+    /// exactly once.
+    fn cross_neighbor_points(
+        &self,
+        row: usize,
+        col: usize,
+        horizontal: bool,
+        ch: char,
+    ) -> Option<u32> {
+        let cross = self.cross_word(row, col, horizontal, ch);
+        if cross.is_empty() {
+            return None;
+        }
+        let total: u32 = cross.chars().map(letter_points).sum();
+        Some(total - letter_points(ch))
+    }
+
     fn check_word_placement_inner(
         &self,
         dawg: &Dawg,
@@ -1028,9 +1086,8 @@ impl Board {
         horizontal: bool,
     ) -> bool {
         for (i, ch) in word.chars().enumerate() {
-            let r = if horizontal { row } else { row + i };
-            let c = if horizontal { col + i } else { col };
-            if r >= 15 || c >= 15 {
+            let (r, c) = word_cell(row, col, horizontal, i);
+            if !in_bounds(r, c) {
                 return false;
             }
             if self.board[r][c] != '-' {
@@ -1043,6 +1100,39 @@ impl Board {
             }
         }
         true
+    }
+
+    /// Letters actually drawn from `letters` to place `word` at (row, col):
+    /// one entry per still-empty board cell, in placement order. Real
+    /// tiles are used first; once the hand's supply of a letter is
+    /// exhausted, a blank (`'?'`) stands in for it instead — matching how
+    /// `calculate_word_points` scores the same placement, so the two never
+    /// disagree about which tiles a move actually consumes.
+    fn hand_tiles_for_word(
+        &self,
+        word: &str,
+        row: usize,
+        col: usize,
+        horizontal: bool,
+        letters: &str,
+    ) -> Vec<char> {
+        let mut hand_freq = real_letter_counts(letters);
+        word.chars()
+            .enumerate()
+            .filter_map(|(i, ch)| {
+                let (r, c) = word_cell(row, col, horizontal, i);
+                if self.board[r][c] != '-' {
+                    return None;
+                }
+                match hand_freq.get_mut(&ch) {
+                    Some(count) if *count > 0 => {
+                        *count -= 1;
+                        Some(ch)
+                    }
+                    _ => Some('?'),
+                }
+            })
+            .collect()
     }
 
     fn best_word_from_pattern_inner(
