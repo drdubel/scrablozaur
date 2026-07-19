@@ -1,0 +1,40 @@
+[project]
+name = "scrablozaur"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.7.0",
+    "python-multipart>=0.0.9",
+    "opencv-python>=5.0.0.93",
+    "numpy>=2.5.1",
+    "torch>=2.9",
+    "pillow>=12.3.0",
+    "tqdm>=4.66.0",
+]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.0",
+]
+
+# This pyproject.toml exists for uv's dependency management (web/ + board_reader/
+# runtime deps), not to package the crate for PyPI -- the compiled scrablozaur
+# extension is built ad hoc via `maturin develop --release` (see README). Once a
+# pyproject.toml is present maturin insists on a valid [build-system], and uv
+# would otherwise try to build/install this "package" on every sync -- both
+# turned off here to keep `uv sync` a pure dependency install, same as before
+# this file existed.
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.uv]
+package = false
+
+# `extension-module` is off by default in Cargo.toml so `cargo run`/`cargo build`
+# (the DAWG CLI/bench binary) can link against libpython normally; maturin needs
+# it explicitly enabled to build the importable Python extension.
+[tool.maturin]
+features = ["pyo3/extension-module"]

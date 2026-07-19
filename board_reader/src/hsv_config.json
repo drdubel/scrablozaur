@@ -1,0 +1,53 @@
+{
+  "board_teal": {
+    "lower": [
+      70,
+      71,
+      60
+    ],
+    "upper": [
+      125,
+      255,
+      255
+    ]
+  },
+  "board_params": {
+    "dark_s_max": 254,
+    "dark_v_max": 254,
+    "near_teal_kernel": 2,
+    "close_kernel": 5,
+    "close_iterations": 1,
+    "open_kernel": 2,
+    "canny_blur_kernel": 1,
+    "canny_blur_sigma": 2,
+    "canny_low": 77,
+    "canny_high": 131,
+    "canny_dilate_kernel": 2,
+    "quad_side_ratio_max": 2.3,
+    "quad_angle_tolerance": 45,
+    "quad_min_area_frac": 0.08
+  },
+  "red_rectangle_params": {
+    "percentile": 94.0,
+    "redness_min": 1.0,
+    "close_size": 30.0
+  },
+  "tile_detector_params": {
+    "color_z_threshold": 2.4,
+    "seed_glyph_high": 0.44,
+    "seed_glyph_low": 0.3,
+    "seed_glyph_fallback": 0.55,
+    "seed_max": 8.0,
+    "seed_min": 3.0,
+    "same_tile_dist": 1.1,
+    "d_accept": 4.0,
+    "z_accept": 2.2,
+    "d_accept_strict": 2.2,
+    "z_accept_strict": 3.0,
+    "definitely_empty_d": 3.1,
+    "definitely_empty_z": 1.5,
+    "ambiguous_glyph_min": 0.35,
+    "strict_glyph_min": 0.35,
+    "permissive_glyph_min": 0.12
+  }
+}
