@@ -1,10 +1,11 @@
 import statistics
-
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
 from matplotlib import pyplot as plt  # type: ignore
 from tqdm import tqdm
 
 from scrablozaur import Board, Dawg
+from strategy import StrategicPlayer
 
 d = Dawg("words/dawg.bin")
 
@@ -50,9 +51,10 @@ class Player:
 def graj(debug: bool = False) -> tuple[int, int]:
     b = Board([["-" for _ in range(15)] for _ in range(15)])
 
-    p1 = Player(b)
+    p1 = StrategicPlayer(b)
     p2 = Player(b)
-    opener, second = p1, p2
+    opener: Player | StrategicPlayer = p1
+    second: Player | StrategicPlayer = p2
     w = opener.play_word(d, first=True)
     if debug:
         print(f"Player 1 plays: {w}")
@@ -100,24 +102,37 @@ def graj(debug: bool = False) -> tuple[int, int]:
 
 
 def speed_test() -> None:
-    N = 2000
+    N = 10000
     scores = []
+    wins = [0, 0]
 
     with ProcessPoolExecutor() as executor:
         futures = [executor.submit(graj, False) for _ in range(N)]
         for future in tqdm(as_completed(futures), total=N):
             p1, p2 = future.result()
-            scores.extend([p1, p2])
+            scores.append((p1, p2))
+            if p1 > p2:
+                wins[0] += 1
+            elif p2 > p1:
+                wins[1] += 1
 
-    print(f"Average score: {sum(scores) / len(scores):.2f}")
-    print(f"Median score: {statistics.median(scores)}")
-    print(f"Max score: {max(scores)}")
-    print(f"Min score: {min(scores)}")
+    print(f"Average score P1: {sum(score[0] for score in scores) / len(scores):.2f}")
+    print(f"Average score P2: {sum(score[1] for score in scores) / len(scores):.2f}")
+    print(f"Median score P1: {statistics.median(score[0] for score in scores)}")
+    print(f"Median score P2: {statistics.median(score[1] for score in scores)}")
+    print(f"Max score P1: {max(score[0] for score in scores)}")
+    print(f"Max score P2: {max(score[1] for score in scores)}")
+    print(f"Min score P1: {min(score[0] for score in scores)}")
+    print(f"Min score P2: {min(score[1] for score in scores)}")
+    print(f"Wins P1: {wins[0]}")
+    print(f"Wins P2: {wins[1]}")
 
-    plt.hist(scores, bins=20)
+    plt.hist([score[0] for score in scores], bins=20, label="Player 1")
+    plt.hist([score[1] for score in scores], bins=20, label="Player 2")
     plt.xlabel("Score")
     plt.ylabel("Frequency")
     plt.title("Distribution of Scores")
+    plt.legend()
     plt.show()
 
 
