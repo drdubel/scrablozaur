@@ -31,7 +31,7 @@ def check_cross_word_scoring() -> list[str]:
     a DW at (1,1): main word (c+d+f)*2=18, cross-word at row0 (b+c)=5,
     cross-word at row1 (a+d)*2=6 (also on the DW) -- total 29, not the
     buggy 26 you'd get by multiplying everything by the main word's mult."""
-    board = Board([["-"] * 15 for _ in range(15)])
+    board = Board()
     board.place_word("ba", 0, 0, False)
     score = board.calculate_word_points("cdf", 0, 1, False, "cdf")
     if score != 29:
@@ -45,7 +45,7 @@ def check_first_move_covers_every_offset() -> list[str]:
     it (offset 0) -- previously the search started at offset 1 and missed
     this case entirely."""
     dawg = Dawg(str(DAWG_PATH))
-    board = Board([["-"] * 15 for _ in range(15)])
+    board = Board()
     letters = "yclgaup"
     _, best_score, _, _ = board.get_best_word(dawg, letters, first=True, parallel=False)
 
@@ -70,7 +70,7 @@ def check_pattern_boundaries() -> list[str]:
     grid = [["-"] * 15 for _ in range(15)]
     grid[5][10] = "c"
     grid[4][3] = "x"
-    board = Board(grid)
+    board = Board.from_grid(grid)
 
     errors = []
     bgrid = board_grid(board)
@@ -96,7 +96,7 @@ def check_min_word_length() -> list[str]:
     """A play must be at least 2 letters -- rejected explicitly, not just
     because the dictionary happens to have no 1-letter entries."""
     dawg = Dawg(str(DAWG_PATH))
-    board = Board([["-"] * 15 for _ in range(15)])
+    board = Board()
     errors = []
     try:
         board.check_word_placement(dawg, "a", 7, 7, True)

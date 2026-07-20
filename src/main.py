@@ -49,7 +49,7 @@ class Player:
 
 
 def graj(debug: bool = False) -> tuple[int, int]:
-    b = Board([["-" for _ in range(15)] for _ in range(15)])
+    b = Board()
 
     p1 = StrategicPlayer(b)
     p2 = Player(b)

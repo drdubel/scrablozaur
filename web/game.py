@@ -144,7 +144,7 @@ class GameSession:
         if not self.move_history:
             return False
         entry = self.move_history.pop()
-        self.board = Board(entry.board_grid)
+        self.board = Board.from_grid(entry.board_grid)
         for i, p in enumerate(self.players):
             p.score = entry.player_scores[i]
             p.letters = entry.player_letters[i]
@@ -200,7 +200,7 @@ def _deal_new_game(players: list[Player], game_mode: GameMode) -> GameSession:
 
     return GameSession(
         session_id=str(uuid.uuid4()),
-        board=Board([["-"] * 15 for _ in range(15)]),
+        board=Board(),
         players=players,
         current_player_idx=first_player_idx,
         game_mode=game_mode,

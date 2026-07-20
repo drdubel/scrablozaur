@@ -533,6 +533,18 @@ fn alphabet_rank(c: char) -> i32 {
     }
 }
 
+/// Standard Polish Scrabble tile distribution (100 tiles).
+fn fresh_tile_bag() -> Vec<char> {
+    vec![
+        'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'ą', 'b', 'b', 'c', 'c', 'c', 'ć', 'd', 'd',
+        'd', 'e', 'e', 'e', 'e', 'e', 'e', 'e', 'ę', 'f', 'g', 'g', 'h', 'h', 'i', 'i', 'i', 'i',
+        'i', 'i', 'i', 'i', 'j', 'j', 'k', 'k', 'k', 'l', 'l', 'l', 'ł', 'ł', 'm', 'm', 'm', 'n',
+        'n', 'n', 'n', 'n', 'ń', 'o', 'o', 'o', 'o', 'o', 'o', 'ó', 'p', 'p', 'p', 'r', 'r', 'r',
+        'r', 's', 's', 's', 's', 'ś', 't', 't', 't', 'u', 'u', 'w', 'w', 'w', 'w', 'y', 'y', 'y',
+        'y', 'z', 'z', 'z', 'z', 'z', 'ź', 'ż', '?', '?',
+    ]
+}
+
 #[pyclass(name = "Board")]
 struct Board {
     board: [[char; BOARD_SIZE]; BOARD_SIZE],
@@ -542,7 +554,22 @@ struct Board {
 #[pymethods]
 impl Board {
     #[new]
-    fn new(board: Vec<Vec<String>>) -> PyResult<Self> {
+    fn new() -> PyResult<Self> {
+        Ok(Board {
+            board: [['-'; BOARD_SIZE]; BOARD_SIZE],
+            tile_bag: fresh_tile_bag(),
+        })
+    }
+
+    /// Construct a board pre-filled from a 15x15 grid of single-character
+    /// cells (e.g. loaded from a saved game or a scanned photo), each cell
+    /// either a letter or `'-'` for empty. Starts with a full standard
+    /// tile bag, same as `Board()` -- letters already on the grid are not
+    /// subtracted from it, since callers that load a grid this way manage
+    /// their own separate tile-bag bookkeeping rather than relying on this
+    /// board's.
+    #[staticmethod]
+    fn from_grid(board: Vec<Vec<String>>) -> PyResult<Self> {
         if board.len() != BOARD_SIZE {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "board must have exactly 15 rows",
@@ -568,17 +595,9 @@ impl Board {
                 result[r][c] = ch;
             }
         }
-        let tile_bag = vec![
-            'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'ą', 'b', 'b', 'c', 'c', 'c', 'ć', 'd',
-            'd', 'd', 'e', 'e', 'e', 'e', 'e', 'e', 'e', 'ę', 'f', 'g', 'g', 'h', 'h', 'i', 'i',
-            'i', 'i', 'i', 'i', 'i', 'i', 'j', 'j', 'k', 'k', 'k', 'l', 'l', 'l', 'ł', 'ł', 'm',
-            'm', 'm', 'n', 'n', 'n', 'n', 'n', 'ń', 'o', 'o', 'o', 'o', 'o', 'o', 'ó', 'p', 'p',
-            'p', 'r', 'r', 'r', 'r', 's', 's', 's', 's', 'ś', 't', 't', 't', 'u', 'u', 'w', 'w',
-            'w', 'w', 'y', 'y', 'y', 'y', 'z', 'z', 'z', 'z', 'z', 'ź', 'ż', '?', '?',
-        ];
         Ok(Board {
             board: result,
-            tile_bag,
+            tile_bag: fresh_tile_bag(),
         })
     }
 
@@ -623,6 +642,13 @@ impl Board {
     #[staticmethod]
     fn can_exchange(bag_remaining: usize) -> bool {
         bag_remaining >= RACK_SIZE
+    }
+
+    /// The standard Polish Scrabble tile distribution (100 tiles) that
+    /// `Board()` and `Board.from_grid()` each start with.
+    #[staticmethod]
+    fn fresh_tile_bag() -> Vec<char> {
+        fresh_tile_bag()
     }
 
     /// Sum of face point values of a rack (blank tiles score 0, matching

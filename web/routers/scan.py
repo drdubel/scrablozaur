@@ -121,7 +121,7 @@ async def suggest_for_scan(
         raise HTTPException(status_code=400, detail="Najpierw zeskanuj i zatwierdź planszę.")
 
     letters = body.letters.lower()
-    board = Board(session.board)
+    board = Board.from_grid(session.board)
     fn = _first_move_suggestions if board_is_empty(session.board) else _subsequent_suggestions
     raw = fn(board, dawg, letters, 10)
     suggestions = [Suggestion(**s) for s in raw]

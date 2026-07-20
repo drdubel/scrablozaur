@@ -37,14 +37,20 @@ class Dawg:
 class Board:
     """Scrabble board with a DAWG dictionary and a bag of letters."""
 
-    def __init__(self, board: list[list[str]]) -> None:
-        """Initialize the board with a 15x15 grid of characters.
+    def __init__(self) -> None:
+        """Initialize an empty 15x15 board with a full standard tile bag."""
+
+    @staticmethod
+    def from_grid(board: list[list[str]]) -> Board:
+        """Construct a board pre-filled from a 15x15 grid of characters.
 
         Each cell can be:
           - a letter (e.g. 'a', 'b', ..., 'z') – fixed letter on the board
           - '-' – empty cell where a letter can be placed
 
-        The board must be exactly 15 rows of 15 columns each.
+        The board must be exactly 15 rows of 15 columns each. Starts with a
+        full standard tile bag, same as `Board()` -- letters already on the
+        grid are not subtracted from it.
         """
 
     def __str__(self) -> str:
@@ -157,6 +163,12 @@ class Board:
 
         Standard Scrabble rule: exchanging is only permitted while at least 7
         tiles remain in the bag, regardless of how many tiles are exchanged.
+        """
+
+    @staticmethod
+    def fresh_tile_bag() -> list[str]:
+        """The standard Polish Scrabble tile distribution (100 tiles) that
+        `Board()` and `Board.from_grid()` each start with.
         """
 
     @staticmethod
