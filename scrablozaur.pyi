@@ -143,6 +143,14 @@ class Board:
         that the total number of letters (current + drawn) does not exceed 7.
         """
 
+    def exchange_letters(self, letters: str, letters_to_exchange: str) -> str:
+        """Exchange letters from the player's hand with new letters from the bag.
+
+        The `letters` argument represents the current letters in the player's hand.
+        The `letters_to_exchange` argument specifies which letters the player wants to exchange.
+        This method returns a new string of letters representing the player's hand after the exchange.
+        """
+
     @staticmethod
     def can_exchange(bag_remaining: int) -> bool:
         """Whether exchanging tiles for new ones is currently allowed.

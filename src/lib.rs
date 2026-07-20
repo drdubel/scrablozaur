@@ -602,6 +602,21 @@ impl Board {
         drawn
     }
 
+    fn exchange_letters(&mut self, letters: &str, letters_to_exchange: &str) -> String {
+        for ch in letters_to_exchange.chars() {
+            self.tile_bag.push(ch);
+        }
+        for ch in letters_to_exchange.chars() {
+            if let Some(pos) = letters.find(ch) {
+                let mut letters_vec: Vec<char> = letters.chars().collect();
+                letters_vec.remove(pos);
+                let new_letters: String = letters_vec.into_iter().collect();
+                return self.exchange_letters(&new_letters, &letters_to_exchange.replace(ch, ""));
+            }
+        }
+        self.give_letters(letters)
+    }
+
     /// Standard Scrabble rule: exchanging tiles for new ones from the bag is
     /// only allowed while at least a full rack's worth of tiles remain in
     /// the bag, regardless of how many tiles the player wants to exchange.
