@@ -1,3 +1,5 @@
+from collections import Counter
+
 from scrablozaur import Board, Dawg
 
 
@@ -5,12 +7,124 @@ class StrategicPlayer:
     def __init__(self, board: Board) -> None:
         self.board = board
         self.letters = ""
+        self.tile_bag = [
+            "a",
+            "a",
+            "a",
+            "a",
+            "a",
+            "a",
+            "a",
+            "a",
+            "a",
+            "ą",
+            "b",
+            "b",
+            "c",
+            "c",
+            "c",
+            "ć",
+            "d",
+            "d",
+            "d",
+            "e",
+            "e",
+            "e",
+            "e",
+            "e",
+            "e",
+            "e",
+            "ę",
+            "f",
+            "g",
+            "g",
+            "h",
+            "h",
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "i",
+            "j",
+            "j",
+            "k",
+            "k",
+            "k",
+            "l",
+            "l",
+            "l",
+            "ł",
+            "ł",
+            "m",
+            "m",
+            "m",
+            "n",
+            "n",
+            "n",
+            "n",
+            "n",
+            "ń",
+            "o",
+            "o",
+            "o",
+            "o",
+            "o",
+            "o",
+            "ó",
+            "p",
+            "p",
+            "p",
+            "r",
+            "r",
+            "r",
+            "r",
+            "s",
+            "s",
+            "s",
+            "s",
+            "ś",
+            "t",
+            "t",
+            "t",
+            "u",
+            "u",
+            "w",
+            "w",
+            "w",
+            "w",
+            "y",
+            "y",
+            "y",
+            "y",
+            "z",
+            "z",
+            "z",
+            "z",
+            "z",
+            "ź",
+            "ż",
+            "?",
+            "?",
+        ]
+        self.letters_left: list[str] = []
         self.draw_letters()
         self.score = 0
+
+    def exchange_letters(self, letters_to_exchange: str) -> None:
+        """Exchange letters from the player's hand with new letters from the bag."""
+        self.letters = self.board.exchange_letters(self.letters, letters_to_exchange)
 
     def draw_letters(self) -> None:
         """Draw letters from the bag to fill the player's hand up to 7 letters."""
         self.letters += self.board.give_letters(self.letters)
+
+    def save_letters_left(self) -> None:
+        """Save the letters used in the last played word for scoring purposes."""
+        used_letters = [ch for ch in self.board.__str__().split() if ch != "-"] + [ch for ch in self.letters]
+        self.letters_left = list((Counter(self.tile_bag) - Counter(used_letters)).elements())
 
     def get_best_words(
         self, dawg: Dawg, letters: str, first: bool = False
