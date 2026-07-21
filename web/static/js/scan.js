@@ -89,6 +89,26 @@ class ScanBoardGrid {
     return this._data.map(row => row.map(cell => cell.letter));
   }
 
+  /** Which cells are carried over from a previous confirmed scan -- these
+   * are excluded from re-validation server-side, same as at OCR time. */
+  getLockedMask() {
+    return this._data.map(row => row.map(cell => !!cell.carried_over));
+  }
+
+  /** Apply a freshly re-checked flagged/15x15 grid (see
+   * ScanController._revalidateBoard) without touching letters or
+   * alternatives -- only cells whose flag actually changed are re-rendered. */
+  applyFlags(flaggedGrid) {
+    for (let r = 0; r < 15; r++) {
+      for (let c = 0; c < 15; c++) {
+        if (this._data[r][c].flagged !== flaggedGrid[r][c]) {
+          this._data[r][c] = { ...this._data[r][c], flagged: flaggedGrid[r][c] };
+          this._renderCell(r, c);
+        }
+      }
+    }
+  }
+
   flaggedCount() {
     let n = 0;
     for (const row of this._data) for (const cell of row) if (cell.flagged) n++;
@@ -339,12 +359,30 @@ class ScanController {
     if (this._selR === null) return;
     this._grid.setLetter(this._selR, this._selC, letter);
     this._elEditorInput.value = letter.toUpperCase();
-    this._updateFlagSummary();
+    this._revalidateBoard();
   }
 
   _clearSelectedCell() {
     if (this._selR === null) return;
     this._grid.setLetter(this._selR, this._selC, '-');
+    this._elEditorInput.value = '';
+    this._revalidateBoard();
+  }
+
+  /** Re-run the dictionary flagging check against the board as currently
+   * edited, so fixing one cell also clears (or newly raises) flags on
+   * every other cell whose word that edit affected -- not just the cell
+   * that was actually touched. Best-effort: a failed recheck leaves the
+   * existing flags in place rather than blocking the edit. */
+  async _revalidateBoard() {
+    try {
+      const grid = this._grid.getGrid();
+      const locked = this._grid.getLockedMask();
+      const res = await this._api.recheckScanBoard(grid, locked);
+      this._grid.applyFlags(res.flagged);
+    } catch (err) {
+      console.error('Board recheck failed:', err);
+    }
     this._updateFlagSummary();
   }
 

@@ -42,6 +42,11 @@ class ScanSuggestRequest(BaseModel):
     letters: str = Field(..., min_length=1, max_length=7)
 
 
+class ScanRecheckRequest(BaseModel):
+    board: list[list[str]] = Field(..., min_length=15, max_length=15)
+    locked: list[list[bool]] = Field(..., min_length=15, max_length=15)
+
+
 class PlaceComputerWordRequest(BaseModel):
     word: str
     row: int = Field(..., ge=0, le=14)
@@ -139,6 +144,10 @@ class ScanBoardResponse(BaseModel):
 class ScanStateResponse(BaseModel):
     board: list[list[str]]
     has_session: bool
+
+
+class ScanRecheckResponse(BaseModel):
+    flagged: list[list[bool]]
 
 
 class SaveTrainingResponse(BaseModel):

@@ -334,6 +334,19 @@ def _verify_and_correct(
         if not changed:
             break
 
+    return flag_invalid(dawg, grid, locked=locked)
+
+
+def flag_invalid(
+    dawg: Dawg,
+    grid: list[list[str]],
+    locked: set[tuple[int, int]] = frozenset(),
+) -> set[tuple[int, int]]:
+    """Just the flagging half of _verify_and_correct(), with no substitution
+    attempted -- used to re-check the board after the user hand-edits a
+    cell in the review step, where silently substituting some *other*
+    cell's letter out from under them would fight their own correction
+    rather than help it."""
     flagged: set[tuple[int, int]] = set()
     for run in _runs(grid):
         if all(pos in locked for pos in run):

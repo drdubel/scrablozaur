@@ -149,7 +149,10 @@ class GameController {
   }
 
   /** Automatyczny sandbox: every row is a computer with its own difficulty
-   * (no radio -- there's no human to designate). */
+   * (no radio -- there's no human to designate). Difficulty is a small
+   * button group (matching the competitive mode's diff-cards) rather than
+   * a dropdown -- the chosen value lives on the row's own dataset since
+   * there's no single underlying <select> to read it back from. */
   _buildAutoSetupRows(count) {
     this._setupPlayers.innerHTML = '';
     const defaults = this._autoPlayerConfig;
@@ -157,20 +160,30 @@ class GameController {
       const def = defaults[i] ?? { name: `Gracz ${i + 1}`, difficulty: 'hard' };
       const row = document.createElement('div');
       row.className = 'setup-player-row';
+      row.dataset.difficulty = def.difficulty;
       const num = document.createElement('span');
       num.className = 'player-num'; num.textContent = `${i + 1}.`;
       const inp = document.createElement('input');
       inp.type = 'text'; inp.maxLength = 20; inp.value = def.name;
       inp.placeholder = `Gracz ${i + 1}`;
-      const sel = document.createElement('select');
-      sel.className = 'player-difficulty';
-      sel.innerHTML =
-        '<option value="easy">🌱 Łatwy</option>' +
-        '<option value="medium">🎯 Średni</option>' +
-        '<option value="hard">🔥 Trudny</option>' +
-        '<option value="impossible">💀 Niemożliwy</option>';
-      sel.value = def.difficulty;
-      row.appendChild(num); row.appendChild(inp); row.appendChild(sel);
+      const diffGroup = document.createElement('div');
+      diffGroup.className = 'player-diff-buttons';
+      for (const diff of ['easy', 'medium', 'hard', 'impossible']) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'player-diff-btn' + (diff === def.difficulty ? ' player-diff-btn--active' : '');
+        btn.dataset.diff = diff;
+        btn.title = DIFFICULTY_LABEL[diff];
+        btn.textContent = DIFFICULTY_EMOJI[diff];
+        btn.addEventListener('click', () => {
+          row.dataset.difficulty = diff;
+          diffGroup.querySelectorAll('.player-diff-btn').forEach(b =>
+            b.classList.toggle('player-diff-btn--active', b === btn)
+          );
+        });
+        diffGroup.appendChild(btn);
+      }
+      row.appendChild(num); row.appendChild(inp); row.appendChild(diffGroup);
       this._setupPlayers.appendChild(row);
     }
   }
@@ -220,7 +233,7 @@ class GameController {
         players: rows.map((row, i) => ({
           name: row.querySelector('input[type="text"]').value.trim() || `Gracz ${i + 1}`,
           is_computer: true,
-          difficulty: row.querySelector('.player-difficulty').value,
+          difficulty: row.dataset.difficulty,
         })),
         game_mode: 'sandbox_auto',
       };

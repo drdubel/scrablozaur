@@ -51,22 +51,57 @@
   --color-primary-h: #1a5276;
   --color-danger: #c0392b;
 
+  /* Gradients layered on top of the flat colors above -- applied to board
+     chrome, tiles, buttons and cards so the UI reads as glossy/tactile
+     rather than flat-filled. Kept as separate variables (not replacements
+     for --color-*) since plenty of components still want a flat tone
+     (e.g. text colors, thin borders, the hint/typing-word backgrounds). */
+  --gradient-page: linear-gradient(165deg, #faf7f0 0%, #f0e6d2 55%, #e9dcc0 100%);
+  --gradient-header: linear-gradient(120deg, #ffffff 0%, #f7ecd8 100%);
+  --gradient-primary: linear-gradient(135deg, #3a91cc 0%, #1a5276 100%);
+  --gradient-primary-h: linear-gradient(135deg, #2f86bf 0%, #123d59 100%);
+  --gradient-danger: linear-gradient(135deg, #e0594a 0%, #a02c1f 100%);
+  --gradient-danger-h: linear-gradient(135deg, #cf4938 0%, #8a2419 100%);
+  --gradient-accent-soft: linear-gradient(135deg, #eaf4ff 0%, #d3e9ff 100%);
+  --gradient-board-frame: linear-gradient(160deg, #b0966d 0%, #7c6640 100%);
+  --gradient-card: linear-gradient(160deg, #ffffff 0%, #faf5ea 100%);
+
+  --gradient-tw: linear-gradient(150deg, #e05a49 0%, #a5281b 100%);
+  --gradient-dw: linear-gradient(150deg, #f3a13a 0%, #c46a0e 100%);
+  --gradient-tl: linear-gradient(150deg, #3f95d1 0%, #185a82 100%);
+  --gradient-dl: linear-gradient(150deg, #a8d4ec 0%, #5b93b8 100%);
+  --gradient-center: linear-gradient(150deg, #f3a13a 0%, #c46a0e 100%);
+  --gradient-tile: linear-gradient(160deg, #fffdf6 0%, #fbecc0 55%, #f0d894 100%);
+
+  /* Per-player tile tint, keyed by seat index (0-3) -- owner-0/1 keep the
+     original human-yellow/computer-blue look so competitive and the common
+     1v1 sandbox case are visually unchanged; owner-2/3 (green/purple) only
+     ever appear with 3-4 players (sandbox_auto, benchmark replay). */
+  --gradient-owner-0: linear-gradient(160deg, #fffdf6 0%, #fbecc0 55%, #f0d894 100%);
+  --gradient-owner-1: linear-gradient(160deg, #f6fbff 0%, #d9edfb 55%, #b9dcf2 100%);
+  --gradient-owner-2: linear-gradient(160deg, #f2fcf6 0%, #cdf1de 55%, #a3e2bf 100%);
+  --gradient-owner-3: linear-gradient(160deg, #fbf5fd 0%, #ead9f5 55%, #d7bced 100%);
+
   /* Fluid so the 15x15 board always fits the viewport width instead of
      forcing horizontal scroll on phones -- caps at the original fixed size
      on anything wide enough to afford it. 4.5rem is a deliberately generous
      stand-in for main's padding + the board's own border/padding/gaps (the
      precise overhead is ~36px board chrome + whatever main's padding is at
      a given breakpoint); overshooting the margin only wastes a few spare
-     px, undershooting it would reintroduce horizontal overflow. */
-  --cell-size: clamp(15px, calc((100vw - 4.5rem) / 15), 46px);
+     px, undershooting it would reintroduce horizontal overflow. Cap raised
+     46->52px (and --cell-font's cap/multiplier along with it) for bigger
+     letter tiles / point digits -- see the main/.board-layout comments for
+     the matching width-breakpoint recalculation this forced. */
+  --cell-size: clamp(15px, calc((100vw - 4.5rem) / 15), 52px);
   --cell-gap: 2px;
-  --cell-font: clamp(7px, calc(var(--cell-size) * 0.3), 14px);
-  --radius: 6px;
+  --cell-font: clamp(8px, calc(var(--cell-size) * 0.34), 17px);
+  --radius: 10px;
 }
 
 body {
   font-family: system-ui, -apple-system, sans-serif;
-  background: var(--color-bg);
+  background: var(--gradient-page);
+  background-attachment: fixed;
   color: var(--color-text);
   min-height: 100vh;
   padding-bottom: 3rem;
@@ -78,7 +113,7 @@ header {
   align-items: center;
   justify-content: space-between;
   padding: 1rem 2rem;
-  background: var(--color-surface);
+  background: var(--gradient-header);
   border-bottom: 1px solid var(--color-border);
   position: sticky;
   top: 0;
@@ -87,8 +122,12 @@ header {
 
 header h1 {
   font-size: 1.5rem;
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: -0.5px;
+  background: linear-gradient(135deg, var(--color-primary) 0%, #c46a0e 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .header-actions {
@@ -100,12 +139,12 @@ header h1 {
 /* ── Layout ────────────────────────────────────────────────────────────────── */
 main {
   /* Must comfortably fit .board-layout's 3-column desktop mode: 2x220px side
-     panels + 2x1rem gaps + the board's own 726px at full cell size = 1198px
-     of content, +32px of this padding = 1230px. 1100px (the old value) was
-     narrower than that, so the 3-column layout silently overflowed its own
-     container on every desktop width where it was active -- see the
-     .board-layout comment. */
-  max-width: 1300px;
+     panels + 2x1rem gaps + the board's own 816px at full (52px) cell size =
+     1288px of content, +32px of this padding = 1320px -- 1400px caps main
+     comfortably above that. (Cell size was bumped 46->52px for bigger
+     tiles/point-digits, which is what pushed this and the breakpoint below
+     up from their previous 1300/1280.) */
+  max-width: 1400px;
   margin: 0 auto;
   padding: 1.5rem 1rem;
   display: flex;
@@ -125,7 +164,7 @@ dialog {
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0,0,0,0.1);
-  background: var(--color-surface);
+  background: var(--gradient-card);
 }
 
 dialog::backdrop {
@@ -179,7 +218,7 @@ dialog h2 {
 
 .mode-card--active {
   border-color: var(--color-primary);
-  background: #eef6ff;
+  background: var(--gradient-accent-soft);
 }
 
 .mode-card-icon {
@@ -249,7 +288,7 @@ dialog h2 {
 
 .diff-card--active {
   border-color: var(--color-primary);
-  background: #eef6ff;
+  background: var(--gradient-accent-soft);
 }
 
 .diff-card-icon {
@@ -322,11 +361,34 @@ dialog h2 {
   accent-color: var(--color-primary);
 }
 
-.setup-player-row select.player-difficulty {
-  min-width: 0;
-  width: 8.5rem;
-  font-size: 0.85rem;
+.player-diff-buttons {
+  display: flex;
+  gap: 0.3rem;
   flex-shrink: 0;
+}
+
+.player-diff-btn {
+  width: 2.15rem;
+  height: 2.15rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  line-height: 1;
+  border: 2px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.player-diff-btn:hover {
+  border-color: var(--color-primary);
+}
+
+.player-diff-btn--active {
+  border-color: var(--color-primary);
+  background: var(--gradient-accent-soft);
 }
 
 /* Sandbox manual/automatic sub-toggle */
@@ -355,7 +417,7 @@ dialog h2 {
 
 .sub-toggle-btn--active {
   border-color: var(--color-primary);
-  background: #eef6ff;
+  background: var(--gradient-accent-soft);
 }
 
 .sandbox-sub-desc {
@@ -389,11 +451,12 @@ dialog h2 {
   display: flex;
   align-items: stretch;
   gap: 0;
-  background: var(--color-surface);
+  background: var(--gradient-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   width: 100%;
   max-width: 800px;
+  margin: 0 auto;
   overflow: hidden;
 }
 
@@ -414,7 +477,7 @@ dialog h2 {
 }
 
 .score-block.active-player {
-  background: #eaf4ff;
+  background: var(--gradient-accent-soft);
   outline: 2px solid var(--color-primary);
   outline-offset: -2px;
 }
@@ -478,28 +541,33 @@ dialog h2 {
 }
 
 .rack-tile {
-  width: 42px;
-  height: 42px;
+  width: 56px;
+  height: 56px;
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-placed);
+  background: var(--gradient-tile);
   border: 2px solid var(--color-placed-border);
-  border-radius: 4px;
+  border-radius: 8px;
   font-weight: 700;
-  font-size: 1.1rem;
+  font-size: 1.4rem;
   color: var(--color-text);
   text-transform: uppercase;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 2px 5px rgba(0, 0, 0, 0.15);
   user-select: none;
+  transition: transform 0.12s;
+}
+
+.rack-tile:hover {
+  transform: translateY(-2px);
 }
 
 .rack-tile.blank {
-  background: #e8e8e8;
+  background: linear-gradient(160deg, #f5f5f5 0%, #dcdcdc 100%);
   border-color: #aaa;
   color: var(--color-muted);
-  font-size: 0.9rem;
+  font-size: 1.15rem;
 }
 
 /* ── Computer move notification (competitive) ──────────────────────────────── */
@@ -507,7 +575,7 @@ dialog h2 {
   width: 100%;
   max-width: 800px;
   padding: 0.7rem 1rem;
-  background: #eaf4ff;
+  background: var(--gradient-accent-soft);
   border: 1px solid var(--color-primary);
   border-radius: var(--radius);
   font-size: 0.9rem;
@@ -520,9 +588,9 @@ dialog h2 {
   grid-template-columns: repeat(15, var(--cell-size));
   grid-template-rows: repeat(15, var(--cell-size));
   gap: var(--cell-gap);
-  border: 2px solid #8a7a60;
-  border-radius: 4px;
-  background: #8a7a60;
+  border: 2px solid #6b573e;
+  border-radius: 6px;
+  background: var(--gradient-board-frame);
   padding: var(--cell-gap);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
@@ -538,7 +606,7 @@ dialog h2 {
   border-radius: 2px;
   cursor: pointer;
   user-select: none;
-  transition: background 0.15s;
+  transition: background 0.15s, transform 0.1s;
   line-height: 1;
   text-align: center;
 }
@@ -553,36 +621,42 @@ dialog h2 {
 }
 
 .cell.tw {
-  background: var(--color-tw);
+  background: var(--gradient-tw);
   color: var(--color-tw-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.dw {
-  background: var(--color-dw);
+  background: var(--gradient-dw);
   color: var(--color-dw-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.tl {
-  background: var(--color-tl);
+  background: var(--gradient-tl);
   color: var(--color-tl-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.dl {
-  background: var(--color-dl);
+  background: var(--gradient-dl);
   color: var(--color-dl-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.center {
-  background: var(--color-center);
+  background: var(--gradient-center);
   color: #fff;
   font-size: calc(var(--cell-font) + 2px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.placed {
-  background: var(--color-placed);
+  background: var(--gradient-tile);
   color: var(--color-text);
   font-size: var(--cell-font);
   border: 1px solid var(--color-placed-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 1px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.highlight-new {
@@ -685,33 +759,33 @@ dialog h2 {
   position: absolute;
   bottom: 2px;
   right: 3px;
-  font-size: max(6px, calc(var(--cell-font) * 0.55));
-  font-weight: 600;
+  font-size: max(7px, calc(var(--cell-font) * 0.62));
+  font-weight: 700;
   line-height: 1;
-  opacity: 0.75;
+  opacity: 0.85;
 }
 
-/* Per-player tile tint, keyed by seat index -- see --color-owner-* above. */
+/* Per-player tile tint, keyed by seat index -- see --gradient-owner-* above. */
 .cell.placed-owner-0 {
-  background: var(--color-owner-0);
+  background: var(--gradient-owner-0);
   color: var(--color-text);
   border: 1px solid var(--color-owner-0-border);
 }
 
 .cell.placed-owner-1 {
-  background: var(--color-owner-1);
+  background: var(--gradient-owner-1);
   color: var(--color-text);
   border: 1px solid var(--color-owner-1-border);
 }
 
 .cell.placed-owner-2 {
-  background: var(--color-owner-2);
+  background: var(--gradient-owner-2);
   color: var(--color-text);
   border: 1px solid var(--color-owner-2-border);
 }
 
 .cell.placed-owner-3 {
-  background: var(--color-owner-3);
+  background: var(--gradient-owner-3);
   color: var(--color-text);
   border: 1px solid var(--color-owner-3-border);
 }
@@ -736,7 +810,7 @@ dialog h2 {
 .word-def-panel {
   width: 100%;
   max-width: 800px;
-  background: var(--color-surface);
+  background: var(--gradient-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 0.85rem 1.1rem;
@@ -808,7 +882,7 @@ dialog h2 {
 }
 
 .panel {
-  background: var(--color-surface);
+  background: var(--gradient-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 1.25rem 1.5rem;
@@ -906,7 +980,7 @@ select:focus {
 .suggestion-item:hover,
 .suggestion-item.active {
   border-color: var(--color-primary);
-  background: #eaf4ff;
+  background: var(--gradient-accent-soft);
 }
 
 .sug-rank {
@@ -950,35 +1024,39 @@ select:focus {
   padding: 0.5rem 1.1rem;
   font-size: 0.875rem;
   font-weight: 600;
-  border-radius: 4px;
+  border-radius: 8px;
   border: none;
   cursor: pointer;
-  transition: background 0.15s, opacity 0.15s;
+  transition: background 0.15s, opacity 0.15s, transform 0.1s, box-shadow 0.15s;
   white-space: nowrap;
 }
 
 .btn-sm {
   padding: 0.3rem 0.65rem;
   font-size: 0.8rem;
+  border-radius: 6px;
 }
 
 .btn-primary {
-  background: var(--color-primary);
+  background: var(--gradient-primary);
   color: #fff;
+  box-shadow: 0 2px 6px rgba(36, 113, 163, 0.35);
 }
 
 .btn-primary:hover {
-  background: var(--color-primary-h);
+  background: var(--gradient-primary-h);
+  box-shadow: 0 3px 10px rgba(36, 113, 163, 0.45);
+  transform: translateY(-1px);
 }
 
 .btn-secondary {
-  background: var(--color-surface);
+  background: linear-gradient(160deg, #ffffff 0%, #f4efe4 100%);
   color: var(--color-text);
   border: 1px solid var(--color-border);
 }
 
 .btn-secondary:hover {
-  background: var(--color-bg);
+  background: linear-gradient(160deg, #ffffff 0%, #ece4d4 100%);
 }
 
 .btn-ghost {
@@ -993,12 +1071,15 @@ select:focus {
 }
 
 .btn-danger {
-  background: var(--color-danger);
+  background: var(--gradient-danger);
   color: #fff;
+  box-shadow: 0 2px 6px rgba(192, 57, 43, 0.35);
 }
 
 .btn-danger:hover {
-  background: #a93226;
+  background: var(--gradient-danger-h);
+  box-shadow: 0 3px 10px rgba(192, 57, 43, 0.45);
+  transform: translateY(-1px);
 }
 
 .btn:disabled {
@@ -1010,7 +1091,8 @@ select:focus {
 .game-over-panel {
   width: 100%;
   max-width: 480px;
-  background: var(--color-surface);
+  margin: 0 auto;
+  background: var(--gradient-card);
   border: 2px solid var(--color-primary);
   border-radius: var(--radius);
   padding: 1.5rem 2rem;
@@ -1101,7 +1183,7 @@ select:focus {
 
 /* ── Side panels (def + rating) ────────────────────────────────────────────── */
 .word-def-panel {
-  background: var(--color-surface);
+  background: var(--gradient-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 0.85rem 1rem;
@@ -1109,7 +1191,7 @@ select:focus {
 }
 
 .rating-panel {
-  background: var(--color-surface);
+  background: var(--gradient-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 1rem;
@@ -1333,7 +1415,7 @@ select:focus {
   width: 100%;
   max-width: 700px;
   margin: 0 auto;
-  background: var(--color-surface);
+  background: var(--gradient-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 1.5rem;
@@ -1413,27 +1495,28 @@ select:focus {
 #scan-board {
   /* No longer dialog-constrained (scan-view is a full page section, capped
      at 700px by .scan-view itself) -- same fudge-factor formula as before,
-     just a slightly higher cap. */
-  --cell-size: clamp(18px, calc((88vw - 6rem) / 15), 38px);
-  --cell-font: 9px;
+     just a slightly higher cap (38->40px: .scan-view's 652px content width
+     after its own padding gives ~16px of room to spare at 40px). */
+  --cell-size: clamp(18px, calc((88vw - 6rem) / 15), 40px);
+  --cell-font: 10px;
   display: grid;
   grid-template-columns: repeat(15, var(--cell-size));
   grid-template-rows: repeat(15, var(--cell-size));
   gap: var(--cell-gap);
-  border: 2px solid #8a7a60;
-  border-radius: 4px;
-  background: #8a7a60;
+  border: 2px solid #6b573e;
+  border-radius: 6px;
+  background: var(--gradient-board-frame);
   padding: var(--cell-gap);
   margin: 0 auto 1rem;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
 #scan-board .tile-letter {
-  font-size: 10px;
+  font-size: 11px;
 }
 
 #scan-board .tile-val {
-  font-size: 6px;
+  font-size: 7px;
   bottom: 1px;
   right: 2px;
 }
@@ -1506,7 +1589,7 @@ select:focus {
 
 .scan-alt-btn:hover {
   border-color: var(--color-primary);
-  background: #eef6ff;
+  background: var(--gradient-accent-soft);
 }
 
 .scan-save-training-label {
@@ -1526,13 +1609,13 @@ select:focus {
 /* ── Responsive: collapse the 3-column board layout ──────────────────────────
    #board's --cell-size formula is viewport-relative (100vw), not
    column-relative, so while the 3-column layout is active it always renders
-   at its full 46px/726px-wide size regardless of how little room the middle
+   at its full 52px/816px-wide size regardless of how little room the middle
    grid track actually has -- it does NOT gracefully shrink to fit alongside
    the two 220px side panels the way it does in the single-column layout.
-   The exact width where 220px + gap + 726px + gap + 220px (1198px) plus
-   main's 32px padding stops fitting is 1230px (see main's own comment,
-   which raises its max-width to 1300px so it can actually reach that width
-   in the first place) -- 1280px below gives that a ~50px safety margin.
+   The exact width where 220px + gap + 816px + gap + 220px (1288px) plus
+   main's 32px padding stops fitting is 1320px (see main's own comment,
+   which raises its max-width to 1400px so it can actually reach that width
+   in the first place) -- 1380px below gives that a ~60px safety margin.
    minmax(0, 1fr) on the middle column (see .board-layout) is only a
    backstop for the grid container's own box, not a fix for the board
    visually overlapping the panels below this width. */
@@ -1595,7 +1678,7 @@ select:focus {
   width: 100%;
   max-width: 1100px;
   margin: 0 auto;
-  background: var(--color-surface);
+  background: var(--gradient-card);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 1.5rem;
@@ -1669,15 +1752,15 @@ select:focus {
 }
 
 #benchmark-board {
-  --cell-size: clamp(14px, calc((60vw - 4rem) / 15), 34px);
-  --cell-font: clamp(6px, calc(var(--cell-size) * 0.3), 12px);
+  --cell-size: clamp(14px, calc((60vw - 4rem) / 15), 38px);
+  --cell-font: clamp(6px, calc(var(--cell-size) * 0.32), 13px);
   display: grid;
   grid-template-columns: repeat(15, var(--cell-size));
   grid-template-rows: repeat(15, var(--cell-size));
   gap: var(--cell-gap);
-  border: 2px solid #8a7a60;
-  border-radius: 4px;
-  background: #8a7a60;
+  border: 2px solid #6b573e;
+  border-radius: 6px;
+  background: var(--gradient-board-frame);
   padding: var(--cell-gap);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   flex-shrink: 0;
@@ -1734,7 +1817,7 @@ select:focus {
   align-self: center;
 }
 
-@media (max-width: 1280px) {
+@media (max-width: 1380px) {
   .board-layout {
     grid-template-columns: 1fr;
   }
@@ -1808,9 +1891,9 @@ select:focus {
   }
 
   .rack-tile {
-    width: 34px;
-    height: 34px;
-    font-size: 0.95rem;
+    width: 42px;
+    height: 42px;
+    font-size: 1.1rem;
   }
 
   /* Let the position text take its own line and left-align the action

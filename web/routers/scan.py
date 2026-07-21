@@ -13,6 +13,8 @@ from web.models import (
     ScanBoardResponse,
     ScanCell,
     ScanConfirmRequest,
+    ScanRecheckRequest,
+    ScanRecheckResponse,
     ScanStateResponse,
     ScanSuggestRequest,
     Suggestion,
@@ -25,6 +27,7 @@ from web.scan import (
     board_is_empty,
     empty_board,
     evaluate_raw_recognition,
+    flag_invalid,
     save_training_example,
     scan_board_image,
 )
@@ -54,7 +57,14 @@ async def _read_image_upload(file: UploadFile) -> bytes:
     return data
 
 
-def _validate_grid(raw_grid: object) -> list[list[str]]:
+def _validate_grid(raw_grid: object, *, allow_unknown: bool = False) -> list[list[str]]:
+    """*allow_unknown* additionally accepts '?' -- scan_board_image()'s marker
+    for a tile the OCR couldn't read at all. /confirm and /save-training
+    reject it (a persisted or exported board should never contain an
+    unresolved tile), but /recheck runs against a board the user is still
+    mid-edit on, where some other cell can easily still be an unresolved
+    '?' the user simply hasn't gotten to yet -- that shouldn't 400 out the
+    recheck of the cell they just fixed."""
     if (
         not isinstance(raw_grid, list)
         or len(raw_grid) != GRID
@@ -64,7 +74,7 @@ def _validate_grid(raw_grid: object) -> list[list[str]]:
     grid = [[(ch or "-").lower() for ch in row] for row in raw_grid]
     for row in grid:
         for ch in row:
-            if ch != "-" and ch not in POLISH_LOWER:
+            if ch != "-" and ch not in POLISH_LOWER and not (allow_unknown and ch == "?"):
                 raise HTTPException(status_code=400, detail=f"Nieprawidłowy znak na planszy: '{ch}'.")
     return grid
 
@@ -109,6 +119,26 @@ async def confirm_scan(body: ScanConfirmRequest, request: Request, response: Res
         session.board = grid
 
     return ScanStateResponse(board=session.board, has_session=True)
+
+
+@router.post("/recheck", response_model=ScanRecheckResponse)
+async def recheck_scan_board(
+    body: ScanRecheckRequest,
+    dawg: Dawg = Depends(get_dawg),
+) -> ScanRecheckResponse:
+    """Re-run the dictionary flagging check (no auto-correction -- see
+    web/scan.py's flag_invalid()) over a board the user is still editing in
+    the review step, so a hand-typed letter's effect on its own and any
+    crossing words is reflected immediately rather than only on the cell
+    that was actually touched. Stateless: doesn't touch the ScanSession."""
+    grid = _validate_grid(body.board, allow_unknown=True)
+    if len(body.locked) != GRID or any(len(row) != GRID for row in body.locked):
+        raise HTTPException(status_code=400, detail="Nieprawidłowy rozmiar maski zablokowanych pól.")
+    locked = {(r, c) for r in range(GRID) for c in range(GRID) if body.locked[r][c]}
+
+    flagged_positions = flag_invalid(dawg, grid, locked=locked)
+    flagged = [[(r, c) in flagged_positions for c in range(GRID)] for r in range(GRID)]
+    return ScanRecheckResponse(flagged=flagged)
 
 
 @router.get("/state", response_model=ScanStateResponse)

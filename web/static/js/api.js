@@ -114,6 +114,10 @@ class ApiClient {
     return this._request('POST', '/scan/reset');
   }
 
+  recheckScanBoard(board, locked) {
+    return this._request('POST', '/scan/recheck', { board, locked });
+  }
+
   suggestForScan(letters) {
     return this._request('POST', '/scan/suggest', { letters });
   }

@@ -74,7 +74,7 @@ class BenchmarkController {
     const rows = [...this._setupPlayers.querySelectorAll('.setup-player-row')];
     return rows.map((row, i) => ({
       name: row.querySelector('input[type="text"]').value.trim() || `Gracz ${i + 1}`,
-      difficulty: row.querySelector('.player-difficulty').value,
+      difficulty: row.dataset.difficulty,
     }));
   }
 
