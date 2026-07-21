@@ -16,6 +16,7 @@
 !*.json
 !*/
 !*.pt
+_*
 
 # Added by cargo
 
