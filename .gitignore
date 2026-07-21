@@ -15,6 +15,7 @@
 !*.css
 !*.json
 !*/
+!*.pt
 
 # Added by cargo
 
