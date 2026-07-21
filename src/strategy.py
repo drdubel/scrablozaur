@@ -65,7 +65,10 @@ class StrategicPlayer:
         for ch in word:
             if ch in self.letters:
                 self.letters = self.letters.replace(ch, "", 1)
-            else:
+            elif "?" in self.letters:
                 self.letters = self.letters.replace("?", "", 1)
+            else:
+                raise ValueError(f"Letter '{ch}' not found in player's letters.")
+
         self.draw_letters()
         return word
