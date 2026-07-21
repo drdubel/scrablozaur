@@ -549,6 +549,7 @@ fn fresh_tile_bag() -> Vec<char> {
 struct Board {
     board: [[char; BOARD_SIZE]; BOARD_SIZE],
     tile_bag: Vec<char>,
+    first: bool,
 }
 
 #[pymethods]
@@ -558,6 +559,7 @@ impl Board {
         Ok(Board {
             board: [['-'; BOARD_SIZE]; BOARD_SIZE],
             tile_bag: fresh_tile_bag(),
+            first: true,
         })
     }
 
@@ -576,6 +578,8 @@ impl Board {
             ));
         }
         let mut result = [['-'; BOARD_SIZE]; BOARD_SIZE];
+        let mut first = true;
+        let mut tile_bag = fresh_tile_bag();
         for (r, row) in board.iter().enumerate() {
             if row.len() != BOARD_SIZE {
                 return Err(pyo3::exceptions::PyValueError::new_err(
@@ -593,11 +597,23 @@ impl Board {
                     ));
                 }
                 result[r][c] = ch;
+                if ch != '-' {
+                    first = false;
+                    if let Some(pos) = tile_bag.iter().position(|&x| x == ch) {
+                        tile_bag.remove(pos);
+                    } else {
+                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "letter '{}' not available in tile bag",
+                            ch
+                        )));
+                    }
+                }
             }
         }
         Ok(Board {
             board: result,
-            tile_bag: fresh_tile_bag(),
+            tile_bag: tile_bag,
+            first: first,
         })
     }
 
@@ -964,15 +980,14 @@ impl Board {
 
     #[pyo3(signature = (dawg, letters, n, parallel=true))]
     fn get_best_words(
-        &self,
+        &mut self,
         dawg: &DawgPy,
         letters: &str,
         n: usize,
         parallel: bool,
     ) -> Vec<BestWord> {
-        let first: bool = self.board[CENTER][CENTER] == '-';
-
-        if first {
+        if self.first {
+            self.first = false;
             self.best_opening_words(dawg, letters, n)
         } else {
             self.best_words_from_patterns(dawg, letters, n, parallel)
@@ -1045,7 +1060,7 @@ impl Board {
     }
 
     #[pyo3(signature = (dawg, letters, parallel=true))]
-    fn get_best_word(&self, dawg: &DawgPy, letters: &str, parallel: bool) -> BestWord {
+    fn get_best_word(&mut self, dawg: &DawgPy, letters: &str, parallel: bool) -> BestWord {
         self.get_best_words(dawg, letters, 1, parallel)
             .into_iter()
             .next()
