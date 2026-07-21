@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 from scrablozaur import Board, Dawg
 from strategy import StrategicPlayer
+from random import random
 
 d = Dawg("words/dawg.bin")
 
@@ -21,7 +22,7 @@ class Player:
         """Draw letters from the bag to fill the player's hand up to 7 letters."""
         self.letters += self.board.give_letters(self.letters)
 
-    def play_word(self, dawg: Dawg, first: bool = False) -> str:
+    def play_word(self, dawg: Dawg) -> str:
         """Find and play the best word from the player's letters on the board.
 
         This method should:
@@ -30,7 +31,7 @@ class Player:
             the player's letters and fits one of the patterns.
           - Place the word on the board and update the player's letters.
         """
-        w = self.board.get_best_word(dawg, self.letters, first, parallel=False)
+        w = self.board.get_best_word(dawg, self.letters, parallel=False)
         self.score += w[1]
         self.board.place_word(w[0], w[2][0], w[2][1], w[2][2])
         for ch in w[3]:
@@ -51,11 +52,13 @@ class Player:
 def graj(debug: bool = False) -> tuple[int, int]:
     b = Board()
 
-    p1 = StrategicPlayer(b)
+    p1 = Player(b)
     p2 = Player(b)
-    opener: Player | StrategicPlayer = p1
-    second: Player | StrategicPlayer = p2
-    w = opener.play_word(d, first=True)
+
+    opener = p1 if random() < 0.5 else p2
+    second = p2 if opener is p1 else p1
+
+    w = opener.play_word(d)
     if debug:
         print(f"Player 1 plays: {w}")
         print(b)
@@ -64,8 +67,8 @@ def graj(debug: bool = False) -> tuple[int, int]:
         # The opener's rack couldn't form any word through the centre (rare,
         # but happens -- e.g. an all-consonant draw). Give the other player a
         # shot at the opening instead of ending the game 0-0 before it starts.
-        opener, second = p2, p1
-        w = opener.play_word(d, first=True)
+        opener, second = second, opener
+        w = opener.play_word(d)
         if debug:
             print("Player 1 cannot open -- Player 2 plays:", w)
             print(b)

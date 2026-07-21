@@ -24,11 +24,9 @@ class StrategicPlayer:
         used_letters = [ch for ch in self.board.__str__().split() if ch != "-"] + [ch for ch in self.letters]
         return list((Counter(self.tile_bag) - Counter(used_letters)).elements())
 
-    def get_best_words(
-        self, dawg: Dawg, letters: str, first: bool = False
-    ) -> list[tuple[str, int, tuple[int, int, bool], list[str]]]:
+    def get_best_words(self, dawg: Dawg, letters: str) -> list[tuple[str, int, tuple[int, int, bool], list[str]]]:
         """Find the best scoring words that can be placed on the board with the given letters."""
-        words = self.board.get_best_words(dawg, letters, first, n=50, parallel=True)
+        words = self.board.get_best_words(dawg, letters, n=50, parallel=True)
 
         return words
 
@@ -41,14 +39,14 @@ class StrategicPlayer:
 
         return score
 
-    def get_best_word(self, dawg: Dawg, first: bool = False) -> tuple[str, tuple[int, int, bool]]:
+    def get_best_word(self, dawg: Dawg) -> tuple[str, tuple[int, int, bool]]:
         """Find the best scoring word from the player's letters on the board."""
-        words = self.get_best_words(dawg, self.letters, first)
+        words = self.get_best_words(dawg, self.letters)
         best_word = max(words, key=lambda w: self.evaluate_word(dawg, *w), default=None)
 
         return (best_word[0], best_word[2]) if best_word else ("", (0, 0, True))
 
-    def play_word(self, dawg: Dawg, first: bool = False) -> str:
+    def play_word(self, dawg: Dawg) -> str:
         """Find and play the best word from the player's letters on the board.
 
         This method should:
@@ -57,7 +55,7 @@ class StrategicPlayer:
             the player's letters and fits one of the patterns.
           - Place the word on the board and update the player's letters.
         """
-        word, position = self.get_best_word(dawg, first)
+        word, position = self.get_best_word(dawg)
         if not word:
             return ""
 

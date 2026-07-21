@@ -131,7 +131,7 @@ if _HAS_TORCH:
 
 
 _cnn_model = None
-_cnn_classes = []
+_cnn_classes: list[str] = []
 _cnn_device = "cpu"
 _cnn_loaded = False
 
@@ -331,7 +331,7 @@ def classify_templates(glyph):
 # are missing or torch isn't available.
 
 _digit_cnn_model = None
-_digit_cnn_classes = []
+_digit_cnn_classes: list[str] = []
 _digit_cnn_device = "cpu"
 _digit_cnn_loaded = False
 

@@ -962,15 +962,16 @@ impl Board {
             .0
     }
 
-    #[pyo3(signature = (dawg, letters, first, n, parallel=true))]
+    #[pyo3(signature = (dawg, letters, n, parallel=true))]
     fn get_best_words(
         &self,
         dawg: &DawgPy,
         letters: &str,
-        first: bool,
         n: usize,
         parallel: bool,
     ) -> Vec<BestWord> {
+        let first: bool = self.board[CENTER][CENTER] == '-';
+
         if first {
             self.best_opening_words(dawg, letters, n)
         } else {
@@ -1043,9 +1044,9 @@ impl Board {
             .collect()
     }
 
-    #[pyo3(signature = (dawg, letters, first, parallel=true))]
-    fn get_best_word(&self, dawg: &DawgPy, letters: &str, first: bool, parallel: bool) -> BestWord {
-        self.get_best_words(dawg, letters, first, 1, parallel)
+    #[pyo3(signature = (dawg, letters, parallel=true))]
+    fn get_best_word(&self, dawg: &DawgPy, letters: &str, parallel: bool) -> BestWord {
+        self.get_best_words(dawg, letters, 1, parallel)
             .into_iter()
             .next()
             .unwrap_or_else(|| (String::new(), 0, (0, 0, true), Vec::new()))

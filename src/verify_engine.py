@@ -47,7 +47,7 @@ def check_first_move_covers_every_offset() -> list[str]:
     dawg = Dawg(str(DAWG_PATH))
     board = Board()
     letters = "yclgaup"
-    _, best_score, _, _ = board.get_best_word(dawg, letters, first=True, parallel=False)
+    _, best_score, _, _ = board.get_best_word(dawg, letters, parallel=False)
 
     better_at_offset_zero = [
         (w, board.calculate_word_points(w, 7, 7, True, letters)) for w in dawg.search("*", letters) if len(w) <= 8

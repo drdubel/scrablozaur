@@ -123,9 +123,7 @@ def scan_board_image(path: str, prior_board: list[list[str]] | None = None) -> d
     for (r, c), (letter, conf, alts) in readings.items():
         grid[r][c] = letter.lower() if letter and letter in POLISH_ALPHABET else "?"
         confidence[r][c] = conf
-        alternatives[r][c] = [
-            a.lower() for a, p in alts if p >= _MIN_ALTERNATIVE_PROB and a.lower() in POLISH_LOWER
-        ]
+        alternatives[r][c] = [a.lower() for a, p in alts if p >= _MIN_ALTERNATIVE_PROB and a.lower() in POLISH_LOWER]
 
     locked: set[tuple[int, int]] = set()
     carried_over: set[tuple[int, int]] = set()
@@ -283,12 +281,7 @@ def _isolated_tiles(grid: list[list[str]]) -> list[tuple[int, int]]:
     board (the minimum word length is 2), so these are almost always a
     false-positive tile detection rather than a misread letter."""
     in_run = {pos for run in _runs(grid) for pos in run}
-    return [
-        (r, c)
-        for r in range(GRID)
-        for c in range(GRID)
-        if grid[r][c] != "-" and (r, c) not in in_run
-    ]
+    return [(r, c) for r in range(GRID) for c in range(GRID) if grid[r][c] != "-" and (r, c) not in in_run]
 
 
 def _verify_and_correct(

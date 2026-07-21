@@ -8,10 +8,26 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Resp
 
 from web.engine import Board, Dawg, get_dawg
 from web.game import _first_move_suggestions, _subsequent_suggestions
-from web.models import (SaveTrainingResponse, ScanBoardResponse, ScanCell, ScanConfirmRequest,
-                        ScanStateResponse, ScanSuggestRequest, Suggestion, SuggestionsResponse)
-from web.scan import (GRID, POLISH_LOWER, ScanSessionStore, board_is_empty, empty_board,
-                      evaluate_raw_recognition, save_training_example, scan_board_image)
+from web.models import (
+    SaveTrainingResponse,
+    ScanBoardResponse,
+    ScanCell,
+    ScanConfirmRequest,
+    ScanStateResponse,
+    ScanSuggestRequest,
+    Suggestion,
+    SuggestionsResponse,
+)
+from web.scan import (
+    GRID,
+    POLISH_LOWER,
+    ScanSessionStore,
+    board_is_empty,
+    empty_board,
+    evaluate_raw_recognition,
+    save_training_example,
+    scan_board_image,
+)
 
 router = APIRouter(prefix="/scan")
 
@@ -39,8 +55,10 @@ async def _read_image_upload(file: UploadFile) -> bytes:
 
 
 def _validate_grid(raw_grid: object) -> list[list[str]]:
-    if not isinstance(raw_grid, list) or len(raw_grid) != GRID or any(
-        not isinstance(row, list) or len(row) != GRID for row in raw_grid
+    if (
+        not isinstance(raw_grid, list)
+        or len(raw_grid) != GRID
+        or any(not isinstance(row, list) or len(row) != GRID for row in raw_grid)
     ):
         raise HTTPException(status_code=400, detail="Nieprawidłowy rozmiar planszy.")
     grid = [[(ch or "-").lower() for ch in row] for row in raw_grid]

@@ -1,7 +1,7 @@
 import os
 import sys
 
-from scrablozaur import Board, Dawg
+from scrablozaur import Board
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 

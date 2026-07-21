@@ -20,18 +20,46 @@ class GameMode(str, Enum):
 
 
 class Difficulty(str, Enum):
-    EASY       = "easy"
-    MEDIUM     = "medium"
-    HARD       = "hard"
+    EASY = "easy"
+    MEDIUM = "medium"
+    HARD = "hard"
     IMPOSSIBLE = "impossible"
 
 
 # Polish Scrabble tile distribution: letter → count (100 tiles total)
 TILE_COUNTS: dict[str, int] = {
-    "a": 9, "ą": 1, "b": 2, "c": 3, "ć": 1, "d": 3, "e": 7, "ę": 1,
-    "f": 1, "g": 2, "h": 2, "i": 8, "j": 2, "k": 3, "l": 3, "ł": 2,
-    "m": 3, "n": 5, "ń": 1, "o": 6, "ó": 1, "p": 3, "r": 4, "s": 4,
-    "ś": 1, "t": 3, "u": 2, "w": 4, "y": 4, "z": 5, "ź": 1, "ż": 1,
+    "a": 9,
+    "ą": 1,
+    "b": 2,
+    "c": 3,
+    "ć": 1,
+    "d": 3,
+    "e": 7,
+    "ę": 1,
+    "f": 1,
+    "g": 2,
+    "h": 2,
+    "i": 8,
+    "j": 2,
+    "k": 3,
+    "l": 3,
+    "ł": 2,
+    "m": 3,
+    "n": 5,
+    "ń": 1,
+    "o": 6,
+    "ó": 1,
+    "p": 3,
+    "r": 4,
+    "s": 4,
+    "ś": 1,
+    "t": 3,
+    "u": 2,
+    "w": 4,
+    "y": 4,
+    "z": 5,
+    "ź": 1,
+    "ż": 1,
     "?": 2,
 }
 
@@ -107,9 +135,7 @@ class GameSession:
     game_mode: GameMode = GameMode.SANDBOX
     tile_bag: TileBag | None = None
     last_computer_move: ComputerMoveInfo | None = None
-    tile_owners: list[list[int | None]] = field(
-        default_factory=lambda: [[None] * 15 for _ in range(15)]
-    )
+    tile_owners: list[list[int | None]] = field(default_factory=lambda: [[None] * 15 for _ in range(15)])
     game_over: bool = False
     consecutive_no_play: int = 0
     passed_players: set[int] = field(default_factory=set)
@@ -127,18 +153,20 @@ class GameSession:
         return [row.split(" ") for row in str(self.board).strip().split("\n")]
 
     def push_undo(self) -> None:
-        self.move_history.append(UndoEntry(
-            board_grid=self.board_grid(),
-            player_scores=[p.score for p in self.players],
-            player_letters=[p.letters for p in self.players],
-            current_player_idx=self.current_player_idx,
-            is_first_move=self.is_first_move,
-            move_number=self.move_number,
-            tile_bag_tiles=list(self.tile_bag.tiles) if self.tile_bag else None,
-            last_computer_move=self.last_computer_move,
-            tile_owners=[row[:] for row in self.tile_owners],
-            consecutive_no_play=self.consecutive_no_play,
-        ))
+        self.move_history.append(
+            UndoEntry(
+                board_grid=self.board_grid(),
+                player_scores=[p.score for p in self.players],
+                player_letters=[p.letters for p in self.players],
+                current_player_idx=self.current_player_idx,
+                is_first_move=self.is_first_move,
+                move_number=self.move_number,
+                tile_bag_tiles=list(self.tile_bag.tiles) if self.tile_bag else None,
+                last_computer_move=self.last_computer_move,
+                tile_owners=[row[:] for row in self.tile_owners],
+                consecutive_no_play=self.consecutive_no_play,
+            )
+        )
 
     def pop_undo(self) -> bool:
         if not self.move_history:
@@ -217,10 +245,7 @@ class SessionStore:
         players: list[Player] | None = None,
         game_mode: GameMode = GameMode.SANDBOX,
     ) -> GameSession:
-        player_list = [
-            Player(p.name, p.is_computer, difficulty=p.difficulty)
-            for p in (players or _DEFAULT_PLAYERS)
-        ]
+        player_list = [Player(p.name, p.is_computer, difficulty=p.difficulty) for p in (players or _DEFAULT_PLAYERS)]
         session = _deal_new_game(player_list, game_mode)
         cls._sessions[session.session_id] = session
         return session
@@ -235,6 +260,7 @@ class SessionStore:
 
 
 # ── Tile management ───────────────────────────────────────────────────────────
+
 
 def validate_rack_for_word(
     rack: str,
@@ -315,9 +341,7 @@ def _apply_end_of_game_scoring(session: GameSession, went_out_idx: int | None) -
     `went_out_idx` (game ended by mutual no-play), every player loses their
     own remaining rack value instead."""
     if went_out_idx is not None:
-        others_value = sum(
-            Board.rack_value(p.letters) for i, p in enumerate(session.players) if i != went_out_idx
-        )
+        others_value = sum(Board.rack_value(p.letters) for i, p in enumerate(session.players) if i != went_out_idx)
         session.players[went_out_idx].score += others_value
         for i, p in enumerate(session.players):
             if i != went_out_idx:
@@ -348,7 +372,6 @@ def _pick_by_difficulty(suggestions: list[dict], difficulty: Difficulty) -> dict
     if difficulty == Difficulty.IMPOSSIBLE or len(suggestions) == 1:
         return suggestions[0]
 
-    n = len(suggestions)
     scores = [s["score"] for s in suggestions]
     best, worst = max(scores), min(scores)
 
@@ -369,7 +392,7 @@ def _pick_by_difficulty(suggestions: list[dict], difficulty: Difficulty) -> dict
         # Triangular peak around the middle of the range
         weights = [1.0 - abs(v - 0.5) * 1.5 + 0.1 for v in norm]
     else:  # HARD
-        weights = [v ** 3 + 0.02 for v in norm]
+        weights = [v**3 + 0.02 for v in norm]
 
     return random.choices(suggestions, weights=weights, k=1)[0]
 
@@ -405,12 +428,11 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
     if not session.game_over:
         session.advance_turn()
 
-    return ComputerMoveInfo(
-        word=word, score=sug["score"], row=row, col=col, horizontal=horizontal
-    )
+    return ComputerMoveInfo(word=word, score=sug["score"], row=row, col=col, horizontal=horizontal)
 
 
 # ── Suggestion generation ─────────────────────────────────────────────────────
+
 
 def get_suggestions(session: GameSession, dawg: Dawg, n: int = 10) -> list[dict]:
     letters = session.current_player.letters
@@ -438,14 +460,16 @@ def _first_move_suggestions(board: Board, dawg: Dawg, letters: str, n: int) -> l
             try:
                 score = board.calculate_word_points(word, 7, col, True, letters)
                 if score > 0:
-                    candidates.append({
-                        "word": word,
-                        "score": score,
-                        "row": 7,
-                        "col": col,
-                        "horizontal": True,
-                        "cells": [(7, col + i) for i in range(word_len)],
-                    })
+                    candidates.append(
+                        {
+                            "word": word,
+                            "score": score,
+                            "row": 7,
+                            "col": col,
+                            "horizontal": True,
+                            "cells": [(7, col + i) for i in range(word_len)],
+                        }
+                    )
             except Exception:
                 pass
 
@@ -472,14 +496,18 @@ def _subsequent_suggestions(board: Board, dawg: Dawg, letters: str, n: int) -> l
                 continue
             word_len = len(word)
             cells = (
-                [(row, col + i) for i in range(word_len)]
-                if horizontal
-                else [(row + i, col) for i in range(word_len)]
+                [(row, col + i) for i in range(word_len)] if horizontal else [(row + i, col) for i in range(word_len)]
             )
-            candidates.append({
-                "word": word, "score": score, "row": row, "col": col,
-                "horizontal": horizontal, "cells": cells,
-            })
+            candidates.append(
+                {
+                    "word": word,
+                    "score": score,
+                    "row": row,
+                    "col": col,
+                    "horizontal": horizontal,
+                    "cells": cells,
+                }
+            )
         except Exception:
             pass
 
@@ -598,10 +626,7 @@ def _init_worker(dawg_path: str) -> None:
 
 def _simulate_game(player_specs: list[tuple[str, Difficulty]]) -> _SimulatedGame:
     assert _worker_dawg is not None, "worker executor initializer did not run"
-    players = [
-        Player(name=name, is_computer=True, difficulty=difficulty)
-        for name, difficulty in player_specs
-    ]
+    players = [Player(name=name, is_computer=True, difficulty=difficulty) for name, difficulty in player_specs]
     session = _deal_new_game(players, GameMode.SANDBOX_AUTO)
 
     moves: list[BenchmarkMoveRecord] = []
@@ -610,19 +635,21 @@ def _simulate_game(player_specs: list[tuple[str, Difficulty]]) -> _SimulatedGame
         player_idx = session.current_player_idx
         move = computer_auto_play(session, _worker_dawg)
         move_count += 1
-        moves.append(BenchmarkMoveRecord(
-            player_idx=player_idx,
-            word=move.word,
-            score=move.score,
-            row=move.row,
-            col=move.col,
-            horizontal=move.horizontal,
-            passed=move.passed,
-            board=session.board_grid(),
-            scores_after=[p.score for p in players],
-            letters_after=[p.letters for p in players],
-            tile_owners=[row[:] for row in session.tile_owners],
-        ))
+        moves.append(
+            BenchmarkMoveRecord(
+                player_idx=player_idx,
+                word=move.word,
+                score=move.score,
+                row=move.row,
+                col=move.col,
+                horizontal=move.horizontal,
+                passed=move.passed,
+                board=session.board_grid(),
+                scores_after=[p.score for p in players],
+                letters_after=[p.letters for p in players],
+                tile_owners=[row[:] for row in session.tile_owners],
+            )
+        )
 
     return _SimulatedGame(players=players, moves=moves, move_count=move_count)
 
@@ -638,9 +665,7 @@ def _get_executor() -> ProcessPoolExecutor:
     global _executor
     with _executor_lock:
         if _executor is None:
-            _executor = ProcessPoolExecutor(
-                initializer=_init_worker, initargs=(str(DAWG_PATH),)
-            )
+            _executor = ProcessPoolExecutor(initializer=_init_worker, initargs=(str(DAWG_PATH),))
         return _executor
 
 
@@ -657,10 +682,7 @@ def run_benchmark(
     aggregate per-player stats plus the full move-by-move detail of whichever
     single game had the highest final score for any one player."""
     start = time.perf_counter()
-    stats = [
-        BenchmarkPlayerStats(name=name, difficulty=difficulty.value)
-        for name, difficulty in player_specs
-    ]
+    stats = [BenchmarkPlayerStats(name=name, difficulty=difficulty.value) for name, difficulty in player_specs]
     best_game: BenchmarkBestGame | None = None
     best_score = -1
     total_moves = 0

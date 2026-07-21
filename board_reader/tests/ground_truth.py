@@ -31,7 +31,8 @@ def _image_path(idx: int) -> str | None:
 
 def _difficulty(path: str) -> str:
     """'e'/'m'/'h' suffix from an imgN_<difficulty>.jpg filename."""
-    return re.search(r"_([emh])\.jpg$", path).group(1)
+    match = re.search(r"_([emh])\.jpg$", path)
+    return match.group(1) if match else "e"
 
 
 def _available() -> list[int]:
@@ -45,4 +46,4 @@ def _available() -> list[int]:
 
 GROUND_TRUTH = {i: _load(i) for i in _available()}
 IMAGE_PATHS = {i: _image_path(i) for i in GROUND_TRUTH}
-DIFFICULTY = {i: _difficulty(path) for i, path in IMAGE_PATHS.items()}
+DIFFICULTY = {i: _difficulty(path) for i, path in IMAGE_PATHS.items() if path is not None}
