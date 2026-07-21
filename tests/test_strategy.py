@@ -13,8 +13,7 @@ def test_save_letters_left():
     player = StrategicPlayer(board)
     player.letters = "abc"
     player.tile_bag = ["a", "b", "c", "d", "e"]
-    player.save_letters_left()
-    assert sorted(player.letters_left) == sorted(["d", "e"])
+    assert sorted(player.get_letters_left()) == sorted(["d", "e"])
 
 
 def test_save_letters_left_with_duplicates():
@@ -22,8 +21,7 @@ def test_save_letters_left_with_duplicates():
     player = StrategicPlayer(board)
     player.letters = "aab"
     player.tile_bag = ["a", "a", "b", "c", "d", "e"]
-    player.save_letters_left()
-    assert sorted(player.letters_left) == sorted(["c", "d", "e"])
+    assert sorted(player.get_letters_left()) == sorted(["c", "d", "e"])
 
 
 if __name__ == "__main__":
