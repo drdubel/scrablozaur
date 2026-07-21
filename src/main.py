@@ -1,12 +1,12 @@
 import statistics
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from random import random
 
 from matplotlib import pyplot as plt  # type: ignore
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
 
 from scrablozaur import Board, Dawg
 from strategy import StrategicPlayer
-from random import random
 
 d = Dawg("words/dawg.bin")
 
@@ -52,7 +52,7 @@ class Player:
 def graj(debug: bool = False) -> tuple[int, int]:
     b = Board()
 
-    p1 = Player(b)
+    p1 = StrategicPlayer(b)
     p2 = Player(b)
 
     opener = p1 if random() < 0.5 else p2
