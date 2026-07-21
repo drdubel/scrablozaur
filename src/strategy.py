@@ -8,7 +8,6 @@ class StrategicPlayer:
         self.board = board
         self.letters = ""
         self.tile_bag = board.fresh_tile_bag()
-        self.letters_left: list[str] = []
         self.draw_letters()
         self.score = 0
 
@@ -20,10 +19,10 @@ class StrategicPlayer:
         """Draw letters from the bag to fill the player's hand up to 7 letters."""
         self.letters += self.board.give_letters(self.letters)
 
-    def save_letters_left(self) -> None:
-        """Save the letters used in the last played word for scoring purposes."""
+    def get_letters_left(self) -> list[str]:
+        """Return the letters used in the last played word for scoring purposes."""
         used_letters = [ch for ch in self.board.__str__().split() if ch != "-"] + [ch for ch in self.letters]
-        self.letters_left = list((Counter(self.tile_bag) - Counter(used_letters)).elements())
+        return list((Counter(self.tile_bag) - Counter(used_letters)).elements())
 
     def get_best_words(
         self, dawg: Dawg, letters: str, first: bool = False
