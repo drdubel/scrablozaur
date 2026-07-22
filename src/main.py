@@ -237,11 +237,13 @@ def benchmark() -> None:
     print(f"Win rate P1: {wins[0] / N * 100:.2f}%")
     print(f"Win rate P2: {wins[1] / N * 100:.2f}%")
     print(f"Ties: {N - wins[0] - wins[1]}")
-    most_common_word, most_common_count = word_counts.most_common(1)[0]
-    least_common_word, least_common_count = min(word_counts.items(), key=lambda item: item[1])
     print(f"Distinct words played: {len(word_counts)}")
-    print(f"Most placed word: {most_common_word} ({most_common_count} times)")
-    print(f"Least placed word: {least_common_word} ({least_common_count} times)")
+    print("Most placed words:")
+    for word, count in word_counts.most_common(10):
+        print(f"  {word}: {count}")
+    print("Least placed words:")
+    for word, count in sorted(word_counts.items(), key=lambda item: item[1])[:10]:
+        print(f"  {word}: {count}")
     print(f"Best game (Best score for one player: {best_score}) saved to {best_game_path}")
 
     plt.hist(list(p1_scores.keys()), weights=list(p1_scores.values()), bins=20, label="Player 1")
