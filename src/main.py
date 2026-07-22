@@ -132,6 +132,9 @@ def speed_test() -> None:
     print(f"Min score P2: {min(score[1] for score in scores)}")
     print(f"Wins P1: {wins[0]}")
     print(f"Wins P2: {wins[1]}")
+    print(f"Win rate P1: {wins[0] / N * 100:.2f}%")
+    print(f"Win rate P2: {wins[1] / N * 100:.2f}%")
+    print(f"Ties: {N - wins[0] - wins[1]}")
 
     plt.hist([score[0] for score in scores], bins=20, label="Player 1")
     plt.hist([score[1] for score in scores], bins=20, label="Player 2")
