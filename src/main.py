@@ -55,7 +55,7 @@ class Player:
 def graj(debug: bool = False) -> tuple[int, int]:
     b = Board()
 
-    p1 = StrategicPlayer(b)
+    p1 = Player(b)
     p2 = Player(b)
 
     opener = p1 if random() < 0.5 else p2

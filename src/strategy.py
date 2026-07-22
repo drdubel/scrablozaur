@@ -39,12 +39,12 @@ class StrategicPlayer:
 
         return score
 
-    def get_best_word(self, dawg: Dawg) -> tuple[str, tuple[int, int, bool]]:
+    def get_best_word(self, dawg: Dawg) -> tuple[str, tuple[int, int, bool], list[str]]:
         """Find the best scoring word from the player's letters on the board."""
         words = self.get_best_words(dawg, self.letters)
         best_word = max(words, key=lambda w: self.evaluate_word(dawg, *w), default=None)
 
-        return (best_word[0], best_word[2]) if best_word else ("", (0, 0, True))
+        return (best_word[0], best_word[2], best_word[3]) if best_word else ("", (0, 0, True), [])
 
     def play_word(self, dawg: Dawg) -> str:
         """Find and play the best word from the player's letters on the board.
@@ -55,14 +55,17 @@ class StrategicPlayer:
             the player's letters and fits one of the patterns.
           - Place the word on the board and update the player's letters.
         """
-        word, position = self.get_best_word(dawg)
+        word, position, used = self.get_best_word(dawg)
         if not word:
             return ""
 
         points = self.board.calculate_word_points(word, position[0], position[1], position[2], self.letters)
         self.score += points
         self.board.place_word(word, position[0], position[1], position[2])
-        for ch in word:
+        for ch in used:
+            # `ch` is the literal letter placed on the board, but if a blank
+            # stood in for it, the rack only has '?' -- not `ch` -- so fall
+            # back to removing the blank instead.
             if ch in self.letters:
                 self.letters = self.letters.replace(ch, "", 1)
             elif "?" in self.letters:
