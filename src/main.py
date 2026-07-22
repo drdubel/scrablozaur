@@ -1,4 +1,7 @@
+import resource
 import statistics
+import sys
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from random import random
 
@@ -112,7 +115,11 @@ def speed_test() -> None:
     scores = []
     wins = [0, 0]
 
+    cpu_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    wall_start = time.perf_counter()
+
     with ProcessPoolExecutor() as executor:
+        n_workers = executor._max_workers
         futures = [executor.submit(graj, False) for _ in range(N)]
         for future in tqdm(as_completed(futures), total=N):
             p1, p2 = future.result()
@@ -122,6 +129,24 @@ def speed_test() -> None:
             elif p2 > p1:
                 wins[1] += 1
 
+    wall_elapsed = time.perf_counter() - wall_start
+    cpu_after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    # RUSAGE_CHILDREN aggregates usage of the pool's worker processes once
+    # they've exited (which they have -- the `with` block above already
+    # joined them), so this is total CPU time spent playing games, not
+    # wall time.
+    cpu_user = cpu_after.ru_utime - cpu_before.ru_utime
+    cpu_sys = cpu_after.ru_stime - cpu_before.ru_stime
+    cpu_total = cpu_user + cpu_sys
+    # ru_maxrss is bytes on macOS/BSD but kilobytes on Linux.
+    peak_rss_mb = cpu_after.ru_maxrss / (1024 * 1024 if sys.platform == "darwin" else 1024)
+
+    print(f"Workers: {n_workers}")
+    print(f"Games: {N}")
+    print(f"Wall time: {wall_elapsed:.2f}s ({N / wall_elapsed:.1f} games/s)")
+    print(f"CPU time: {cpu_total:.2f}s (user {cpu_user:.2f}s, sys {cpu_sys:.2f}s)")
+    print(f"CPU utilization: {cpu_total / (wall_elapsed * n_workers) * 100:.1f}%")
+    print(f"Peak worker RSS: {peak_rss_mb:.1f} MB")
     print(f"Average score P1: {sum(score[0] for score in scores) / len(scores):.2f}")
     print(f"Average score P2: {sum(score[1] for score in scores) / len(scores):.2f}")
     print(f"Median score P1: {statistics.median(score[0] for score in scores)}")
