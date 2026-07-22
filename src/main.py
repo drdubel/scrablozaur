@@ -1,3 +1,4 @@
+import os
 import resource
 import statistics
 import sys
@@ -73,8 +74,9 @@ def _rusage_self_now() -> tuple[float, float]:
     return cpu_seconds, peak_rss_mb
 
 
-def graj(debug: bool = False) -> tuple[int, int, str, float, float]:
+def graj(debug: bool = False) -> tuple[int, int, str, float, float, int]:
     cpu_start, _ = _rusage_self_now()
+    pid = os.getpid()
 
     log: list[str] = []
 
@@ -108,7 +110,7 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float]:
         if not w:
             # Neither player's opening rack is playable -- genuinely stuck.
             cpu_end, peak_rss_mb = _rusage_self_now()
-            return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb
+            return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid
 
     while w:
         w = second.play_word(d)
@@ -131,7 +133,7 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float]:
     emit(b)
 
     cpu_end, peak_rss_mb = _rusage_self_now()
-    return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb
+    return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid
 
 
 def benchmark() -> None:
@@ -141,7 +143,10 @@ def benchmark() -> None:
     best_score = -1
     best_transcript = ""
     cpu_total = 0.0
-    peak_rss_mb = 0.0
+    # ru_maxrss is a high-water mark for the whole worker process, so keep
+    # only the latest (i.e. largest) figure reported per pid rather than
+    # summing across every game that worker has played.
+    worker_peak_rss_mb: dict[int, float] = {}
 
     wall_start = time.perf_counter()
 
@@ -149,10 +154,10 @@ def benchmark() -> None:
         n_workers = executor._max_workers
         futures = [executor.submit(graj, False) for _ in range(N)]
         for future in tqdm(as_completed(futures), total=N):
-            p1, p2, transcript, cpu_time, worker_peak_rss_mb = future.result()
+            p1, p2, transcript, cpu_time, peak_rss_mb, pid = future.result()
             scores.append((p1, p2))
             cpu_total += cpu_time
-            peak_rss_mb = max(peak_rss_mb, worker_peak_rss_mb)
+            worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
             if p1 > p2:
                 wins[0] += 1
             elif p2 > p1:
@@ -167,13 +172,16 @@ def benchmark() -> None:
         f.write(best_transcript + "\n")
 
     wall_elapsed = time.perf_counter() - wall_start
+    avg_cpu_per_core = cpu_total / n_workers
+    avg_peak_rss_per_core = sum(worker_peak_rss_mb.values()) / len(worker_peak_rss_mb)
 
     print(f"Workers: {n_workers}")
     print(f"Games: {N}")
     print(f"Wall time: {wall_elapsed:.2f}s ({N / wall_elapsed:.1f} games/s)")
-    print(f"CPU time: {cpu_total:.2f}s")
-    print(f"CPU utilization: {cpu_total / (wall_elapsed * n_workers) * 100:.1f}%")
-    print(f"Peak worker RSS: {peak_rss_mb:.1f} MB")
+    print(f"CPU time (total): {cpu_total:.2f}s")
+    print(f"CPU time (avg per core): {avg_cpu_per_core:.2f}s")
+    print(f"CPU utilization (avg per core): {cpu_total / (wall_elapsed * n_workers) * 100:.1f}%")
+    print(f"Peak RSS (avg per core): {avg_peak_rss_per_core:.1f} MB")
     print(f"Average score P1: {sum(score[0] for score in scores) / len(scores):.2f}")
     print(f"Average score P2: {sum(score[1] for score in scores) / len(scores):.2f}")
     print(f"Median score P1: {statistics.median(score[0] for score in scores)}")
