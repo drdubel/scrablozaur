@@ -55,7 +55,36 @@ class Player:
         return w[0]
 
 
-def graj(debug: bool = False) -> tuple[int, int]:
+def _rusage_self_now() -> tuple[float, float]:
+    """This worker's own (cpu_seconds, peak_rss_mb) since it started.
+
+    Self-reported rather than measured by the parent via RUSAGE_CHILDREN:
+    under the `forkserver` start method (Python 3.14's new POSIX default),
+    the actual worker is a grandchild spawned by a long-lived forkserver
+    helper, so the parent's RUSAGE_CHILDREN never sees its usage -- the
+    helper hasn't exited (and so hasn't been reaped/aggregated) by the time
+    we'd check. Self-reporting works the same under fork, spawn, and
+    forkserver alike.
+    """
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    cpu_seconds = usage.ru_utime + usage.ru_stime
+    # ru_maxrss is bytes on macOS/BSD but kilobytes on Linux.
+    peak_rss_mb = usage.ru_maxrss / (1024 * 1024 if sys.platform == "darwin" else 1024)
+    return cpu_seconds, peak_rss_mb
+
+
+def graj(debug: bool = False) -> tuple[int, int, str, float, float]:
+    cpu_start, _ = _rusage_self_now()
+
+    log: list[str] = []
+
+    def emit(*parts: object) -> None:
+        """Record a line to the game transcript, and print it too if debug is on."""
+        line = " ".join(str(p) for p in parts)
+        log.append(line)
+        if debug:
+            print(line)
+
     b = Board()
 
     p1 = Player(b)
@@ -65,9 +94,8 @@ def graj(debug: bool = False) -> tuple[int, int]:
     second = p2 if opener is p1 else p1
 
     w = opener.play_word(d)
-    if debug:
-        print(f"Player 1 plays: {w}")
-        print(b)
+    emit(f"Player 1 plays: {w}")
+    emit(b)
 
     if not w:
         # The opener's rack couldn't form any word through the centre (rare,
@@ -75,76 +103,75 @@ def graj(debug: bool = False) -> tuple[int, int]:
         # shot at the opening instead of ending the game 0-0 before it starts.
         opener, second = second, opener
         w = opener.play_word(d)
-        if debug:
-            print("Player 1 cannot open -- Player 2 plays:", w)
-            print(b)
+        emit("Player 1 cannot open -- Player 2 plays:", w)
+        emit(b)
         if not w:
             # Neither player's opening rack is playable -- genuinely stuck.
-            return p1.score, p2.score
+            cpu_end, peak_rss_mb = _rusage_self_now()
+            return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb
 
     while w:
         w = second.play_word(d)
         if w:
-            if debug:
-                print(f"{'Player 2' if second is p2 else 'Player 1'} plays: {w}")
-                print(b)
+            emit(f"{'Player 2' if second is p2 else 'Player 1'} plays: {w}")
+            emit(b)
         else:
-            if debug:
-                print(f"{'Player 2' if second is p2 else 'Player 1'} cannot play.")
+            emit(f"{'Player 2' if second is p2 else 'Player 1'} cannot play.")
 
         w = opener.play_word(d)
         if w:
-            if debug:
-                print(f"{'Player 1' if opener is p1 else 'Player 2'} plays: {w}")
-                print(b)
+            emit(f"{'Player 1' if opener is p1 else 'Player 2'} plays: {w}")
+            emit(b)
         else:
-            if debug:
-                print(f"{'Player 1' if opener is p1 else 'Player 2'} cannot play.")
-                print(b)
+            emit(f"{'Player 1' if opener is p1 else 'Player 2'} cannot play.")
+            emit(b)
             break
 
-    if debug:
-        print(f"Final Scores: Player 1: {p1.score}, Player 2: {p2.score}")
-        print(b)
+    emit(f"Final Scores: Player 1: {p1.score}, Player 2: {p2.score}")
+    emit(b)
 
-    return p1.score, p2.score
+    cpu_end, peak_rss_mb = _rusage_self_now()
+    return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb
 
 
-def speed_test() -> None:
+def benchmark() -> None:
     N = 10000
     scores = []
     wins = [0, 0]
+    best_score = -1
+    best_transcript = ""
+    cpu_total = 0.0
+    peak_rss_mb = 0.0
 
-    cpu_before = resource.getrusage(resource.RUSAGE_CHILDREN)
     wall_start = time.perf_counter()
 
     with ProcessPoolExecutor() as executor:
         n_workers = executor._max_workers
         futures = [executor.submit(graj, False) for _ in range(N)]
         for future in tqdm(as_completed(futures), total=N):
-            p1, p2 = future.result()
+            p1, p2, transcript, cpu_time, worker_peak_rss_mb = future.result()
             scores.append((p1, p2))
+            cpu_total += cpu_time
+            peak_rss_mb = max(peak_rss_mb, worker_peak_rss_mb)
             if p1 > p2:
                 wins[0] += 1
             elif p2 > p1:
                 wins[1] += 1
 
+            if p1 > best_score or p2 > best_score:
+                best_score = max(p1, p2)
+                best_transcript = transcript
+
+    best_game_path = "_best_game.txt"
+    with open(best_game_path, "w") as f:
+        f.write(best_transcript + "\n")
+
     wall_elapsed = time.perf_counter() - wall_start
-    cpu_after = resource.getrusage(resource.RUSAGE_CHILDREN)
-    # RUSAGE_CHILDREN aggregates usage of the pool's worker processes once
-    # they've exited (which they have -- the `with` block above already
-    # joined them), so this is total CPU time spent playing games, not
-    # wall time.
-    cpu_user = cpu_after.ru_utime - cpu_before.ru_utime
-    cpu_sys = cpu_after.ru_stime - cpu_before.ru_stime
-    cpu_total = cpu_user + cpu_sys
-    # ru_maxrss is bytes on macOS/BSD but kilobytes on Linux.
-    peak_rss_mb = cpu_after.ru_maxrss / (1024 * 1024 if sys.platform == "darwin" else 1024)
 
     print(f"Workers: {n_workers}")
     print(f"Games: {N}")
     print(f"Wall time: {wall_elapsed:.2f}s ({N / wall_elapsed:.1f} games/s)")
-    print(f"CPU time: {cpu_total:.2f}s (user {cpu_user:.2f}s, sys {cpu_sys:.2f}s)")
+    print(f"CPU time: {cpu_total:.2f}s")
     print(f"CPU utilization: {cpu_total / (wall_elapsed * n_workers) * 100:.1f}%")
     print(f"Peak worker RSS: {peak_rss_mb:.1f} MB")
     print(f"Average score P1: {sum(score[0] for score in scores) / len(scores):.2f}")
@@ -160,6 +187,7 @@ def speed_test() -> None:
     print(f"Win rate P1: {wins[0] / N * 100:.2f}%")
     print(f"Win rate P2: {wins[1] / N * 100:.2f}%")
     print(f"Ties: {N - wins[0] - wins[1]}")
+    print(f"Best game (Best score for one player: {best_score}) saved to {best_game_path}")
 
     plt.hist([score[0] for score in scores], bins=20, label="Player 1")
     plt.hist([score[1] for score in scores], bins=20, label="Player 2")
@@ -172,4 +200,4 @@ def speed_test() -> None:
 
 if __name__ == "__main__":
     # graj(debug=True)
-    speed_test()
+    benchmark()

@@ -614,7 +614,7 @@ class _SimulatedGame:
 # is embarrassingly parallel). `Dawg`/`Board` are Rust (pyo3) objects that
 # can't be pickled across the process boundary, so instead of passing one in,
 # every worker loads its own copy once at startup and keeps it in a
-# process-local global -- mirrors how src/main.py's `speed_test` gets a fresh
+# process-local global -- mirrors how src/main.py's `benchmark` gets a fresh
 # `d = Dawg(...)` per worker for free via module re-import under spawn.
 _worker_dawg: Dawg | None = None
 
