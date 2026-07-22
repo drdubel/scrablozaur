@@ -102,11 +102,12 @@ def _weighted_median(counts: Counter[int]) -> float:
     return (lo + hi) / 2
 
 
-def graj(debug: bool = False) -> tuple[int, int, str, float, float, int]:
+def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter[str]]:
     cpu_start, _ = _rusage_self_now()
     pid = os.getpid()
 
     log: list[str] = []
+    words_played: Counter[str] = Counter()
 
     def emit(*parts: object) -> None:
         """Record a line to the game transcript, and print it too if debug is on."""
@@ -114,6 +115,12 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int]:
         log.append(line)
         if debug:
             print(line)
+
+    def play(player: Player) -> str:
+        word = player.play_word(d)
+        if word:
+            words_played[word] += 1
+        return word
 
     b = Board()
 
@@ -123,7 +130,7 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int]:
     opener = p1 if random() < 0.5 else p2
     second = p2 if opener is p1 else p1
 
-    w = opener.play_word(d)
+    w = play(opener)
     emit(f"Player 1 plays: {w}")
     emit(b)
 
@@ -132,23 +139,23 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int]:
         # but happens -- e.g. an all-consonant draw). Give the other player a
         # shot at the opening instead of ending the game 0-0 before it starts.
         opener, second = second, opener
-        w = opener.play_word(d)
+        w = play(opener)
         emit("Player 1 cannot open -- Player 2 plays:", w)
         emit(b)
         if not w:
             # Neither player's opening rack is playable -- genuinely stuck.
             cpu_end, peak_rss_mb = _rusage_self_now()
-            return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid
+            return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid, words_played
 
     while w:
-        w = second.play_word(d)
+        w = play(second)
         if w:
             emit(f"{'Player 2' if second is p2 else 'Player 1'} plays: {w}")
             emit(b)
         else:
             emit(f"{'Player 2' if second is p2 else 'Player 1'} cannot play.")
 
-        w = opener.play_word(d)
+        w = play(opener)
         if w:
             emit(f"{'Player 1' if opener is p1 else 'Player 2'} plays: {w}")
             emit(b)
@@ -161,7 +168,7 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int]:
     emit(b)
 
     cpu_end, peak_rss_mb = _rusage_self_now()
-    return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid
+    return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid, words_played
 
 
 def benchmark() -> None:
@@ -179,6 +186,7 @@ def benchmark() -> None:
     # only the latest (i.e. largest) figure reported per pid rather than
     # summing across every game that worker has played.
     worker_peak_rss_mb: dict[int, float] = {}
+    word_counts: Counter[str] = Counter()
 
     wall_start = time.perf_counter()
 
@@ -186,11 +194,12 @@ def benchmark() -> None:
         n_workers = executor._max_workers
         futures = [executor.submit(graj, False) for _ in range(N)]
         for future in tqdm(as_completed(futures), total=N):
-            p1, p2, transcript, cpu_time, peak_rss_mb, pid = future.result()
+            p1, p2, transcript, cpu_time, peak_rss_mb, pid, game_words = future.result()
             p1_scores[p1] += 1
             p2_scores[p2] += 1
             cpu_total += cpu_time
             worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
+            word_counts.update(game_words)
             if p1 > p2:
                 wins[0] += 1
             elif p2 > p1:
@@ -228,6 +237,11 @@ def benchmark() -> None:
     print(f"Win rate P1: {wins[0] / N * 100:.2f}%")
     print(f"Win rate P2: {wins[1] / N * 100:.2f}%")
     print(f"Ties: {N - wins[0] - wins[1]}")
+    most_common_word, most_common_count = word_counts.most_common(1)[0]
+    least_common_word, least_common_count = min(word_counts.items(), key=lambda item: item[1])
+    print(f"Distinct words played: {len(word_counts)}")
+    print(f"Most placed word: {most_common_word} ({most_common_count} times)")
+    print(f"Least placed word: {least_common_word} ({least_common_count} times)")
     print(f"Best game (Best score for one player: {best_score}) saved to {best_game_path}")
 
     plt.hist(list(p1_scores.keys()), weights=list(p1_scores.values()), bins=20, label="Player 1")
