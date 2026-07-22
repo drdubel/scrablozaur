@@ -1,8 +1,8 @@
 import os
 import resource
-import statistics
 import sys
 import time
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from random import random
 
@@ -74,6 +74,34 @@ def _rusage_self_now() -> tuple[float, float]:
     return cpu_seconds, peak_rss_mb
 
 
+def _weighted_average(counts: Counter[int]) -> float:
+    """Average of a distribution given as {score: occurrences}."""
+    total_games = sum(counts.values())
+    return sum(score * count for score, count in counts.items()) / total_games
+
+
+def _weighted_median(counts: Counter[int]) -> float:
+    """Median of a distribution given as {score: occurrences}, without expanding it."""
+    total_games = sum(counts.values())
+    sorted_items = sorted(counts.items())
+
+    def value_at(position: int) -> int:
+        """The score at the given 1-indexed position in the sorted, expanded multiset."""
+        cumulative = 0
+        for score, count in sorted_items:
+            cumulative += count
+            if cumulative >= position:
+                return score
+        raise ValueError("position out of range")
+
+    if total_games % 2:
+        return float(value_at((total_games + 1) // 2))
+
+    lo = value_at(total_games // 2)
+    hi = value_at(total_games // 2 + 1)
+    return (lo + hi) / 2
+
+
 def graj(debug: bool = False) -> tuple[int, int, str, float, float, int]:
     cpu_start, _ = _rusage_self_now()
     pid = os.getpid()
@@ -138,7 +166,11 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int]:
 
 def benchmark() -> None:
     N = 10000
-    scores = []
+    # Scores are heavily repeated across thousands of games, so track
+    # {score: occurrences} per player instead of one entry per game -- keeps
+    # memory bounded by the number of distinct scores rather than N.
+    p1_scores: Counter[int] = Counter()
+    p2_scores: Counter[int] = Counter()
     wins = [0, 0]
     best_score = -1
     best_transcript = ""
@@ -155,7 +187,8 @@ def benchmark() -> None:
         futures = [executor.submit(graj, False) for _ in range(N)]
         for future in tqdm(as_completed(futures), total=N):
             p1, p2, transcript, cpu_time, peak_rss_mb, pid = future.result()
-            scores.append((p1, p2))
+            p1_scores[p1] += 1
+            p2_scores[p2] += 1
             cpu_total += cpu_time
             worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
             if p1 > p2:
@@ -182,14 +215,14 @@ def benchmark() -> None:
     print(f"CPU time (avg per core): {avg_cpu_per_core:.2f}s")
     print(f"CPU utilization (avg per core): {cpu_total / (wall_elapsed * n_workers) * 100:.1f}%")
     print(f"Peak RSS (avg per core): {avg_peak_rss_per_core:.1f} MB")
-    print(f"Average score P1: {sum(score[0] for score in scores) / len(scores):.2f}")
-    print(f"Average score P2: {sum(score[1] for score in scores) / len(scores):.2f}")
-    print(f"Median score P1: {statistics.median(score[0] for score in scores)}")
-    print(f"Median score P2: {statistics.median(score[1] for score in scores)}")
-    print(f"Max score P1: {max(score[0] for score in scores)}")
-    print(f"Max score P2: {max(score[1] for score in scores)}")
-    print(f"Min score P1: {min(score[0] for score in scores)}")
-    print(f"Min score P2: {min(score[1] for score in scores)}")
+    print(f"Average score P1: {_weighted_average(p1_scores):.2f}")
+    print(f"Average score P2: {_weighted_average(p2_scores):.2f}")
+    print(f"Median score P1: {_weighted_median(p1_scores)}")
+    print(f"Median score P2: {_weighted_median(p2_scores)}")
+    print(f"Max score P1: {max(p1_scores)}")
+    print(f"Max score P2: {max(p2_scores)}")
+    print(f"Min score P1: {min(p1_scores)}")
+    print(f"Min score P2: {min(p2_scores)}")
     print(f"Wins P1: {wins[0]}")
     print(f"Wins P2: {wins[1]}")
     print(f"Win rate P1: {wins[0] / N * 100:.2f}%")
@@ -197,8 +230,8 @@ def benchmark() -> None:
     print(f"Ties: {N - wins[0] - wins[1]}")
     print(f"Best game (Best score for one player: {best_score}) saved to {best_game_path}")
 
-    plt.hist([score[0] for score in scores], bins=20, label="Player 1")
-    plt.hist([score[1] for score in scores], bins=20, label="Player 2")
+    plt.hist(list(p1_scores.keys()), weights=list(p1_scores.values()), bins=20, label="Player 1")
+    plt.hist(list(p2_scores.keys()), weights=list(p2_scores.values()), bins=20, label="Player 2")
     plt.xlabel("Score")
     plt.ylabel("Frequency")
     plt.title("Distribution of Scores")
