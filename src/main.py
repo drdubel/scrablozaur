@@ -103,6 +103,32 @@ def _weighted_median(counts: Counter[int]) -> float:
     return (lo + hi) / 2
 
 
+def _render_table(headers: list[str], rows: list[list[str]], align: str | None = None) -> str:
+    """Render rows as a plain ASCII table.
+
+    `align` is one 'l'/'r' per column; defaults to left-aligning the first
+    column (labels) and right-aligning the rest (numbers).
+    """
+    if align is None:
+        align = "l" + "r" * (len(headers) - 1)
+
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    def format_row(cells: list[str]) -> str:
+        aligned = [cell.rjust(w) if a == "r" else cell.ljust(w) for cell, w, a in zip(cells, widths, align)]
+        return "| " + " | ".join(aligned) + " |"
+
+    separator = "+-" + "-+-".join("-" * w for w in widths) + "-+"
+
+    lines = [separator, format_row(headers), separator]
+    lines.extend(format_row(row) for row in rows)
+    lines.append(separator)
+    return "\n".join(lines)
+
+
 def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter[str]]:
     cpu_start, _ = _rusage_self_now()
     pid = os.getpid()
@@ -230,37 +256,61 @@ def benchmark(N: int) -> None:
     avg_cpu_per_core = cpu_total / n_workers
     avg_peak_rss_per_core = sum(worker_peak_rss_mb.values()) / len(worker_peak_rss_mb)
 
-    print(f"Workers: {n_workers}")
-    print(f"Games: {games_played}")
-    print(f"Wall time: {wall_elapsed:.2f}s ({games_played / wall_elapsed:.1f} games/s)")
-    print(f"CPU time (total): {cpu_total:.2f}s")
-    print(f"CPU time (avg per core): {avg_cpu_per_core:.2f}s")
-    print(f"CPU utilization (avg per core): {cpu_total / (wall_elapsed * n_workers) * 100:.1f}%")
-    print(f"Peak RSS (avg per core): {avg_peak_rss_per_core:.1f} MB")
-    print(f"Average score P1: {_weighted_average(p1_scores):.2f}")
-    print(f"Average score P2: {_weighted_average(p2_scores):.2f}")
-    print(f"Median score P1: {_weighted_median(p1_scores)}")
-    print(f"Median score P2: {_weighted_median(p2_scores)}")
-    print(f"Max score P1: {max(p1_scores)}")
-    print(f"Max score P2: {max(p2_scores)}")
-    print(f"Min score P1: {min(p1_scores)}")
-    print(f"Min score P2: {min(p2_scores)}")
     ties = games_played - wins[0] - wins[1]
     decisive_games = games_played - ties
-    print(f"Wins P1: {wins[0]}")
-    print(f"Wins P2: {wins[1]}")
-    if decisive_games:
-        print(f"Win rate P1: {wins[0] / decisive_games * 100:.2f}%")
-        print(f"Win rate P2: {wins[1] / decisive_games * 100:.2f}%")
-    print(f"Ties: {ties}")
-    print(f"Distinct words played: {len(word_counts)}")
-    print("Most placed words:")
-    for word, count in word_counts.most_common(10):
-        print(f"  {word}: {count}")
-    print("Least placed words:")
-    for word, count in sorted(word_counts.items(), key=lambda item: item[1])[:10]:
-        print(f"  {word}: {count}")
-    print(f"Best game (Best score for one player: {best_score}) saved to {best_game_path}")
+    win_rate_p1 = f"{wins[0] / decisive_games * 100:.2f}%" if decisive_games else "N/A"
+    win_rate_p2 = f"{wins[1] / decisive_games * 100:.2f}%" if decisive_games else "N/A"
+
+    print()
+    print(
+        _render_table(
+            ["Run", "Value"],
+            [
+                ["Workers", str(n_workers)],
+                ["Games played", str(games_played)],
+                ["Wall time", f"{wall_elapsed:.2f}s"],
+                ["Throughput", f"{games_played / wall_elapsed:.1f} games/s"],
+                ["CPU time (total)", f"{cpu_total:.2f}s"],
+                ["CPU time (avg/core)", f"{avg_cpu_per_core:.2f}s"],
+                ["CPU utilization (avg/core)", f"{cpu_total / (wall_elapsed * n_workers) * 100:.1f}%"],
+                ["Peak RSS (avg/core)", f"{avg_peak_rss_per_core:.1f} MB"],
+                ["Distinct words played", str(len(word_counts))],
+                ["Best single-player score", f"{best_score}"],
+            ],
+        )
+    )
+
+    print()
+    print(
+        _render_table(
+            ["Score", "Player 1", "Player 2"],
+            [
+                ["Average", f"{_weighted_average(p1_scores):.2f}", f"{_weighted_average(p2_scores):.2f}"],
+                ["Median", f"{_weighted_median(p1_scores):.1f}", f"{_weighted_median(p2_scores):.1f}"],
+                ["Max", str(max(p1_scores)), str(max(p2_scores))],
+                ["Min", str(min(p1_scores)), str(min(p2_scores))],
+                ["Wins", str(wins[0]), str(wins[1])],
+                ["Win rate", win_rate_p1, win_rate_p2],
+                ["Ties", str(ties), str(ties)],
+            ],
+        )
+    )
+
+    most_placed = word_counts.most_common(10)
+    least_placed = sorted(word_counts.items(), key=lambda item: item[1])[:10]
+    print()
+    print(
+        _render_table(
+            ["#", "Most placed", "Count", "Least placed", "Count"],
+            [
+                [str(i + 1), most_word, str(most_count), least_word, str(least_count)]
+                for i, ((most_word, most_count), (least_word, least_count)) in enumerate(zip(most_placed, least_placed))
+            ],
+            align="llrlr",
+        )
+    )
+
+    print("Best game transcript written to:", best_game_path)
 
     plt.hist(list(p1_scores.keys()), weights=list(p1_scores.values()), bins=20, label="Player 1")
     plt.hist(list(p2_scores.keys()), weights=list(p2_scores.values()), bins=20, label="Player 2")
