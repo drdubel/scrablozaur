@@ -1,5 +1,6 @@
 import os
 import sys
+from typing import Counter
 
 from scrablozaur import Board
 
@@ -12,16 +13,16 @@ def test_save_letters_left():
     board = Board()
     player = StrategicPlayer(board)
     player.letters = "abc"
-    player.tile_bag = ["a", "b", "c", "d", "e"]
-    assert sorted(player.get_letters_left()) == sorted(["d", "e"])
+    tile_bag = player.board.fresh_tile_bag()
+    assert sorted(player.get_letters_left()) == sorted(list((Counter(tile_bag) - Counter(["a", "b", "c"])).elements()))
 
 
 def test_save_letters_left_with_duplicates():
     board = Board()
     player = StrategicPlayer(board)
     player.letters = "aab"
-    player.tile_bag = ["a", "a", "b", "c", "d", "e"]
-    assert sorted(player.get_letters_left()) == sorted(["c", "d", "e"])
+    tile_bag = player.board.fresh_tile_bag()
+    assert sorted(player.get_letters_left()) == sorted(list((Counter(tile_bag) - Counter(["a", "a", "b"])).elements()))
 
 
 def test_exchange_letters():

@@ -107,7 +107,9 @@ class StrategicPlayer:
         elif len(consonants) < 3:
             letters_to_exchange += "".join(vowels[:3])
         else:
-            letters_to_exchange += "".join(vowels[:2] + consonants[:2])
+            min_vowel = 1
+            min_consonant = 3
+            letters_to_exchange += "".join(vowels[::-1][min_vowel:]) + "".join(consonants[::-1][min_consonant:])
 
         return letters_to_exchange
 

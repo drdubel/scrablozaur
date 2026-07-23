@@ -111,7 +111,7 @@ def graj(parallel: bool = False, debug: bool = False) -> tuple[int, int, str, fl
     b = Board()
 
     p1 = StrategicPlayer(b)
-    p2 = StrategicPlayer(b)
+    p2 = SimplePlayer(b)
 
     opener = p1 if random() < 0.5 else p2
     second = p2 if opener is p1 else p1
