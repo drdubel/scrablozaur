@@ -27,12 +27,6 @@ class SimplePlayer:
         self.score += w[1]
         self.board.place_word(w[0], w[2][0], w[2][1], w[2][2])
         for ch in w[3]:
-            # `ch` is the literal letter placed on the board, but if a blank
-            # stood in for it, the rack only has '?' -- not `ch` -- so fall
-            # back to removing the blank instead. Without this, `replace()`
-            # silently no-ops on a literal it can't find, the blank never
-            # actually leaves the rack, and it gets "reused" as a fresh
-            # wildcard every subsequent turn for the rest of the game.
             if ch in self.letters:
                 self.letters = self.letters.replace(ch, "", 1)
             elif "?" in self.letters:
@@ -104,9 +98,6 @@ class StrategicPlayer:
         self.score += points
         self.board.place_word(word, position[0], position[1], position[2])
         for ch in used:
-            # `ch` is the literal letter placed on the board, but if a blank
-            # stood in for it, the rack only has '?' -- not `ch` -- so fall
-            # back to removing the blank instead.
             if ch in self.letters:
                 self.letters = self.letters.replace(ch, "", 1)
             elif "?" in self.letters:
