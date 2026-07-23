@@ -198,6 +198,32 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter
     return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid, words_played
 
 
+def graj_batch(count: int) -> list[tuple[int, int, str, float, float, int, Counter[str]]]:
+    """Play `count` games in this worker and return all their results at once.
+
+    Submitting one task per game to the executor has real per-task overhead
+    (Future/work-item bookkeeping) that's paid entirely up front, before any
+    game even starts -- for N in the millions that alone can take seconds
+    with zero visible progress. Batching games into fewer, larger tasks
+    (mirroring stdlib Pool.map's chunksize trick) cuts submission count, and
+    per-task overhead with it, by roughly the batch size.
+    """
+    return [graj(False) for _ in range(count)]
+
+
+def _chunk_sizes(n: int, n_workers: int) -> list[int]:
+    """Split `n` games into chunks, aiming for ~4 chunks per worker."""
+    chunk_size, extra = divmod(n, n_workers * 4)
+    if extra:
+        chunk_size += 1
+    chunk_size = max(1, chunk_size)
+
+    sizes = [chunk_size] * (n // chunk_size)
+    if n % chunk_size:
+        sizes.append(n % chunk_size)
+    return sizes
+
+
 def benchmark(N: int) -> None:
     # Scores are heavily repeated across thousands of games, so track
     # {score: occurrences} per player instead of one entry per game -- keeps
@@ -219,25 +245,28 @@ def benchmark(N: int) -> None:
 
     with ProcessPoolExecutor() as executor:
         n_workers = executor._max_workers
-        futures = [executor.submit(graj, False) for _ in range(N)]
+        futures = [executor.submit(graj_batch, size) for size in _chunk_sizes(N, n_workers)]
         try:
-            for future in tqdm(as_completed(futures), total=N):
-                p1, p2, transcript, cpu_time, peak_rss_mb, pid, game_words = future.result()
-                games_played += 1
-                p1_scores[p1] += 1
-                p2_scores[p2] += 1
-                cpu_total += cpu_time
-                worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
-                word_counts.update(game_words)
-                if p1 > p2:
-                    wins[0] += 1
-                elif p2 > p1:
-                    wins[1] += 1
+            with tqdm(total=N) as pbar:
+                for future in as_completed(futures):
+                    batch = future.result()
+                    for p1, p2, transcript, cpu_time, peak_rss_mb, pid, game_words in batch:
+                        games_played += 1
+                        p1_scores[p1] += 1
+                        p2_scores[p2] += 1
+                        cpu_total += cpu_time
+                        worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
+                        word_counts.update(game_words)
+                        if p1 > p2:
+                            wins[0] += 1
+                        elif p2 > p1:
+                            wins[1] += 1
 
-                if p1 > best_score or p2 > best_score:
-                    best_score = max(p1, p2)
-                    best_transcript = transcript
-                    tqdm.write(f"New best score: {best_score} (P1: {p1}, P2: {p2})")
+                        if p1 > best_score or p2 > best_score:
+                            best_score = max(p1, p2)
+                            best_transcript = transcript
+                            tqdm.write(f"New best score: {best_score} (P1: {p1}, P2: {p2})")
+                    pbar.update(len(batch))
         except KeyboardInterrupt:
             # Drop not-yet-started games so shutdown doesn't run through the
             # rest of the queue; already-running games are left to finish.
