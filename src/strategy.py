@@ -14,7 +14,7 @@ class SimplePlayer:
         """Draw letters from the bag to fill the player's hand up to 7 letters."""
         self.letters += self.board.give_letters(self.letters)
 
-    def play_word(self, dawg: Dawg) -> str:
+    def play_word(self, dawg: Dawg, parallel: bool = False) -> str:
         """Find and play the best word from the player's letters on the board.
 
         This method should:
@@ -23,7 +23,7 @@ class SimplePlayer:
             the player's letters and fits one of the patterns.
           - Place the word on the board and update the player's letters.
         """
-        w = self.board.get_best_word(dawg, self.letters, parallel=False)
+        w = self.board.get_best_word(dawg, self.letters, parallel)
         self.score += w[1]
         self.board.place_word(w[0], w[2][0], w[2][1], w[2][2])
         for ch in w[3]:
@@ -59,9 +59,11 @@ class StrategicPlayer:
         used_letters = [ch for ch in self.board.__str__().split() if ch != "-"] + [ch for ch in self.letters]
         return list((Counter(self.tile_bag) - Counter(used_letters)).elements())
 
-    def get_best_words(self, dawg: Dawg, letters: str) -> list[tuple[str, int, tuple[int, int, bool], list[str]]]:
+    def get_best_words(
+        self, dawg: Dawg, letters: str, parallel: bool
+    ) -> list[tuple[str, int, tuple[int, int, bool], list[str]]]:
         """Find the best scoring words that can be placed on the board with the given letters."""
-        words = self.board.get_best_words(dawg, letters, n=50, parallel=True)
+        words = self.board.get_best_words(dawg, letters, n=50, parallel=parallel)
 
         return words
 
@@ -69,19 +71,19 @@ class StrategicPlayer:
         self, dawg: Dawg, word: str, points: int, position: tuple[int, int, bool], used: list[str]
     ) -> int:
         """Evaluate the score of placing a word on the board at the given position and orientation."""
-        used_points = sum(self.board.letter_points(ch) for ch in used)
-        score = points - used_points
+        left_points = sum(self.board.letter_points(ch) for ch in self.get_letters_left())
+        score = points + left_points
 
         return score
 
-    def get_best_word(self, dawg: Dawg) -> tuple[str, tuple[int, int, bool], list[str]]:
+    def get_best_word(self, dawg: Dawg, parallel: bool) -> tuple[str, tuple[int, int, bool], list[str]]:
         """Find the best scoring word from the player's letters on the board."""
-        words = self.get_best_words(dawg, self.letters)
+        words = self.get_best_words(dawg, self.letters, parallel)
         best_word = max(words, key=lambda w: self.evaluate_word(dawg, *w), default=None)
 
         return (best_word[0], best_word[2], best_word[3]) if best_word else ("", (0, 0, True), [])
 
-    def play_word(self, dawg: Dawg) -> str:
+    def play_word(self, dawg: Dawg, parallel: bool = False) -> str:
         """Find and play the best word from the player's letters on the board.
 
         This method should:
@@ -90,7 +92,7 @@ class StrategicPlayer:
             the player's letters and fits one of the patterns.
           - Place the word on the board and update the player's letters.
         """
-        word, position, used = self.get_best_word(dawg)
+        word, position, used = self.get_best_word(dawg, parallel)
         if not word:
             return ""
 
