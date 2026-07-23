@@ -1,12 +1,8 @@
 import argparse
-import multiprocessing
-import os
 import resource
-import sys
 import time
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
-from queue import Empty
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from random import random
 
 from matplotlib import pyplot as plt  # type: ignore
@@ -18,8 +14,8 @@ from strategy import SimplePlayer, StrategicPlayer
 d = Dawg("words/dawg.bin")
 
 
-def _rusage_self_now() -> tuple[float, float]:
-    """This worker's own (cpu_seconds, peak_rss_mb) since it started.
+def _rusage_self_now() -> float:
+    """This worker's own cumulative CPU seconds since it started.
 
     Self-reported rather than measured by the parent via RUSAGE_CHILDREN:
     under the `forkserver` start method (Python 3.14's new POSIX default),
@@ -30,10 +26,7 @@ def _rusage_self_now() -> tuple[float, float]:
     forkserver alike.
     """
     usage = resource.getrusage(resource.RUSAGE_SELF)
-    cpu_seconds = usage.ru_utime + usage.ru_stime
-    # ru_maxrss is bytes on macOS/BSD but kilobytes on Linux.
-    peak_rss_mb = usage.ru_maxrss / (1024 * 1024 if sys.platform == "darwin" else 1024)
-    return cpu_seconds, peak_rss_mb
+    return usage.ru_utime + usage.ru_stime
 
 
 def _weighted_average(counts: Counter[int]) -> float:
@@ -90,9 +83,8 @@ def _render_table(headers: list[str], rows: list[list[str]], align: str | None =
     return "\n".join(lines)
 
 
-def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter[str]]:
-    cpu_start, _ = _rusage_self_now()
-    pid = os.getpid()
+def graj(debug: bool = False) -> tuple[int, int, str, float, Counter[str]]:
+    cpu_start = _rusage_self_now()
 
     log: list[str] = []
     words_played: Counter[str] = Counter()
@@ -132,8 +124,8 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter
         emit(b)
         if not w:
             # Neither player's opening rack is playable -- genuinely stuck.
-            cpu_end, peak_rss_mb = _rusage_self_now()
-            return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid, words_played
+            cpu_end = _rusage_self_now()
+            return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, words_played
 
     while w:
         w = play(second)
@@ -155,130 +147,26 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter
     emit(f"Final Scores: Player 1: {p1.score}, Player 2: {p2.score}")
     emit(b)
 
-    cpu_end, peak_rss_mb = _rusage_self_now()
-    return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid, words_played
+    cpu_end = _rusage_self_now()
+    return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, words_played
 
 
-def graj_batch(
-    count: int, results_queue: "multiprocessing.Queue[tuple[int, int, str, float, float, int, Counter[str]]]"
-) -> int:
-    """Play `count` games in this worker, streaming each result out as it finishes.
-
-    Submitting one task per game to the executor has real per-task overhead
-    (Future/work-item bookkeeping) that's paid entirely up front, before any
-    game even starts -- for N in the millions that alone can take seconds
-    with zero visible progress. Batching games into fewer, larger tasks
-    (mirroring stdlib Pool.map's chunksize trick) cuts submission count, and
-    per-task overhead with it, by roughly the batch size.
-
-    If results were instead only returned once the whole batch finished, a
-    progress bar (and Ctrl+C) would be tied to batch completions: it'd sit
-    still, then jump by a whole chunk, and an interrupt would discard every
-    already-finished game still sitting in an unfinished chunk. Streaming
-    each game to `results_queue` as it completes keeps both the progress bar
-    and Ctrl+C accurate to the individual game, not the batch.
-    """
-    for _ in range(count):
-        results_queue.put(graj(False))
-    return count
-
-
-def _chunk_sizes(n: int, n_workers: int) -> list[int]:
-    """Split `n` games into chunks, aiming for ~4 chunks per worker."""
-    chunk_size, extra = divmod(n, n_workers * 4)
-    if extra:
-        chunk_size += 1
-    chunk_size = max(1, chunk_size)
-
-    sizes = [chunk_size] * (n // chunk_size)
-    if n % chunk_size:
-        sizes.append(n % chunk_size)
-    return sizes
-
-
-def benchmark(N: int) -> None:
-    # Scores are heavily repeated across thousands of games, so track
-    # {score: occurrences} per player instead of one entry per game -- keeps
-    # memory bounded by the number of distinct scores rather than N.
-    p1_scores: Counter[int] = Counter()
-    p2_scores: Counter[int] = Counter()
-    wins = [0, 0]
-    best_score = -1
-    best_transcript = ""
-    cpu_total = 0.0
-    # ru_maxrss is a high-water mark for the whole worker process, so keep
-    # only the latest (i.e. largest) figure reported per pid rather than
-    # summing across every game that worker has played.
-    worker_peak_rss_mb: dict[int, float] = {}
-    word_counts: Counter[str] = Counter()
-    games_played = 0
-
-    wall_start = time.perf_counter()
-
-    with ProcessPoolExecutor() as executor, multiprocessing.Manager() as manager:
-        n_workers = executor._max_workers
-        # A plain multiprocessing.Queue can only be handed to a process at the
-        # moment it's spawned (via inheritance); it can't be pickled into a
-        # submit() call to an already-running worker pool under the `spawn`/
-        # `forkserver` start methods (Python 3.14's new POSIX default). A
-        # Manager-backed queue is a proxy that's designed to be passed around
-        # like this, at the cost of routing through an extra server process.
-        results_queue: "multiprocessing.Queue[tuple[int, int, str, float, float, int, Counter[str]]]" = manager.Queue()
-        futures = [executor.submit(graj_batch, size, results_queue) for size in _chunk_sizes(N, n_workers)]
-
-        with tqdm(total=N) as pbar:
-            try:
-                while games_played < N:
-                    try:
-                        p1, p2, transcript, cpu_time, peak_rss_mb, pid, game_words = results_queue.get(timeout=1.0)
-                    except Empty:
-                        # Nothing arrived in a while -- confirm that's just
-                        # workers being busy, not one having crashed and so
-                        # never delivering its remaining games.
-                        for future in futures:
-                            if future.done():
-                                future.result()
-                        continue
-
-                    games_played += 1
-                    pbar.update(1)
-                    p1_scores[p1] += 1
-                    p2_scores[p2] += 1
-                    cpu_total += cpu_time
-                    worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
-                    word_counts.update(game_words)
-                    if p1 > p2:
-                        wins[0] += 1
-                    elif p2 > p1:
-                        wins[1] += 1
-
-                    if p1 > best_score or p2 > best_score:
-                        best_score = max(p1, p2)
-                        best_transcript = transcript
-            except KeyboardInterrupt:
-                # Every game already delivered to results_queue was counted
-                # above; only games still mid-flight inside a worker are lost,
-                # not a whole chunk's worth.
-                print(f"\nInterrupted -- stopping after {games_played}/{N} games.")
-                executor.shutdown(wait=True, cancel_futures=True)
-
-    if games_played == 0:
-        print("No games completed.")
-        return
-
-    best_game_path = "_best_game.txt"
-    with open(best_game_path, "w") as f:
-        f.write(best_transcript + "\n")
-
-    wall_elapsed = time.perf_counter() - wall_start
-    avg_cpu_per_core = cpu_total / n_workers
-    avg_peak_rss_per_core = sum(worker_peak_rss_mb.values()) / len(worker_peak_rss_mb)
-
-    ties = games_played - wins[0] - wins[1]
-    decisive_games = games_played - ties
-    win_rate_p1 = f"{wins[0] / decisive_games * 100:.2f}%" if decisive_games else "N/A"
-    win_rate_p2 = f"{wins[1] / decisive_games * 100:.2f}%" if decisive_games else "N/A"
-
+def _print_benchmark_results(
+    n_workers: int,
+    games_played: int,
+    wall_elapsed: float,
+    cpu_total: float,
+    avg_cpu_per_core: float,
+    wins: list[int],
+    ties: int,
+    win_rate_p1: str,
+    win_rate_p2: str,
+    word_counts: Counter[str],
+    best_score: int,
+    best_game_path: str,
+    p1_scores: Counter[int],
+    p2_scores: Counter[int],
+) -> None:
     print()
     print(
         _render_table(
@@ -291,7 +179,6 @@ def benchmark(N: int) -> None:
                 ["CPU time (total)", f"{cpu_total:.2f}s"],
                 ["CPU time (avg/core)", f"{avg_cpu_per_core:.2f}s"],
                 ["CPU utilization (avg/core)", f"{cpu_total / (wall_elapsed * n_workers) * 100:.1f}%"],
-                ["Peak RSS (avg/core)", f"{avg_peak_rss_per_core:.1f} MB"],
                 ["Distinct words played", str(len(word_counts))],
                 ["Best single-player score", f"{best_score}"],
             ],
@@ -337,6 +224,87 @@ def benchmark(N: int) -> None:
     plt.title("Distribution of Scores")
     plt.legend()
     # plt.show()
+
+
+def benchmark(N: int) -> None:
+    # Scores are heavily repeated across thousands of games, so track
+    # {score: occurrences} per player instead of one entry per game -- keeps
+    # memory bounded by the number of distinct scores rather than N.
+    p1_scores: Counter[int] = Counter()
+    p2_scores: Counter[int] = Counter()
+    wins = [0, 0]
+    best_score = -1
+    best_transcript = ""
+    cpu_total = 0.0
+    word_counts: Counter[str] = Counter()
+    games_played = 0
+
+    wall_start = time.perf_counter()
+
+    with ProcessPoolExecutor() as executor:
+        n_workers = executor._max_workers
+        try:
+            with tqdm(total=N, desc="Games played") as pbar:
+                batch_size = n_workers * 4
+                for i in range(0, N, batch_size):
+                    futures = [executor.submit(graj, False) for _ in range(min(batch_size, N - i))]
+
+                    for future in as_completed(futures):
+                        p1, p2, transcript, cpu_time, game_words = future.result()
+                        games_played += 1
+                        p1_scores[p1] += 1
+                        p2_scores[p2] += 1
+                        cpu_total += cpu_time
+                        pbar.update(1)
+
+                        word_counts.update(game_words)
+                        if p1 > p2:
+                            wins[0] += 1
+                        elif p2 > p1:
+                            wins[1] += 1
+
+                        if p1 > best_score or p2 > best_score:
+                            best_score = max(p1, p2)
+                            best_transcript = transcript
+
+        except KeyboardInterrupt:
+            # Drop not-yet-started games so shutdown doesn't run through the
+            # rest of the queue; already-running games are left to finish.
+            print(f"\nInterrupted -- stopping after {games_played}/{N} games.")
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    if games_played == 0:
+        print("No games completed.")
+        return
+
+    best_game_path = "_best_game.txt"
+    with open(best_game_path, "w") as f:
+        f.write(best_transcript + "\n")
+
+    wall_elapsed = time.perf_counter() - wall_start
+    avg_cpu_per_core = cpu_total / n_workers
+
+    ties = games_played - wins[0] - wins[1]
+    decisive_games = games_played - ties
+    win_rate_p1 = f"{wins[0] / decisive_games * 100:.2f}%" if decisive_games else "N/A"
+    win_rate_p2 = f"{wins[1] / decisive_games * 100:.2f}%" if decisive_games else "N/A"
+
+    _print_benchmark_results(
+        n_workers=n_workers,
+        games_played=games_played,
+        wall_elapsed=wall_elapsed,
+        cpu_total=cpu_total,
+        avg_cpu_per_core=avg_cpu_per_core,
+        wins=wins,
+        ties=ties,
+        win_rate_p1=win_rate_p1,
+        win_rate_p2=win_rate_p2,
+        word_counts=word_counts,
+        best_score=best_score,
+        best_game_path=best_game_path,
+        p1_scores=p1_scores,
+        p2_scores=p2_scores,
+    )
 
 
 if __name__ == "__main__":
