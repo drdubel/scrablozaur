@@ -3,10 +3,9 @@ import multiprocessing
 import os
 import resource
 import sys
-import threading
 import time
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from queue import Empty
 from random import random
 
@@ -202,9 +201,9 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter
 
 
 def graj_batch(
-    count: int, progress_queue: "multiprocessing.Queue[int]"
-) -> list[tuple[int, int, str, float, float, int, Counter[str]]]:
-    """Play `count` games in this worker and return all their results at once.
+    count: int, results_queue: "multiprocessing.Queue[tuple[int, int, str, float, float, int, Counter[str]]]"
+) -> int:
+    """Play `count` games in this worker, streaming each result out as it finishes.
 
     Submitting one task per game to the executor has real per-task overhead
     (Future/work-item bookkeeping) that's paid entirely up front, before any
@@ -213,17 +212,16 @@ def graj_batch(
     (mirroring stdlib Pool.map's chunksize trick) cuts submission count, and
     per-task overhead with it, by roughly the batch size.
 
-    A batch's results only become visible to the caller once the whole batch
-    finishes, which would make a progress bar driven off completed batches
-    jump in big, sparse steps instead of advancing per game. `progress_queue`
-    reports each game as soon as it's done, independently of the batch it's
-    part of, so progress can still be shown per game.
+    If results were instead only returned once the whole batch finished, a
+    progress bar (and Ctrl+C) would be tied to batch completions: it'd sit
+    still, then jump by a whole chunk, and an interrupt would discard every
+    already-finished game still sitting in an unfinished chunk. Streaming
+    each game to `results_queue` as it completes keeps both the progress bar
+    and Ctrl+C accurate to the individual game, not the batch.
     """
-    results = []
     for _ in range(count):
-        results.append(graj(False))
-        progress_queue.put(1)
-    return results
+        results_queue.put(graj(False))
+    return count
 
 
 def _chunk_sizes(n: int, n_workers: int) -> list[int]:
@@ -237,16 +235,6 @@ def _chunk_sizes(n: int, n_workers: int) -> list[int]:
     if n % chunk_size:
         sizes.append(n % chunk_size)
     return sizes
-
-
-def _drain_progress(progress_queue: "multiprocessing.Queue[int]", pbar: tqdm, stop_event: threading.Event) -> None:
-    """Advance the progress bar per finished game rather than per finished batch."""
-    while not stop_event.is_set():
-        try:
-            progress_queue.get(timeout=0.1)
-        except Empty:
-            continue
-        pbar.update(1)
 
 
 def benchmark(N: int) -> None:
@@ -276,40 +264,45 @@ def benchmark(N: int) -> None:
         # `forkserver` start methods (Python 3.14's new POSIX default). A
         # Manager-backed queue is a proxy that's designed to be passed around
         # like this, at the cost of routing through an extra server process.
-        progress_queue: "multiprocessing.Queue[int]" = manager.Queue()
-        futures = [executor.submit(graj_batch, size, progress_queue) for size in _chunk_sizes(N, n_workers)]
+        results_queue: "multiprocessing.Queue[tuple[int, int, str, float, float, int, Counter[str]]]" = manager.Queue()
+        futures = [executor.submit(graj_batch, size, results_queue) for size in _chunk_sizes(N, n_workers)]
 
         with tqdm(total=N) as pbar:
-            stop_progress = threading.Event()
-            progress_thread = threading.Thread(target=_drain_progress, args=(progress_queue, pbar, stop_progress))
-            progress_thread.start()
             try:
-                for future in as_completed(futures):
-                    batch = future.result()
-                    for p1, p2, transcript, cpu_time, peak_rss_mb, pid, game_words in batch:
-                        games_played += 1
-                        p1_scores[p1] += 1
-                        p2_scores[p2] += 1
-                        cpu_total += cpu_time
-                        worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
-                        word_counts.update(game_words)
-                        if p1 > p2:
-                            wins[0] += 1
-                        elif p2 > p1:
-                            wins[1] += 1
+                while games_played < N:
+                    try:
+                        p1, p2, transcript, cpu_time, peak_rss_mb, pid, game_words = results_queue.get(timeout=1.0)
+                    except Empty:
+                        # Nothing arrived in a while -- confirm that's just
+                        # workers being busy, not one having crashed and so
+                        # never delivering its remaining games.
+                        for future in futures:
+                            if future.done():
+                                future.result()
+                        continue
 
-                        if p1 > best_score or p2 > best_score:
-                            best_score = max(p1, p2)
-                            best_transcript = transcript
-                            tqdm.write(f"New best score: {best_score} (P1: {p1}, P2: {p2})")
+                    games_played += 1
+                    pbar.update(1)
+                    p1_scores[p1] += 1
+                    p2_scores[p2] += 1
+                    cpu_total += cpu_time
+                    worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
+                    word_counts.update(game_words)
+                    if p1 > p2:
+                        wins[0] += 1
+                    elif p2 > p1:
+                        wins[1] += 1
+
+                    if p1 > best_score or p2 > best_score:
+                        best_score = max(p1, p2)
+                        best_transcript = transcript
+                        tqdm.write(f"New best score: {best_score} (P1: {p1}, P2: {p2})")
             except KeyboardInterrupt:
-                # Drop not-yet-started games so shutdown doesn't run through the
-                # rest of the queue; already-running games are left to finish.
+                # Every game already delivered to results_queue was counted
+                # above; only games still mid-flight inside a worker are lost,
+                # not a whole chunk's worth.
                 print(f"\nInterrupted -- stopping after {games_played}/{N} games.")
                 executor.shutdown(wait=True, cancel_futures=True)
-            finally:
-                stop_progress.set()
-                progress_thread.join()
 
     if games_played == 0:
         print("No games completed.")
