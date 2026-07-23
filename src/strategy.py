@@ -108,7 +108,7 @@ class StrategicPlayer:
             letters_to_exchange += "".join(vowels[:3])
         else:
             min_vowel = 1
-            min_consonant = 3
+            min_consonant = 2
             letters_to_exchange += "".join(vowels[::-1][min_vowel:]) + "".join(consonants[::-1][min_consonant:])
 
         return letters_to_exchange
@@ -124,7 +124,7 @@ class StrategicPlayer:
         """
         word, points, position, used = self.get_best_word(dawg, parallel)
 
-        if self.board.can_exchange() and points < 10 and not self.last_exchanged:
+        if self.board.can_exchange() and points < 6 and not self.last_exchanged:
             self.exchange_letters(self.get_letters_to_exchange())
             self.last_exchanged = True
             return ""
