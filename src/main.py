@@ -187,27 +187,39 @@ def benchmark() -> None:
     # summing across every game that worker has played.
     worker_peak_rss_mb: dict[int, float] = {}
     word_counts: Counter[str] = Counter()
+    games_played = 0
 
     wall_start = time.perf_counter()
 
     with ProcessPoolExecutor() as executor:
         n_workers = executor._max_workers
         futures = [executor.submit(graj, False) for _ in range(N)]
-        for future in tqdm(as_completed(futures), total=N):
-            p1, p2, transcript, cpu_time, peak_rss_mb, pid, game_words = future.result()
-            p1_scores[p1] += 1
-            p2_scores[p2] += 1
-            cpu_total += cpu_time
-            worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
-            word_counts.update(game_words)
-            if p1 > p2:
-                wins[0] += 1
-            elif p2 > p1:
-                wins[1] += 1
+        try:
+            for future in tqdm(as_completed(futures), total=N):
+                p1, p2, transcript, cpu_time, peak_rss_mb, pid, game_words = future.result()
+                games_played += 1
+                p1_scores[p1] += 1
+                p2_scores[p2] += 1
+                cpu_total += cpu_time
+                worker_peak_rss_mb[pid] = max(worker_peak_rss_mb.get(pid, 0.0), peak_rss_mb)
+                word_counts.update(game_words)
+                if p1 > p2:
+                    wins[0] += 1
+                elif p2 > p1:
+                    wins[1] += 1
 
-            if p1 > best_score or p2 > best_score:
-                best_score = max(p1, p2)
-                best_transcript = transcript
+                if p1 > best_score or p2 > best_score:
+                    best_score = max(p1, p2)
+                    best_transcript = transcript
+        except KeyboardInterrupt:
+            # Drop not-yet-started games so shutdown doesn't run through the
+            # rest of the queue; already-running games are left to finish.
+            print(f"\nInterrupted -- stopping after {games_played}/{N} games.")
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    if games_played == 0:
+        print("No games completed.")
+        return
 
     best_game_path = "_best_game.txt"
     with open(best_game_path, "w") as f:
@@ -218,8 +230,8 @@ def benchmark() -> None:
     avg_peak_rss_per_core = sum(worker_peak_rss_mb.values()) / len(worker_peak_rss_mb)
 
     print(f"Workers: {n_workers}")
-    print(f"Games: {N}")
-    print(f"Wall time: {wall_elapsed:.2f}s ({N / wall_elapsed:.1f} games/s)")
+    print(f"Games: {games_played}")
+    print(f"Wall time: {wall_elapsed:.2f}s ({games_played / wall_elapsed:.1f} games/s)")
     print(f"CPU time (total): {cpu_total:.2f}s")
     print(f"CPU time (avg per core): {avg_cpu_per_core:.2f}s")
     print(f"CPU utilization (avg per core): {cpu_total / (wall_elapsed * n_workers) * 100:.1f}%")
@@ -232,11 +244,14 @@ def benchmark() -> None:
     print(f"Max score P2: {max(p2_scores)}")
     print(f"Min score P1: {min(p1_scores)}")
     print(f"Min score P2: {min(p2_scores)}")
+    ties = games_played - wins[0] - wins[1]
+    decisive_games = games_played - ties
     print(f"Wins P1: {wins[0]}")
     print(f"Wins P2: {wins[1]}")
-    print(f"Win rate P1: {wins[0] / N * 100:.2f}%")
-    print(f"Win rate P2: {wins[1] / N * 100:.2f}%")
-    print(f"Ties: {N - wins[0] - wins[1]}")
+    if decisive_games:
+        print(f"Win rate P1: {wins[0] / decisive_games * 100:.2f}%")
+        print(f"Win rate P2: {wins[1] / decisive_games * 100:.2f}%")
+    print(f"Ties: {ties}")
     print(f"Distinct words played: {len(word_counts)}")
     print("Most placed words:")
     for word, count in word_counts.most_common(10):
