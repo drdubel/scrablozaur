@@ -13,50 +13,9 @@ from matplotlib import pyplot as plt  # type: ignore
 from tqdm import tqdm  # type: ignore
 
 from scrablozaur import Board, Dawg
-from strategy import StrategicPlayer
+from strategy import SimplePlayer, StrategicPlayer
 
 d = Dawg("words/dawg.bin")
-
-
-class Player:
-    def __init__(self, board: Board) -> None:
-        self.board = board
-        self.letters = ""
-        self.draw_letters()
-        self.score = 0
-
-    def draw_letters(self) -> None:
-        """Draw letters from the bag to fill the player's hand up to 7 letters."""
-        self.letters += self.board.give_letters(self.letters)
-
-    def play_word(self, dawg: Dawg) -> str:
-        """Find and play the best word from the player's letters on the board.
-
-        This method should:
-          - Analyze the board to find valid placement patterns.
-          - Use the DAWG to find the best scoring word that can be formed with
-            the player's letters and fits one of the patterns.
-          - Place the word on the board and update the player's letters.
-        """
-        w = self.board.get_best_word(dawg, self.letters, parallel=False)
-        self.score += w[1]
-        self.board.place_word(w[0], w[2][0], w[2][1], w[2][2])
-        for ch in w[3]:
-            # `ch` is the literal letter placed on the board, but if a blank
-            # stood in for it, the rack only has '?' -- not `ch` -- so fall
-            # back to removing the blank instead. Without this, `replace()`
-            # silently no-ops on a literal it can't find, the blank never
-            # actually leaves the rack, and it gets "reused" as a fresh
-            # wildcard every subsequent turn for the rest of the game.
-            if ch in self.letters:
-                self.letters = self.letters.replace(ch, "", 1)
-            elif "?" in self.letters:
-                self.letters = self.letters.replace("?", "", 1)
-            else:
-                raise ValueError(f"Letter '{ch}' not found in player's letters.")
-
-        self.draw_letters()
-        return w[0]
 
 
 def _rusage_self_now() -> tuple[float, float]:
@@ -145,7 +104,7 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter
         if debug:
             print(line)
 
-    def play(player: Player) -> str:
+    def play(player: SimplePlayer | StrategicPlayer) -> str:
         word = player.play_word(d)
         if word:
             words_played[word] += 1
@@ -153,8 +112,8 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter
 
     b = Board()
 
-    p1 = Player(b)
-    p2 = Player(b)
+    p1 = StrategicPlayer(b)
+    p2 = SimplePlayer(b)
 
     opener = p1 if random() < 0.5 else p2
     second = p2 if opener is p1 else p1
@@ -296,7 +255,6 @@ def benchmark(N: int) -> None:
                     if p1 > best_score or p2 > best_score:
                         best_score = max(p1, p2)
                         best_transcript = transcript
-                        tqdm.write(f"New best score: {best_score} (P1: {p1}, P2: {p2})")
             except KeyboardInterrupt:
                 # Every game already delivered to results_queue was counted
                 # above; only games still mid-flight inside a worker are lost,
@@ -378,7 +336,7 @@ def benchmark(N: int) -> None:
     plt.ylabel("Frequency")
     plt.title("Distribution of Scores")
     plt.legend()
-    plt.show()
+    # plt.show()
 
 
 if __name__ == "__main__":

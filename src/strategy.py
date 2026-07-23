@@ -3,6 +3,47 @@ from collections import Counter
 from scrablozaur import Board, Dawg
 
 
+class SimplePlayer:
+    def __init__(self, board: Board) -> None:
+        self.board = board
+        self.letters = ""
+        self.draw_letters()
+        self.score = 0
+
+    def draw_letters(self) -> None:
+        """Draw letters from the bag to fill the player's hand up to 7 letters."""
+        self.letters += self.board.give_letters(self.letters)
+
+    def play_word(self, dawg: Dawg) -> str:
+        """Find and play the best word from the player's letters on the board.
+
+        This method should:
+          - Analyze the board to find valid placement patterns.
+          - Use the DAWG to find the best scoring word that can be formed with
+            the player's letters and fits one of the patterns.
+          - Place the word on the board and update the player's letters.
+        """
+        w = self.board.get_best_word(dawg, self.letters, parallel=False)
+        self.score += w[1]
+        self.board.place_word(w[0], w[2][0], w[2][1], w[2][2])
+        for ch in w[3]:
+            # `ch` is the literal letter placed on the board, but if a blank
+            # stood in for it, the rack only has '?' -- not `ch` -- so fall
+            # back to removing the blank instead. Without this, `replace()`
+            # silently no-ops on a literal it can't find, the blank never
+            # actually leaves the rack, and it gets "reused" as a fresh
+            # wildcard every subsequent turn for the rest of the game.
+            if ch in self.letters:
+                self.letters = self.letters.replace(ch, "", 1)
+            elif "?" in self.letters:
+                self.letters = self.letters.replace("?", "", 1)
+            else:
+                raise ValueError(f"Letter '{ch}' not found in player's letters.")
+
+        self.draw_letters()
+        return w[0]
+
+
 class StrategicPlayer:
     def __init__(self, board: Board) -> None:
         self.board = board
