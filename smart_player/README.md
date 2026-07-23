@@ -33,39 +33,53 @@ python smart_player/evaluate.py 2000         # SmartPlayer vs StrategicPlayer wi
 - **generate_data.py** plays `StrategicPlayer` vs `StrategicPlayer` games to
   completion (via `simulate.play_game`, which applies the standard
   end-of-game rack-value adjustment), recording every leave a player held
-  during the game labelled with that player's *final score margin*. This is
-  the same idea real leave tables are built from -- simulate lots of games,
-  correlate leave with outcome -- automated instead of hand-computed.
+  during the game. This is the same idea real leave tables are built from --
+  simulate lots of games, correlate leave with outcome -- automated
+  end-to-end instead of hand-computed.
 - **train.py** fits `model.LeaveValueNet`, a tiny MLP (~3.5k params, no
   convolution -- a leave has no spatial structure) on `(leave, unseen_tiles)
-  -> final_margin`, and saves a checkpoint with the tile alphabet embedded
-  next to the weights.
+  -> target`, and saves a checkpoint with the tile alphabet embedded next to
+  the weights.
 - **evaluate.py** plays `SmartPlayer` against the existing baselines and
   reports win rate, mirroring `src/main.py`'s `benchmark()`.
 
-## Current status
+## Credit assignment: bounded lookahead, not the whole game
 
-The committed checkpoint was trained on a 200k-game / ~4.8M-sample
-self-play dataset (~40 min to generate + train on this machine). A first
-attempt at 50k games / 1.2M samples only explained ~5.6% of the variance in
-final score margin and produced a statistically insignificant win rate --
-expected, since a single leave is one of ~15-20 decisions in a game, so its
-effect on the *final* margin is a small signal buried in a lot of noise
-from everything that happens afterward. 4x the data pushed explained
-variance to ~6.2% (val MSE ~9394 vs. ~10013 baseline variance), which was
-enough for the signal to show up in actual play:
+The first version labelled every recorded leave with that player's *final*
+score margin -- simple, but a single leave is only one of ~15-20 decisions
+in a game, so most of that label's variance comes from everything that
+happens *after* the leave, not the leave itself. A 50k-game dataset built
+that way only explained ~5.6% of final-margin variance and produced a
+win rate statistically indistinguishable from 50%; 4x the data barely
+moved that (~6.2% explained variance), because more samples just average
+down noise that was never going away -- the target itself was the problem.
 
-| Opponent | Games | SmartPlayer record | Win rate | Avg score (Smart / opp) |
-|---|---|---|---|---|
-| `StrategicPlayer` | 4000 | 2220W 1763L 17T | **55.7%** | 387.3 / 374.1 |
-| `SimplePlayer` | 3000 | 1638W 1344L 18T | **54.9%** | 387.2 / 375.4 |
+`generate_data.py` now labels each leave with an **n-step return**
+(`--lookahead`, default 4): the change in (this player's score - opponent's
+score) between the moment the leave was held and `lookahead` of that
+player's *own* turns later (or the actual final differential, for leaves
+within `lookahead` turns of the game's end). This is the standard
+Monte-Carlo/TD middle ground -- truncate the return horizon to cut
+irrelevant long-range variance, without needing full TD bootstrapping off
+the value network's own (still-training) predictions. `--lookahead 0`
+recovers the old unbounded/whole-game behavior.
 
-Both are several standard errors above the 50% no-improvement baseline
-(std error ~0.8pp at these sample sizes). More self-play data is still the
-first lever to pull for further gains; see the module docstrings for other
-tuning ideas (e.g. crediting a leave with a bounded-lookahead score delta
-instead of the full final margin, which would cut a lot of the irrelevant
-late-game variance out of the training target).
+Effect on a 200k-game / ~4.8M-sample dataset: baseline target variance
+dropped ~4.4x (10013 -> 2253) and, more importantly, the resulting
+`SmartPlayer` got meaningfully stronger, not just lower-variance:
+
+| Opponent | Games | Whole-game margin | Bounded lookahead (k=4) |
+|---|---|---|---|
+| `StrategicPlayer` | 4000 | 55.7% (387.3 / 374.1 avg) | **61.9%** (410.3 / 381.5 avg) |
+| `SimplePlayer` | 3000 | 54.9% (387.2 / 375.4 avg) | **63.4%** (410.9 / 377.1 avg) |
+
+(win rate / avg score, SmartPlayer vs. opponent; std error ~0.8pp at these
+sample sizes, so both jumps are well outside noise). The committed
+checkpoint uses `--lookahead 4`. Ideas for pushing further: tune
+`--lookahead` itself (untried outside of 4), more self-play data (still not
+saturated), or closing the self-play loop by generating the *next* round of
+training data with `SmartPlayer` instead of the fixed baseline
+`StrategicPlayer` -- true policy iteration, a bigger structural change.
 
 ## Files
 
