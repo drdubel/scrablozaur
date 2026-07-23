@@ -1,3 +1,4 @@
+import argparse
 import os
 import resource
 import sys
@@ -171,8 +172,7 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, float, int, Counter
     return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, peak_rss_mb, pid, words_played
 
 
-def benchmark() -> None:
-    N = 10000
+def benchmark(N: int) -> None:
     # Scores are heavily repeated across thousands of games, so track
     # {score: occurrences} per player instead of one entry per game -- keeps
     # memory bounded by the number of distinct scores rather than N.
@@ -272,5 +272,9 @@ def benchmark() -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Benchmark the engine by playing simulated games.")
+    parser.add_argument("games", type=int, nargs="?", default=10000, help="Number of games to play (default: 10000)")
+    args = parser.parse_args()
+
     # graj(debug=True)
-    benchmark()
+    benchmark(args.games)
