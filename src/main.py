@@ -83,11 +83,13 @@ def _render_table(headers: list[str], rows: list[list[str]], align: str | None =
     return "\n".join(lines)
 
 
-def graj(debug: bool = False) -> tuple[int, int, str, float, Counter[str]]:
+def graj(parallel: bool = False, debug: bool = False) -> tuple[int, int, str, float, Counter[str], float, int]:
     cpu_start = _rusage_self_now()
 
     log: list[str] = []
     words_played: Counter[str] = Counter()
+    move_time_total = 0.0
+    move_count = 0
 
     def emit(*parts: object) -> None:
         """Record a line to the game transcript, and print it too if debug is on."""
@@ -97,7 +99,11 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, Counter[str]]:
             print(line)
 
     def play(player: SimplePlayer | StrategicPlayer) -> str:
-        word = player.play_word(d)
+        nonlocal move_time_total, move_count
+        move_start = time.perf_counter()
+        word = player.play_word(d, parallel=parallel)
+        move_time_total += time.perf_counter() - move_start
+        move_count += 1
         if word:
             words_played[word] += 1
         return word
@@ -105,7 +111,7 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, Counter[str]]:
     b = Board()
 
     p1 = StrategicPlayer(b)
-    p2 = SimplePlayer(b)
+    p2 = StrategicPlayer(b)
 
     opener = p1 if random() < 0.5 else p2
     second = p2 if opener is p1 else p1
@@ -114,30 +120,24 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, Counter[str]]:
     emit(f"Player 1 plays: {w}")
     emit(b)
 
-    if not w:
-        # The opener's rack couldn't form any word through the centre (rare,
-        # but happens -- e.g. an all-consonant draw). Give the other player a
-        # shot at the opening instead of ending the game 0-0 before it starts.
-        opener, second = second, opener
-        w = play(opener)
-        emit("Player 1 cannot open -- Player 2 plays:", w)
-        emit(b)
-        if not w:
-            # Neither player's opening rack is playable -- genuinely stuck.
-            cpu_end = _rusage_self_now()
-            return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, words_played
-
-    while w:
+    while True:
         w = play(second)
         if w:
             emit(f"{'Player 2' if second is p2 else 'Player 1'} plays: {w}")
             emit(b)
+        elif second.last_exchanged:
+            emit(f"{'Player 1' if second is p1 else 'Player 2'} exchanged letters")
+            emit(b)
         else:
             emit(f"{'Player 2' if second is p2 else 'Player 1'} cannot play.")
+            break
 
         w = play(opener)
         if w:
             emit(f"{'Player 1' if opener is p1 else 'Player 2'} plays: {w}")
+            emit(b)
+        elif opener.last_exchanged:
+            emit(f"{'Player 1' if opener is p1 else 'Player 2'} exchanged letters")
             emit(b)
         else:
             emit(f"{'Player 1' if opener is p1 else 'Player 2'} cannot play.")
@@ -148,7 +148,7 @@ def graj(debug: bool = False) -> tuple[int, int, str, float, Counter[str]]:
     emit(b)
 
     cpu_end = _rusage_self_now()
-    return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, words_played
+    return p1.score, p2.score, "\n".join(log), cpu_end - cpu_start, words_played, move_time_total, move_count
 
 
 def _print_benchmark_results(
@@ -157,6 +157,7 @@ def _print_benchmark_results(
     wall_elapsed: float,
     cpu_total: float,
     avg_cpu_per_core: float,
+    avg_move_time_ms: float,
     wins: list[int],
     ties: int,
     win_rate_p1: str,
@@ -179,6 +180,7 @@ def _print_benchmark_results(
                 ["CPU time (total)", f"{cpu_total:.2f}s"],
                 ["CPU time (avg/core)", f"{avg_cpu_per_core:.2f}s"],
                 ["CPU utilization (avg/core)", f"{cpu_total / (wall_elapsed * n_workers) * 100:.1f}%"],
+                ["Avg time per move", f"{avg_move_time_ms:.2f} ms"],
                 ["Distinct words played", str(len(word_counts))],
                 ["Best single-player score", f"{best_score}"],
             ],
@@ -226,7 +228,7 @@ def _print_benchmark_results(
     # plt.show()
 
 
-def benchmark(N: int) -> None:
+def benchmark(N: int, n_workers: int | None = None, debug: bool = False) -> None:
     # Scores are heavily repeated across thousands of games, so track
     # {score: occurrences} per player instead of one entry per game -- keeps
     # memory bounded by the number of distinct scores rather than N.
@@ -236,25 +238,31 @@ def benchmark(N: int) -> None:
     best_score = -1
     best_transcript = ""
     cpu_total = 0.0
+    total_move_time = 0.0
+    total_moves = 0
     word_counts: Counter[str] = Counter()
     games_played = 0
 
+    parallel = True if n_workers == 1 else False
+
     wall_start = time.perf_counter()
 
-    with ProcessPoolExecutor() as executor:
-        n_workers = executor._max_workers
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        n_workers = executor._max_workers  # type: ignore
         try:
             with tqdm(total=N, desc="Games played") as pbar:
                 batch_size = n_workers * 100
                 for i in range(0, N, batch_size):
-                    futures = [executor.submit(graj, False) for _ in range(min(batch_size, N - i))]
+                    futures = [executor.submit(graj, parallel, debug) for _ in range(min(batch_size, N - i))]
 
                     for future in as_completed(futures):
-                        p1, p2, transcript, cpu_time, game_words = future.result()
+                        p1, p2, transcript, cpu_time, game_words, move_time, move_count = future.result()
                         games_played += 1
                         p1_scores[p1] += 1
                         p2_scores[p2] += 1
                         cpu_total += cpu_time
+                        total_move_time += move_time
+                        total_moves += move_count
                         pbar.update(1)
 
                         word_counts.update(game_words)
@@ -283,6 +291,7 @@ def benchmark(N: int) -> None:
 
     wall_elapsed = time.perf_counter() - wall_start
     avg_cpu_per_core = cpu_total / n_workers
+    avg_move_time_ms = total_move_time / total_moves * 1000
 
     ties = games_played - wins[0] - wins[1]
     decisive_games = games_played - ties
@@ -295,6 +304,7 @@ def benchmark(N: int) -> None:
         wall_elapsed=wall_elapsed,
         cpu_total=cpu_total,
         avg_cpu_per_core=avg_cpu_per_core,
+        avg_move_time_ms=avg_move_time_ms,
         wins=wins,
         ties=ties,
         win_rate_p1=win_rate_p1,
@@ -310,7 +320,14 @@ def benchmark(N: int) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark the engine by playing simulated games.")
     parser.add_argument("games", type=int, nargs="?", default=10000, help="Number of games to play (default: 10000)")
+    parser.add_argument(
+        "workers",
+        type=int,
+        nargs="?",
+        default=None,
+        help="Number of worker processes to use (default: all available cores)",
+    )
+    parser.add_argument("--debug", action="store_true", help="Print detailed game logs for debugging purposes")
     args = parser.parse_args()
 
-    # graj(debug=True)
-    benchmark(args.games)
+    benchmark(args.games, args.workers, args.debug)

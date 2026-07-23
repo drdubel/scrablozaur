@@ -155,8 +155,7 @@ class Board:
         This method returns a new string of letters representing the player's hand after the exchange.
         """
 
-    @staticmethod
-    def can_exchange(bag_remaining: int) -> bool:
+    def can_exchange(self) -> bool:
         """Whether exchanging tiles for new ones is currently allowed.
 
         Standard Scrabble rule: exchanging is only permitted while at least 7
