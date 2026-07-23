@@ -245,7 +245,7 @@ def benchmark(N: int) -> None:
         n_workers = executor._max_workers
         try:
             with tqdm(total=N, desc="Games played") as pbar:
-                batch_size = n_workers * 4
+                batch_size = n_workers * 100
                 for i in range(0, N, batch_size):
                     futures = [executor.submit(graj, False) for _ in range(min(batch_size, N - i))]
 
