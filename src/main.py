@@ -237,7 +237,7 @@ def benchmark(N: int) -> None:
                 if p1 > best_score or p2 > best_score:
                     best_score = max(p1, p2)
                     best_transcript = transcript
-                    print(f"New best score: {best_score} (P1: {p1}, P2: {p2})")
+                    tqdm.write(f"New best score: {best_score} (P1: {p1}, P2: {p2})")
         except KeyboardInterrupt:
             # Drop not-yet-started games so shutdown doesn't run through the
             # rest of the queue; already-running games are left to finish.
