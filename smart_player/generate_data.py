@@ -34,34 +34,53 @@ from scrablozaur import Board, Dawg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import StrategicPlayer  # noqa: E402
 
+from board_features import encode_board  # noqa: E402
 from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
 from player import SmartPlayer  # noqa: E402
 from simulate import play_game  # noqa: E402
 
 _dawg = Dawg(os.path.join(os.path.dirname(__file__), "..", "words", "dawg.bin"))
 
+# (leave, unseen_tiles, board_features, score - opponent.score at that moment).
+_LogEntry = tuple[str, int, tuple[float, ...], int]
+
 
 class _RecordingMixin:
     """Instruments any StrategicPlayer subclass to capture the leave -- the
     rack right after removing a move's tiles but before refilling from the
     bag, which is exactly when a leave's value is realized -- every time it
-    actually plays a word, along with the score differential at that moment
-    (needed to compute an n-step return afterwards). `opponent` is wired up
-    by `_play_one_game` once both players exist."""
+    actually plays a word, along with the board state and the score
+    differential at that moment (needed to compute an n-step return
+    afterwards). `opponent` is wired up by `_play_one_game` once both
+    players exist.
+
+    Board features are captured from get_best_word() -- i.e. the board
+    *before* this move is placed -- not from draw_letters() where self.board
+    already reflects the move. That matters: SmartPlayer.evaluate_word (see
+    player.py) ranks candidates using the pre-move board, since the real
+    board is identical across all candidates in one decision and only their
+    hypothetical placements differ. Recording post-move board state here
+    would train on a systematically different (more-filled) distribution
+    than what inference ever sees, so this mirrors SmartPlayer's own
+    caching independently rather than relying on it (StrategicPlayer, the
+    default self-play baseline, has no such caching of its own)."""
 
     opponent: "_RecordingMixin"
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         self._dealt = False
         super().__init__(*args, **kwargs)  # type: ignore[call-arg]
-        # (leave, unseen_tiles, score - opponent.score at that moment).
-        self.leave_log: list[tuple[str, int, int]] = []
+        self.leave_log: list[_LogEntry] = []
+
+    def get_best_word(self, dawg: Dawg, parallel: bool) -> tuple[str, int, tuple[int, int, bool], list[str]]:
+        self._pre_move_board_features = encode_board(self.board)  # type: ignore[attr-defined]
+        return super().get_best_word(dawg, parallel)  # type: ignore[misc]
 
     def draw_letters(self) -> None:
         if self._dealt:
             diff = self.score - self.opponent.score  # type: ignore[attr-defined]
             unseen = len(self.get_letters_left())  # type: ignore[attr-defined]
-            self.leave_log.append((self.letters, unseen, diff))  # type: ignore[attr-defined]
+            self.leave_log.append((self.letters, unseen, self._pre_move_board_features, diff))  # type: ignore[attr-defined]
         super().draw_letters()  # type: ignore[misc]
         self._dealt = True
 
@@ -77,28 +96,31 @@ class _RecordingSmart(_RecordingMixin, SmartPlayer):
 _PLAYER_CLASSES = {"strategic": _RecordingStrategic, "smart": _RecordingSmart}
 
 
-def _n_step_returns(log: list[tuple[str, int, int]], final_diff: int, lookahead: int) -> list[tuple[str, int, int]]:
-    """Turn a player's chronological leave_log into (leave, unseen, target)
-    samples, where target is the change in score differential between each
-    leave and `lookahead` of that player's own turns later -- or the game's
-    actual final differential, for leaves within `lookahead` turns of the
-    end (there's nothing further to look ahead to). `lookahead <= 0` means
-    unbounded: every leave is credited with the final differential, exactly
-    like the original whole-game-margin approach."""
+# (leave, unseen_tiles, board_features, target).
+_Sample = tuple[str, int, tuple[float, ...], int]
+
+
+def _n_step_returns(log: list[_LogEntry], final_diff: int, lookahead: int) -> list[_Sample]:
+    """Turn a player's chronological leave_log into (leave, unseen,
+    board_features, target) samples, where target is the change in score
+    differential between each leave and `lookahead` of that player's own
+    turns later -- or the game's actual final differential, for leaves
+    within `lookahead` turns of the end (there's nothing further to look
+    ahead to). `lookahead <= 0` means unbounded: every leave is credited
+    with the final differential, exactly like the original whole-game-
+    margin approach."""
     n = len(log)
     samples = []
-    for i, (leave, unseen, diff_now) in enumerate(log):
+    for i, (leave, unseen, board_features, diff_now) in enumerate(log):
         j = i + lookahead
-        diff_future = log[j][2] if 0 < lookahead and j < n else final_diff
-        samples.append((leave, unseen, diff_future - diff_now))
+        diff_future = log[j][3] if 0 < lookahead and j < n else final_diff
+        samples.append((leave, unseen, board_features, diff_future - diff_now))
     return samples
 
 
-def _play_one_game(
-    parallel: bool, lookahead: int, player: str, model_path: str
-) -> tuple[list[tuple[str, int, int]], list[tuple[str, int, int]]]:
+def _play_one_game(parallel: bool, lookahead: int, player: str, model_path: str) -> tuple[list[_Sample], list[_Sample]]:
     """Play one self-play game to completion and return each player's
-    (leave, unseen_tiles, n_step_return) samples."""
+    (leave, unseen_tiles, board_features, n_step_return) samples."""
     board = Board()
     cls = _PLAYER_CLASSES[player]
     p1 = cls(board, model_path) if player == "smart" else cls(board)
@@ -123,6 +145,7 @@ def generate(
 ) -> None:
     all_leaves: list[str] = []
     all_unseen: list[int] = []
+    all_board_features: list[tuple[float, ...]] = []
     all_targets: list[int] = []
 
     # Mirrors src/main.py's benchmark(): only let the Rust side parallelize
@@ -142,9 +165,10 @@ def generate(
                 ]
                 for future in as_completed(futures):
                     for samples in future.result():
-                        for leave, unseen, target in samples:
+                        for leave, unseen, board_features, target in samples:
                             all_leaves.append(leave)
                             all_unseen.append(unseen)
+                            all_board_features.append(board_features)
                             all_targets.append(target)
                     pbar.update(1)
 
@@ -153,11 +177,17 @@ def generate(
         print(f"{n_games} games -> {len(all_leaves)} samples in {elapsed:.1f}s")
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    board_arr = np.array(all_board_features, dtype=np.float32)
     np.savez(
         out_path,
         leaves=np.array(all_leaves),
         unseen=np.array(all_unseen, dtype=np.int32),
         margins=np.array(all_targets, dtype=np.int32),
+        tw_open=board_arr[:, 0],
+        dw_open=board_arr[:, 1],
+        tl_open=board_arr[:, 2],
+        dl_open=board_arr[:, 3],
+        board_fill=board_arr[:, 4],
     )
     if not quiet:
         print(f"Saved to {out_path}")

@@ -14,6 +14,7 @@ from scrablozaur import Board, Dawg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import StrategicPlayer  # noqa: E402
 
+from board_features import encode_board  # noqa: E402
 from model import DEFAULT_WEIGHTS_PATH, encode_leave, get_model  # noqa: E402
 
 
@@ -41,11 +42,21 @@ class SmartPlayer(StrategicPlayer):
         super().__init__(board)
         self.model_path = model_path
 
+    def get_best_word(self, dawg: Dawg, parallel: bool) -> tuple[str, int, tuple[int, int, bool], list[str]]:
+        # The real board/rack don't change across the ~50 candidates being
+        # compared in one decision -- only each candidate's hypothetical
+        # placement does. Computing board features (and unseen-tile count)
+        # once per turn here, instead of once per evaluate_word() call,
+        # avoids redundantly recomputing the same value up to 50x per move.
+        self._board_features = encode_board(self.board)
+        self._unseen_tiles = len(self.get_letters_left())
+        return super().get_best_word(dawg, parallel)
+
     def evaluate_word(
         self, dawg: Dawg, word: str, points: int, position: tuple[int, int, bool], used: list[str]
     ) -> int:
         leave = remove_used(self.letters, used)
-        unseen = len(self.get_letters_left())
         with torch.inference_mode():
-            leave_value = get_model(self.model_path)(encode_leave(leave, unseen).unsqueeze(0)).item()
+            x = encode_leave(leave, self._unseen_tiles, self._board_features)
+            leave_value = get_model(self.model_path)(x.unsqueeze(0)).item()
         return points + round(leave_value)

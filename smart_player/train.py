@@ -3,8 +3,9 @@
     python smart_player/generate_data.py 20000
     python smart_player/train.py
 
-The checkpoint stores the tile alphabet next to the weights, so
-model.get_model() can never load it against a mismatched encoding.
+The checkpoint stores the tile alphabet and input feature width next to the
+weights, so model.get_model() can never load it against a mismatched
+encoding.
 
 Uses CUDA/MPS automatically when available. The whole dataset is encoded
 and kept resident on-device as plain tensors rather than going through
@@ -24,7 +25,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from model import ALPHABET, LeaveValueNet, encode_leaves
+from model import ALPHABET, INPUT_DIM, LeaveValueNet, encode_leaves
 
 
 def _pick_device() -> str:
@@ -52,7 +53,8 @@ def train(
     device = device or _pick_device()
 
     raw = np.load(data_path)
-    X = encode_leaves(raw["leaves"], raw["unseen"]).to(device)
+    board_features = np.stack([raw["tw_open"], raw["dw_open"], raw["tl_open"], raw["dl_open"], raw["board_fill"]], axis=1)
+    X = encode_leaves(raw["leaves"], raw["unseen"], board_features).to(device)
     y = torch.from_numpy(raw["margins"].astype(np.float32)).to(device)
     n = len(X)
     if not quiet:
@@ -106,7 +108,14 @@ def train(
             best_val = val_mse
             state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
             torch.save(
-                {"state_dict": state_dict, "alphabet": ALPHABET, "hidden1": hidden1, "hidden2": hidden2}, out_path
+                {
+                    "state_dict": state_dict,
+                    "alphabet": ALPHABET,
+                    "hidden1": hidden1,
+                    "hidden2": hidden2,
+                    "input_dim": INPUT_DIM,
+                },
+                out_path,
             )
     if not quiet:
         print(f"best val mse {best_val:.3f} -> {out_path}")

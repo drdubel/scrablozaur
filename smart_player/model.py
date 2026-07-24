@@ -20,38 +20,47 @@ from scrablozaur import Board
 # own tile distribution rather than hardcoded, so it can never drift from it.
 ALPHABET = sorted(set(Board.fresh_tile_bag()))
 _INDEX = {ch: i for i, ch in enumerate(ALPHABET)}
-# + 1 scalar feature for game phase (see encode_leave).
-INPUT_DIM = len(ALPHABET) + 1
+# + 1 scalar for game phase (unseen tiles) + 5 board-context scalars from
+# board_features.encode_board (tw/dw/tl/dl open fraction, board fill).
+N_BOARD_FEATURES = 5
+INPUT_DIM = len(ALPHABET) + 1 + N_BOARD_FEATURES
 
 _WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "models", "leave_value.pt")
 
 
-def encode_leave(leave: str, unseen_tiles: int) -> torch.Tensor:
-    """Feature vector for a rack leave: one count per tile type, plus a
-    scalar for how many tiles are still unseen (not on the board or in this
-    player's hand -- i.e. in the bag or the opponent's rack). A leave's
-    value depends on game phase: tiles you'll happily draw past early on
-    can become a liability once few unseen tiles remain to fix them.
+def encode_leave(leave: str, unseen_tiles: int, board_features: tuple[float, ...]) -> torch.Tensor:
+    """Feature vector for a rack leave: one count per tile type, a scalar
+    for how many tiles are still unseen (not on the board or in this
+    player's hand -- i.e. in the bag or the opponent's rack), and the 5
+    board-context scalars from board_features.encode_board(). A leave's
+    value depends on both game phase (tiles you'll happily draw past early
+    on can become a liability once few unseen tiles remain to fix them)
+    and board context (e.g. a leftover S is worth more when bingo-enabling
+    premium squares are still open) that the leave alone can't express.
     """
     x = torch.zeros(INPUT_DIM)
     for ch in leave:
         x[_INDEX[ch]] += 1.0
-    x[-1] = unseen_tiles / 100.0
+    x[len(ALPHABET)] = unseen_tiles / 100.0
+    x[len(ALPHABET) + 1 :] = torch.tensor(board_features)
     return x
 
 
-def encode_leaves(leaves: np.ndarray, unseen_tiles: np.ndarray) -> torch.Tensor:
+def encode_leaves(leaves: np.ndarray, unseen_tiles: np.ndarray, board_features: np.ndarray) -> torch.Tensor:
     """Vectorized batch equivalent of calling encode_leave() once per
-    sample -- same feature semantics, see its docstring. Building the
-    whole (N, INPUT_DIM) matrix via one numpy pass per letter
-    (len(ALPHABET) of them) instead of a Python loop per sample turns
-    dataset construction from O(N) individual tensor mutations into
-    O(len(ALPHABET)) vectorized calls -- the difference that matters once
-    N is in the tens of millions (see train.py)."""
+    sample -- same feature semantics, see its docstring. `board_features`
+    is an (N, 5) array (already plain floats -- see generate_data.py's
+    npz columns -- so no per-sample Python loop is needed here, unlike the
+    letter counts). Building the whole (N, INPUT_DIM) matrix via one numpy
+    pass per letter (len(ALPHABET) of them) instead of a Python loop per
+    sample turns dataset construction from O(N) individual tensor
+    mutations into O(len(ALPHABET)) vectorized calls -- the difference
+    that matters once N is in the tens of millions (see train.py)."""
     x = np.zeros((len(leaves), INPUT_DIM), dtype=np.float32)
     for j, ch in enumerate(ALPHABET):
         x[:, j] = np.char.count(leaves, ch)
-    x[:, -1] = np.asarray(unseen_tiles, dtype=np.float32) / 100.0
+    x[:, len(ALPHABET)] = np.asarray(unseen_tiles, dtype=np.float32) / 100.0
+    x[:, len(ALPHABET) + 1 :] = np.asarray(board_features, dtype=np.float32)
     return torch.from_numpy(x)
 
 
@@ -103,6 +112,15 @@ def get_model(path: str = DEFAULT_WEIGHTS_PATH) -> LeaveValueNet:
         ckpt = torch.load(path, map_location="cpu", weights_only=True)
         if ckpt["alphabet"] != ALPHABET:
             raise ValueError(f"{path} was trained against a different tile alphabet")
+        # Older checkpoints (34-dim, no board features) predate this key --
+        # assume their own dim so they still load, rather than mask a real
+        # mismatch against today's INPUT_DIM with a silent default.
+        ckpt_input_dim = ckpt.get("input_dim", len(ALPHABET) + 1)
+        if ckpt_input_dim != INPUT_DIM:
+            raise ValueError(
+                f"{path} was trained with input_dim={ckpt_input_dim}, but the current feature set is "
+                f"INPUT_DIM={INPUT_DIM} -- regenerate the dataset and retrain against the current encoding."
+            )
         model = LeaveValueNet(ckpt.get("hidden1", _LEGACY_HIDDEN1), ckpt.get("hidden2", _LEGACY_HIDDEN2))
         model.load_state_dict(ckpt["state_dict"])
         model.eval()
