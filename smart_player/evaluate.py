@@ -78,21 +78,26 @@ def run(
     label = "candidate vs champion" if candidate_path else f"SmartPlayer vs {opponent}"
     wall_start = time.perf_counter()
 
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        if candidate_path:
-            futures = [executor.submit(_play_candidate, model_path, candidate_path) for _ in range(n_games)]
-        else:
-            futures = [executor.submit(_play_vs_baseline, opponent, model_path) for _ in range(n_games)]
-        for future in tqdm(as_completed(futures), total=n_games, desc=label, disable=quiet):
-            s, o = future.result()
-            self_total += s
-            opp_total += o
-            if s > o:
-                wins += 1
-            elif o > s:
-                losses += 1
+    try:
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            if candidate_path:
+                futures = [executor.submit(_play_candidate, model_path, candidate_path) for _ in range(n_games)]
             else:
-                ties += 1
+                futures = [executor.submit(_play_vs_baseline, opponent, model_path) for _ in range(n_games)]
+            for future in tqdm(as_completed(futures), total=n_games, desc=label, disable=quiet):
+                s, o = future.result()
+                self_total += s
+                opp_total += o
+                if s > o:
+                    wins += 1
+                elif o > s:
+                    losses += 1
+                else:
+                    ties += 1
+    except KeyboardInterrupt:
+        print("\nKeyboardInterrupt received, stopping early...")
+        for future in futures:
+            future.cancel()
 
     elapsed = time.perf_counter() - wall_start
     decisive = wins + losses
