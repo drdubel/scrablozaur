@@ -10,6 +10,7 @@ This model instead scores the rack a candidate would actually leave behind.
 
 import os
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -37,6 +38,21 @@ def encode_leave(leave: str, unseen_tiles: int) -> torch.Tensor:
         x[_INDEX[ch]] += 1.0
     x[-1] = unseen_tiles / 100.0
     return x
+
+
+def encode_leaves(leaves: np.ndarray, unseen_tiles: np.ndarray) -> torch.Tensor:
+    """Vectorized batch equivalent of calling encode_leave() once per
+    sample -- same feature semantics, see its docstring. Building the
+    whole (N, INPUT_DIM) matrix via one numpy pass per letter
+    (len(ALPHABET) of them) instead of a Python loop per sample turns
+    dataset construction from O(N) individual tensor mutations into
+    O(len(ALPHABET)) vectorized calls -- the difference that matters once
+    N is in the tens of millions (see train.py)."""
+    x = np.zeros((len(leaves), INPUT_DIM), dtype=np.float32)
+    for j, ch in enumerate(ALPHABET):
+        x[:, j] = np.char.count(leaves, ch)
+    x[:, -1] = np.asarray(unseen_tiles, dtype=np.float32) / 100.0
+    return torch.from_numpy(x)
 
 
 class LeaveValueNet(nn.Module):

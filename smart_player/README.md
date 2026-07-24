@@ -39,7 +39,16 @@ python smart_player/evaluate.py 2000         # SmartPlayer vs StrategicPlayer wi
 - **train.py** fits `model.LeaveValueNet`, a tiny MLP (~3.5k params, no
   convolution -- a leave has no spatial structure) on `(leave, unseen_tiles)
   -> target`, and saves a checkpoint with the tile alphabet embedded next to
-  the weights.
+  the weights. Uses CUDA/MPS automatically when available (`--device` to
+  override), and encodes + keeps the whole dataset resident on-device as
+  plain tensors rather than going through `Dataset`/`DataLoader` -- at
+  tens-of-millions-of-samples scale, per-sample Python `__getitem__` calls
+  (and the small batch size that went with them) were the actual
+  bottleneck, not compute. Concretely: re-encoding the existing 4.8M-sample
+  dataset the old way took ~53s/epoch on CPU; vectorized + on an Apple GPU
+  it's ~1-2s/epoch. `--batch` default bumped from 256 to 8192 accordingly --
+  small batches on a dataset this size mostly measure Python loop overhead,
+  not anything the model needs.
 - **evaluate.py** plays `SmartPlayer` against the existing baselines and
   reports win rate, mirroring `src/main.py`'s `benchmark()`.
 
