@@ -75,20 +75,54 @@ dropped ~4.4x (10013 -> 2253) and, more importantly, the resulting
 
 (win rate / avg score, SmartPlayer vs. opponent; std error ~0.8pp at these
 sample sizes, so both jumps are well outside noise). The committed
-checkpoint uses `--lookahead 4`. Ideas for pushing further: tune
-`--lookahead` itself (untried outside of 4), more self-play data (still not
-saturated), or closing the self-play loop by generating the *next* round of
-training data with `SmartPlayer` instead of the fixed baseline
-`StrategicPlayer` -- true policy iteration, a bigger structural change.
+checkpoint uses `--lookahead 4`.
+
+## Policy iteration (`iterate.py`)
+
+The natural next step after a static regression: close the self-play loop
+so each round's training data comes from the *current best* `SmartPlayer`
+instead of the fixed `StrategicPlayer` baseline, the same generate ->
+improve -> generate-with-the-improved-version loop AlphaZero/TD-Gammon-style
+self-play RL uses. `generate_data.py --player smart --model-path PATH`
+does the self-play half of this (`--player strategic`, the default,
+unchanged); `iterate.py` wraps the full loop with champion/challenger
+gating so a bad round can't silently regress the deployed checkpoint:
+
+```
+python smart_player/iterate.py --rounds 5 --games 60000
+```
+
+Each round: generate `--games` self-play games with the current champion,
+train a candidate on them, play candidate vs. champion over `--eval-games`
+games, and promote (overwrite the champion checkpoint) only if the
+candidate's win rate clears `--promote-threshold` (default 0.52). Each
+round's scratch dataset is deleted after training; only metrics and, if
+promoted, the checkpoint persist.
+
+**Result of a 5-round / 60k-games-per-round run: 0/5 promoted**, every
+candidate landing in a 48.8%-50.8% band against the champion -- a
+statistical tie, not an improvement or a regression. The likely reason:
+each round trains a *fresh* `LeaveValueNet` from random init rather than
+fine-tuning the champion's weights, so with nothing carried over between
+rounds, a round is really "retrain an equally-powerful model on
+similarly-distributed data" -- expected to land near a tie rather than
+compound, especially since `SmartPlayer`'s choices only diverge from
+`StrategicPlayer`'s on candidates that were already close to tied in raw
+score, so self-play under either doesn't visit dramatically different
+positions. Untried fixes that would more plausibly produce real compounding
+gains: warm-starting each round from the champion's weights (so training
+actually refines rather than re-rolls), or a bigger lever entirely (richer
+features, `--lookahead` sweep, a bigger dataset per round).
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `model.py` | `LeaveValueNet`, rack encoding, checkpoint loading |
+| `model.py` | `LeaveValueNet`, rack encoding, multi-checkpoint-aware loading |
 | `simulate.py` | Shared self-play game loop + end-of-game scoring |
 | `player.py` | `SmartPlayer` (StrategicPlayer + learned leave evaluator) |
-| `generate_data.py` | Self-play data generation CLI |
-| `train.py` | Training CLI |
-| `evaluate.py` | Win-rate benchmark CLI |
+| `generate_data.py` | Self-play data generation CLI (StrategicPlayer or SmartPlayer) |
+| `train.py` | Training CLI (also importable as `train()`) |
+| `evaluate.py` | Win-rate benchmark CLI: vs. baselines, or candidate vs. champion |
+| `iterate.py` | Policy-iteration orchestrator (generate -> train -> gate -> promote) |
 | `models/leave_value.pt` | Trained checkpoint (committed, like `board_reader`'s CNN weights) |

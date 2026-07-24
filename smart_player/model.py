@@ -57,18 +57,22 @@ class LeaveValueNet(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-_model: LeaveValueNet | None = None
+DEFAULT_WEIGHTS_PATH = _WEIGHTS_PATH
+
+_models: dict[str, LeaveValueNet] = {}
 
 
-def get_model() -> LeaveValueNet:
-    """Lazily load the trained checkpoint once per process."""
-    global _model
-    if _model is None:
-        ckpt = torch.load(_WEIGHTS_PATH, map_location="cpu", weights_only=True)
+def get_model(path: str = DEFAULT_WEIGHTS_PATH) -> LeaveValueNet:
+    """Lazily load a checkpoint once per (process, path) -- keyed by path
+    rather than a single global slot so a champion and a candidate
+    checkpoint can be loaded side by side (see player.py, evaluate.py's
+    --candidate mode, and iterate.py)."""
+    if path not in _models:
+        ckpt = torch.load(path, map_location="cpu", weights_only=True)
         if ckpt["alphabet"] != ALPHABET:
-            raise ValueError("leave_value.pt was trained against a different tile alphabet")
+            raise ValueError(f"{path} was trained against a different tile alphabet")
         model = LeaveValueNet()
         model.load_state_dict(ckpt["state_dict"])
         model.eval()
-        _model = model
-    return _model
+        _models[path] = model
+    return _models[path]

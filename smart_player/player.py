@@ -9,12 +9,12 @@ import sys
 
 import torch
 
-from scrablozaur import Dawg
+from scrablozaur import Board, Dawg
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import StrategicPlayer  # noqa: E402
 
-from model import encode_leave, get_model  # noqa: E402
+from model import DEFAULT_WEIGHTS_PATH, encode_leave, get_model  # noqa: E402
 
 
 def remove_used(letters: str, used: list[str]) -> str:
@@ -32,7 +32,14 @@ def remove_used(letters: str, used: list[str]) -> str:
 
 
 class SmartPlayer(StrategicPlayer):
-    """StrategicPlayer with a learned leave evaluator."""
+    """StrategicPlayer with a learned leave evaluator. `model_path` defaults
+    to the current champion checkpoint; pass an explicit path to play a
+    specific candidate/older checkpoint instead (used by evaluate.py's
+    --candidate mode and iterate.py to pit checkpoints against each other)."""
+
+    def __init__(self, board: Board, model_path: str = DEFAULT_WEIGHTS_PATH) -> None:
+        super().__init__(board)
+        self.model_path = model_path
 
     def evaluate_word(
         self, dawg: Dawg, word: str, points: int, position: tuple[int, int, bool], used: list[str]
@@ -40,5 +47,5 @@ class SmartPlayer(StrategicPlayer):
         leave = remove_used(self.letters, used)
         unseen = len(self.get_letters_left())
         with torch.inference_mode():
-            leave_value = get_model()(encode_leave(leave, unseen).unsqueeze(0)).item()
+            leave_value = get_model(self.model_path)(encode_leave(leave, unseen).unsqueeze(0)).item()
         return points + round(leave_value)
