@@ -14,9 +14,38 @@ class SimplePlayer:
         self.score = 0
         self.last_exchanged = False
 
+    def exchange_letters(self, letters_to_exchange: str) -> None:
+        """Exchange letters from the player's hand with new letters from the bag."""
+        self.letters = self.board.exchange_letters(self.letters, letters_to_exchange)
+
     def draw_letters(self) -> None:
         """Draw letters from the bag to fill the player's hand up to 7 letters."""
         self.letters += self.board.give_letters(self.letters)
+
+    def get_letter_balance(self) -> tuple[list[str], list[str]]:
+        """Return the count of vowels and consonants in the player's letters."""
+        vowels = [ch for ch in self.letters if ch in VOWELS]
+        consonants = [ch for ch in self.letters if ch in CONSONANTS]
+
+        return vowels, consonants
+
+    def get_letters_to_exchange(self) -> str:
+        """Determine which letters to exchange based on the current hand and letter balance."""
+        vowels, consonants = self.get_letter_balance()
+        vowels = sorted(vowels, key=lambda ch: self.board.letter_points(ch))
+        consonants = sorted(consonants, key=lambda ch: self.board.letter_points(ch))
+        letters_to_exchange = ""
+
+        if len(vowels) < 3:
+            letters_to_exchange += "".join(consonants[:3])
+        elif len(consonants) < 3:
+            letters_to_exchange += "".join(vowels[:3])
+        else:
+            min_vowel = 1
+            min_consonant = 2
+            letters_to_exchange += "".join(vowels[::-1][min_vowel:]) + "".join(consonants[::-1][min_consonant:])
+
+        return letters_to_exchange
 
     def play_word(self, dawg: Dawg, parallel: bool = False) -> str:
         """Find and play the best word from the player's letters on the board.
@@ -28,6 +57,11 @@ class SimplePlayer:
           - Place the word on the board and update the player's letters.
         """
         word, points, position, used = self.board.get_best_word(dawg, self.letters, parallel)
+        if not word and self.board.can_exchange():
+            self.exchange_letters(self.get_letters_to_exchange())
+            self.last_exchanged = True
+            return ""
+
         self.score += points
         self.board.place_word(word, position[0], position[1], position[2])
         for ch in used:
