@@ -43,6 +43,8 @@ def iterate(
     eval_games: int = 3000,
     promote_threshold: float = 0.52,
     epochs: int = 30,
+    hidden1: int = 128,
+    hidden2: int = 64,
     n_workers: int | None = None,
 ) -> None:
     champion_path = DEFAULT_WEIGHTS_PATH
@@ -66,7 +68,9 @@ def iterate(
         )
 
         print(f"[{r}] training candidate...")
-        val_mse = train_model(dataset_path, candidate_path, epochs=epochs, quiet=True)
+        val_mse = train_model(
+            dataset_path, candidate_path, epochs=epochs, hidden1=hidden1, hidden2=hidden2, quiet=True
+        )
         os.remove(dataset_path)
 
         print(f"[{r}] evaluating candidate vs champion over {eval_games} games...")
@@ -115,6 +119,8 @@ if __name__ == "__main__":
         help="Minimum candidate win rate to replace the champion (default: 0.52)",
     )
     ap.add_argument("--epochs", type=int, default=30)
+    ap.add_argument("--hidden1", type=int, default=128)
+    ap.add_argument("--hidden2", type=int, default=64)
     ap.add_argument("--workers", type=int, default=None)
     args = ap.parse_args()
 
@@ -125,5 +131,7 @@ if __name__ == "__main__":
         args.eval_games,
         args.promote_threshold,
         args.epochs,
+        args.hidden1,
+        args.hidden2,
         args.workers,
     )

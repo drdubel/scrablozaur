@@ -55,18 +55,31 @@ def encode_leaves(leaves: np.ndarray, unseen_tiles: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(x)
 
 
-class LeaveValueNet(nn.Module):
-    """Tiny MLP (~3.5k params). No convolution: a leave is an unordered
-    multiset of tiles, with no spatial structure to exploit."""
+# Defaults for checkpoints saved before hidden sizes were stored alongside
+# the weights -- i.e. the original architecture, so old checkpoints
+# (missing these keys) still load with the exact shape they were trained
+# at. train.py's own CLI defaults are larger (see there): with datasets now
+# in the tens of millions of samples, this size was chosen back when
+# training was CPU-bound and slow, not because it's the right capacity for
+# the data available.
+_LEGACY_HIDDEN1 = 64
+_LEGACY_HIDDEN2 = 32
 
-    def __init__(self) -> None:
+
+class LeaveValueNet(nn.Module):
+    """MLP over rack-leave features. No convolution: a leave is an
+    unordered multiset of tiles, with no spatial structure to exploit."""
+
+    def __init__(self, hidden1: int = _LEGACY_HIDDEN1, hidden2: int = _LEGACY_HIDDEN2) -> None:
         super().__init__()
+        self.hidden1 = hidden1
+        self.hidden2 = hidden2
         self.net = nn.Sequential(
-            nn.Linear(INPUT_DIM, 64),
+            nn.Linear(INPUT_DIM, hidden1),
             nn.ReLU(inplace=True),
-            nn.Linear(64, 32),
+            nn.Linear(hidden1, hidden2),
             nn.ReLU(inplace=True),
-            nn.Linear(32, 1),
+            nn.Linear(hidden2, 1),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -82,12 +95,15 @@ def get_model(path: str = DEFAULT_WEIGHTS_PATH) -> LeaveValueNet:
     """Lazily load a checkpoint once per (process, path) -- keyed by path
     rather than a single global slot so a champion and a candidate
     checkpoint can be loaded side by side (see player.py, evaluate.py's
-    --candidate mode, and iterate.py)."""
+    --candidate mode, and iterate.py). Reconstructs whatever hidden layer
+    sizes the checkpoint was actually trained with (train.py saves them),
+    falling back to the original architecture for older checkpoints that
+    predate that (see _LEGACY_HIDDEN1/2 above)."""
     if path not in _models:
         ckpt = torch.load(path, map_location="cpu", weights_only=True)
         if ckpt["alphabet"] != ALPHABET:
             raise ValueError(f"{path} was trained against a different tile alphabet")
-        model = LeaveValueNet()
+        model = LeaveValueNet(ckpt.get("hidden1", _LEGACY_HIDDEN1), ckpt.get("hidden2", _LEGACY_HIDDEN2))
         model.load_state_dict(ckpt["state_dict"])
         model.eval()
         _models[path] = model

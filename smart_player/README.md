@@ -36,19 +36,26 @@ python smart_player/evaluate.py 2000         # SmartPlayer vs StrategicPlayer wi
   during the game. This is the same idea real leave tables are built from --
   simulate lots of games, correlate leave with outcome -- automated
   end-to-end instead of hand-computed.
-- **train.py** fits `model.LeaveValueNet`, a tiny MLP (~3.5k params, no
-  convolution -- a leave has no spatial structure) on `(leave, unseen_tiles)
-  -> target`, and saves a checkpoint with the tile alphabet embedded next to
-  the weights. Uses CUDA/MPS automatically when available (`--device` to
-  override), and encodes + keeps the whole dataset resident on-device as
-  plain tensors rather than going through `Dataset`/`DataLoader` -- at
-  tens-of-millions-of-samples scale, per-sample Python `__getitem__` calls
-  (and the small batch size that went with them) were the actual
-  bottleneck, not compute. Concretely: re-encoding the existing 4.8M-sample
-  dataset the old way took ~53s/epoch on CPU; vectorized + on an Apple GPU
-  it's ~1-2s/epoch. `--batch` default bumped from 256 to 8192 accordingly --
-  small batches on a dataset this size mostly measure Python loop overhead,
-  not anything the model needs.
+- **train.py** fits `model.LeaveValueNet`, an MLP (no convolution -- a leave
+  has no spatial structure) on `(leave, unseen_tiles) -> target`, and saves
+  a checkpoint with the tile alphabet and hidden layer sizes embedded next
+  to the weights (`model.get_model()` reconstructs whatever architecture a
+  checkpoint actually was trained with, falling back to the original 64/32
+  for older checkpoints that predate storing this). Uses CUDA/MPS
+  automatically when available (`--device` to override), and encodes +
+  keeps the whole dataset resident on-device as plain tensors rather than
+  going through `Dataset`/`DataLoader` -- at tens-of-millions-of-samples
+  scale, per-sample Python `__getitem__` calls (and the small batch size
+  that went with them) were the actual bottleneck, not compute. Concretely:
+  re-encoding the existing 4.8M-sample dataset the old way took ~53s/epoch
+  on CPU; vectorized + on an Apple GPU it's ~1-2s/epoch, and a report from a
+  47.9M-sample dataset on an RTX 4090 (after the same fix) went from
+  ~1190s/epoch to ~2s/epoch. `--batch` default bumped from 256 to 8192
+  accordingly -- small batches on a dataset this size mostly measure Python
+  loop overhead, not anything the model needs. `--hidden1`/`--hidden2`
+  (default 128/64, up from the original 64/32) size the two hidden layers --
+  now that training is ~free, there's no reason to stay at a size picked
+  back when every epoch was expensive.
 - **evaluate.py** plays `SmartPlayer` against the existing baselines and
   reports win rate, mirroring `src/main.py`'s `benchmark()`.
 
@@ -83,8 +90,30 @@ dropped ~4.4x (10013 -> 2253) and, more importantly, the resulting
 | `SimplePlayer` | 3000 | 54.9% (387.2 / 375.4 avg) | **63.4%** (410.9 / 377.1 avg) |
 
 (win rate / avg score, SmartPlayer vs. opponent; std error ~0.8pp at these
-sample sizes, so both jumps are well outside noise). The committed
-checkpoint uses `--lookahead 4`.
+sample sizes, so both jumps are well outside noise). **The checkpoint
+committed in this repo uses `--lookahead 4`** (200k games).
+
+A larger run -- 2M games, `--lookahead 8`, trained post-GPU-fix on an
+RTX 4090 -- was evaluated at n=10000 (much tighter, ~0.5pp std error) and
+scored:
+
+| Opponent | Games | `--lookahead 4` (200k games, committed) | `--lookahead 8` (2M games) |
+|---|---|---|---|
+| `StrategicPlayer` | 10000 | 61.9% | **63.5%** (407.4 / 374.9 avg) |
+| `SimplePlayer` | 10000 | 63.4% | 61.9% (409.3 / 377.5 avg) |
+
+Read this carefully: it's *better* vs. `StrategicPlayer` but *worse* vs.
+`SimplePlayer` than the committed checkpoint, and the two roughly average
+out (62.65% vs. 62.7%) -- so despite 10x the games and 2x the lookahead,
+this is closer to a lateral move than a clean win, once measured with a
+large enough sample to trust both numbers. It also bundles two changes at
+once (lookahead *and* dataset size), so which one is actually responsible
+for the vs-strategic gain -- or whether it's just which-opponent-is-
+harder-to-generalize-against noise -- is unresolved. That checkpoint itself
+isn't in this repo (it lives on the machine it was trained on); the
+committed one is still the `--lookahead 4` / 200k-game checkpoint above.
+Worth an ablation (same game count, sweep only `--lookahead`) before
+treating 8 as a better default than 4.
 
 ## Policy iteration (`iterate.py`)
 

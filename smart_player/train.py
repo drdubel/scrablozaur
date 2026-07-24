@@ -41,6 +41,8 @@ def train(
     epochs: int = 30,
     batch: int = 8192,
     lr: float = 1e-3,
+    hidden1: int = 128,
+    hidden2: int = 64,
     device: str | None = None,
     quiet: bool = False,
 ) -> float:
@@ -54,7 +56,10 @@ def train(
     y = torch.from_numpy(raw["margins"].astype(np.float32)).to(device)
     n = len(X)
     if not quiet:
-        print(f"{n} samples, {len(ALPHABET)} tile types: {''.join(ALPHABET)}  device={device}")
+        print(
+            f"{n} samples, {len(ALPHABET)} tile types: {''.join(ALPHABET)}  "
+            f"device={device}  hidden={hidden1}/{hidden2}"
+        )
 
     n_val = max(1, int(0.1 * n))
     split = torch.randperm(n, generator=torch.Generator().manual_seed(0), device="cpu").to(device)
@@ -63,7 +68,7 @@ def train(
     X_val, y_val = X[val_idx], y[val_idx]
     n_train = len(X_train)
 
-    model = LeaveValueNet().to(device)
+    model = LeaveValueNet(hidden1, hidden2).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, epochs)
     loss_fn = nn.MSELoss()
@@ -100,7 +105,9 @@ def train(
         if val_mse <= best_val:
             best_val = val_mse
             state_dict = {k: v.cpu() for k, v in model.state_dict().items()}
-            torch.save({"state_dict": state_dict, "alphabet": ALPHABET}, out_path)
+            torch.save(
+                {"state_dict": state_dict, "alphabet": ALPHABET, "hidden1": hidden1, "hidden2": hidden2}, out_path
+            )
     if not quiet:
         print(f"best val mse {best_val:.3f} -> {out_path}")
     return best_val
@@ -113,7 +120,9 @@ if __name__ == "__main__":
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=8192)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--hidden1", type=int, default=128, help="First hidden layer width (default: 128)")
+    ap.add_argument("--hidden2", type=int, default=64, help="Second hidden layer width (default: 64)")
     ap.add_argument("--device", default=None, help="cuda/mps/cpu (default: auto-detect, preferring cuda then mps)")
     args = ap.parse_args()
 
-    train(args.data, args.out, args.epochs, args.batch, args.lr, args.device)
+    train(args.data, args.out, args.epochs, args.batch, args.lr, args.hidden1, args.hidden2, args.device)
