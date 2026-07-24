@@ -144,6 +144,17 @@
         <div class="board-center">
           <div id="board" role="grid" aria-label="Plansza Scrabble"></div>
 
+          <!-- Invisible but focusable/real text input, focused whenever
+               typing mode starts (see game.js's _onBoardCellClick) purely
+               to summon the on-screen keyboard on phones/tablets -- the
+               actual typing UI is the board's own highlighted cells, kept
+               in sync with board.js's typeLetter/typeBackspace. Must stay
+               a real, focusable element (not display:none/visibility:hidden,
+               which stop iOS from opening the keyboard for it). -->
+          <input id="board-typing-input" class="board-typing-input" type="text"
+                 autocomplete="off" autocorrect="off" autocapitalize="off"
+                 spellcheck="false" inputmode="text" tabindex="-1" aria-hidden="true" />
+
           <!-- Competitive: tile rack + computer move info -->
           <div id="tile-rack-wrap" hidden>
             <p class="rack-label">Twoje litery</p>

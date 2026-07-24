@@ -593,6 +593,19 @@ dialog h2 {
 }
 
 /* ── Board ─────────────────────────────────────────────────────────────────── */
+/* Kept in the layout flow and visually reachable (not display:none /
+   visibility:hidden), just imperceptible -- both stop iOS Safari from
+   opening the keyboard for a programmatic .focus() call. */
+.board-typing-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 #board {
   display: grid;
   grid-template-columns: repeat(15, var(--cell-size));
@@ -1919,5 +1932,34 @@ select:focus {
 
   .setup-mode-cards {
     grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+  }
+
+  /* .benchmark-replay-layout's board+sidebar are meant to sit side by
+     side (its #benchmark-board --cell-size is deliberately capped at
+     60vw for that reason), but the sidebar's own min-width (220px) plus
+     the board's 60vw already exceeds most phone widths, so flex-wrap
+     drops the sidebar to its own line anyway -- leaving the board
+     stuck at its small side-by-side size even though the wrap just
+     freed up the full row width for it, and the sidebar squeezed by
+     .score-label's 70px cap above (sized for the compact header
+     scoreboard, not this now-full-width one), hence "GRACZ …". Force
+     the stack explicitly and size both for their own full-width row
+     instead of relying on wrap to accidentally produce a usable layout. */
+  .benchmark-replay-layout {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  #benchmark-board {
+    --cell-size: clamp(14px, calc((92vw - 2.5rem) / 15), 38px);
+  }
+
+  .benchmark-replay-side {
+    width: 100%;
+    max-width: none;
+  }
+
+  .benchmark-replay-scoreboard .score-label {
+    max-width: none;
   }
 }

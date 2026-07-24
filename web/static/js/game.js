@@ -85,6 +85,7 @@ class GameController {
     this._elTileRackWrap    = document.getElementById('tile-rack-wrap');
     this._elTileRack        = document.getElementById('tile-rack');
     this._elCompMoveInfo    = document.getElementById('computer-move-info');
+    this._elTypingInput     = document.getElementById('board-typing-input');
 
     this._elWordDefPanel    = document.getElementById('word-def-panel');
     this._elWordDefTitle    = document.getElementById('word-def-title');
@@ -328,62 +329,39 @@ class GameController {
       }
     });
 
-    // Global keyboard handler
+    // Global keyboard handler (physical keyboard, page focus anywhere else)
     document.addEventListener('keydown', e => {
       // Don't hijack keystrokes meant for a focused input/textarea (e.g. the
-      // scan-board cell editor, or any dialog's own text fields) -- this
-      // listener is document-wide and would otherwise also drive the main
-      // board's typing mode underneath an open dialog.
+      // scan-board cell editor, the exchange/typing inputs, or any dialog's
+      // own text fields) -- this listener is document-wide and would
+      // otherwise also drive the main board's typing mode underneath one.
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
       if (this._panelHuman.hidden) return;
       if (this._typingStartR === null) return;
-      const horiz = this._selHumanDir.value === 'true';
-      switch (e.key) {
-        case 'Escape':
-          this._board.clearTyping();
-          this._typingStartR = null; this._typingStartC = null;
-          e.preventDefault(); break;
-        case 'Backspace':
-          this._board.typeBackspace(); e.preventDefault(); break;
-        case 'Enter':
-          this._submitHumanWord(); e.preventDefault(); break;
-        case ' ':
-          this._selHumanDir.value = horiz ? 'false' : 'true';
-          this._board.startTyping(
-            this._typingStartR, this._typingStartC,
-            !horiz,
-          );
-          e.preventDefault(); break;
-        case 'ArrowRight': {
-          const nc = Math.min(14, this._typingStartC + 1);
-          this._typingStartC = nc;
-          this._board.startTyping(this._typingStartR, nc, horiz);
-          e.preventDefault(); break;
-        }
-        case 'ArrowLeft': {
-          const nc = Math.max(0, this._typingStartC - 1);
-          this._typingStartC = nc;
-          this._board.startTyping(this._typingStartR, nc, horiz);
-          e.preventDefault(); break;
-        }
-        case 'ArrowDown': {
-          const nr = Math.min(14, this._typingStartR + 1);
-          this._typingStartR = nr;
-          this._board.startTyping(nr, this._typingStartC, horiz);
-          e.preventDefault(); break;
-        }
-        case 'ArrowUp': {
-          const nr = Math.max(0, this._typingStartR - 1);
-          this._typingStartR = nr;
-          this._board.startTyping(nr, this._typingStartC, horiz);
-          e.preventDefault(); break;
-        }
-        default:
-          if (/^[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]$/.test(e.key)) {
-            this._board.typeLetter(e.key.toLowerCase());
-            e.preventDefault();
-          }
+      if (this._handleTypingControlKey(e)) return;
+      if (/^[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]$/.test(e.key)) {
+        this._board.typeLetter(e.key.toLowerCase());
+        e.preventDefault();
       }
+    });
+
+    // Phone/tablet keyboard: #board-typing-input is focused when typing mode
+    // starts (see _onBoardCellClick) purely to summon the on-screen
+    // keyboard. Its own keydown still fires reliably for control keys, but
+    // mobile virtual keyboards often don't report usable e.key values for
+    // letters, so those are read from the `input` event instead (see
+    // below), diffing against a value kept cleared after every keystroke.
+    this._elTypingInput.addEventListener('keydown', e => {
+      if (this._typingStartR === null) return;
+      if (this._handleTypingControlKey(e)) this._elTypingInput.value = '';
+    });
+    this._elTypingInput.addEventListener('input', () => {
+      if (this._typingStartR !== null) {
+        for (const ch of this._elTypingInput.value) {
+          if (/^[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]$/.test(ch)) this._board.typeLetter(ch.toLowerCase());
+        }
+      }
+      this._elTypingInput.value = '';
     });
 
     this._btnSuggest.addEventListener('click', () => this._getSuggestions());
@@ -745,6 +723,59 @@ class GameController {
     this._typingStartR = r;
     this._typingStartC = c;
     this._board.startTyping(r, c, this._selHumanDir.value === 'true');
+    // Summons the on-screen keyboard on phones/tablets -- see the input's
+    // own comment in index.html. No-op/harmless on desktop.
+    this._elTypingInput.focus({ preventScroll: true });
+  }
+
+  /** Escape/Backspace/Enter/Space/Arrow handling shared between the
+   * document-wide physical-keyboard listener and #board-typing-input's own
+   * keydown (focused on mobile) -- letters are handled separately by each
+   * caller (see _bindEvents), since mobile virtual keyboards need the
+   * `input` event instead of keydown for those. Returns whether `e.key` was
+   * one of these control keys (regardless of whether typing was active). */
+  _handleTypingControlKey(e) {
+    const horiz = this._selHumanDir.value === 'true';
+    switch (e.key) {
+      case 'Escape':
+        this._board.clearTyping();
+        this._typingStartR = null; this._typingStartC = null;
+        e.preventDefault(); return true;
+      case 'Backspace':
+        this._board.typeBackspace(); e.preventDefault(); return true;
+      case 'Enter':
+        this._submitHumanWord(); e.preventDefault(); return true;
+      case ' ':
+        this._selHumanDir.value = horiz ? 'false' : 'true';
+        this._board.startTyping(this._typingStartR, this._typingStartC, !horiz);
+        e.preventDefault(); return true;
+      case 'ArrowRight': {
+        const nc = Math.min(14, this._typingStartC + 1);
+        this._typingStartC = nc;
+        this._board.startTyping(this._typingStartR, nc, horiz);
+        e.preventDefault(); return true;
+      }
+      case 'ArrowLeft': {
+        const nc = Math.max(0, this._typingStartC - 1);
+        this._typingStartC = nc;
+        this._board.startTyping(this._typingStartR, nc, horiz);
+        e.preventDefault(); return true;
+      }
+      case 'ArrowDown': {
+        const nr = Math.min(14, this._typingStartR + 1);
+        this._typingStartR = nr;
+        this._board.startTyping(nr, this._typingStartC, horiz);
+        e.preventDefault(); return true;
+      }
+      case 'ArrowUp': {
+        const nr = Math.max(0, this._typingStartR - 1);
+        this._typingStartR = nr;
+        this._board.startTyping(nr, this._typingStartC, horiz);
+        e.preventDefault(); return true;
+      }
+      default:
+        return false;
+    }
   }
 
   // ── Word definition ───────────────────────────────────────────────────────
