@@ -1,16 +1,31 @@
 from __future__ import annotations
 
 import random
+import sys
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+
+import torch
 
 from scrablozaur import Board, Dawg
 from web.engine import DAWG_PATH
+
+# smart_player is a standalone script-style package (like board_reader, see
+# web/scan.py), not importable as a normal module -- add its dir to sys.path
+# so its sibling-style internal imports (`from model import ...`) resolve.
+SMART_PLAYER_SRC = Path(__file__).resolve().parent.parent / "smart_player"
+if str(SMART_PLAYER_SRC) not in sys.path:
+    sys.path.insert(0, str(SMART_PLAYER_SRC))
+
+from board_features import encode_board  # noqa: E402
+from model import encode_leave, get_model  # noqa: E402
 
 
 class GameMode(str, Enum):
@@ -24,6 +39,7 @@ class Difficulty(str, Enum):
     MEDIUM = "medium"
     HARD = "hard"
     IMPOSSIBLE = "impossible"
+    SMART = "smart"
 
 
 # Polish Scrabble tile distribution: letter → count (100 tiles total)
@@ -298,6 +314,30 @@ def rack_contains(rack: str, letters: str) -> bool:
     return True
 
 
+def _leave_after_word(
+    rack: str,
+    word: str,
+    board_grid: list[list[str]],
+    row: int,
+    col: int,
+    horizontal: bool,
+) -> str:
+    """Return the rack remaining after playing word at (row, col), without
+    mutating rack. Cells already filled on the board don't consume a rack
+    tile; a letter not held literally is assumed to come from a blank."""
+    remaining = list(rack)
+    for i, ch in enumerate(word):
+        r = row if horizontal else row + i
+        c = col + i if horizontal else col
+        if board_grid[r][c] != "-":
+            continue
+        if ch in remaining:
+            remaining.remove(ch)
+        else:
+            remaining.remove("?")
+    return "".join(remaining)
+
+
 def _deduct_tiles(
     player: Player,
     word: str,
@@ -306,17 +346,7 @@ def _deduct_tiles(
     col: int,
     horizontal: bool,
 ) -> None:
-    rack = list(player.letters)
-    for i, ch in enumerate(word):
-        r = row if horizontal else row + i
-        c = col + i if horizontal else col
-        if board_grid[r][c] != "-":
-            continue
-        if ch in rack:
-            rack.remove(ch)
-        else:
-            rack.remove("?")
-    player.letters = "".join(rack)
+    player.letters = _leave_after_word(player.letters, word, board_grid, row, col, horizontal)
 
 
 def _refill_rack(session: GameSession, player: Player) -> None:
@@ -397,12 +427,54 @@ def _pick_by_difficulty(suggestions: list[dict], difficulty: Difficulty) -> dict
     return random.choices(suggestions, weights=weights, k=1)[0]
 
 
+def _unseen_tile_count(session: GameSession, rack: str) -> int:
+    """Tiles not yet on the board or in this player's own hand -- still in
+    the bag or an opponent's rack. Mirrors StrategicPlayer.get_letters_left
+    (src/strategy.py), the feature the leave-value model was trained on."""
+    board_letters = [ch for grid_row in session.board_grid() for ch in grid_row if ch != "-"]
+    seen = Counter(board_letters) + Counter(rack)
+    return sum((Counter(Board.fresh_tile_bag()) - seen).values())
+
+
+def _pick_smart(session: GameSession, suggestions: list[dict]) -> dict:
+    """Rank suggestions by predicted total value: raw score plus
+    smart_player's learned leave-value model's estimate of the rack the move
+    would leave behind (see smart_player/player.py's SmartPlayer.evaluate_word)
+    -- instead of raw score alone, which can't tell two same-scoring
+    candidates apart even when one leaves a much better rack."""
+    if len(suggestions) == 1:
+        return suggestions[0]
+
+    rack = session.current_player.letters
+    board_grid = session.board_grid()
+    board_features = encode_board(session.board)
+    unseen_tiles = _unseen_tile_count(session, rack)
+    model = get_model()
+
+    best_sug, best_value = suggestions[0], float("-inf")
+    with torch.inference_mode():
+        for sug in suggestions:
+            leave = _leave_after_word(rack, sug["word"], board_grid, sug["row"], sug["col"], sug["horizontal"])
+            x = encode_leave(leave, unseen_tiles, board_features)
+            total = sug["score"] + model(x.unsqueeze(0)).item()
+            if total > best_value:
+                best_value, best_sug = total, sug
+
+    return best_sug
+
+
 def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
     """Play a move for the computer weighted by its own difficulty, then advance the turn."""
     player_idx = session.current_player_idx
     difficulty = session.current_player.difficulty
-    # Fetch enough candidates so difficulty has real choices; cap at 30 for speed
-    n_candidates = 1 if difficulty == Difficulty.IMPOSSIBLE else 30
+    # Fetch enough candidates so difficulty has real choices; cap at 30 for
+    # speed (50 for SMART, matching smart_player's own candidate count).
+    if difficulty == Difficulty.IMPOSSIBLE:
+        n_candidates = 1
+    elif difficulty == Difficulty.SMART:
+        n_candidates = 50
+    else:
+        n_candidates = 30
     suggestions = get_suggestions(session, dawg, n=n_candidates)
 
     if not suggestions:
@@ -412,7 +484,7 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
             session.advance_turn()
         return ComputerMoveInfo(word="", score=0, row=0, col=0, horizontal=True, passed=True)
 
-    sug = _pick_by_difficulty(suggestions, difficulty)
+    sug = _pick_smart(session, suggestions) if difficulty == Difficulty.SMART else _pick_by_difficulty(suggestions, difficulty)
     word, row, col, horizontal = sug["word"], sug["row"], sug["col"], sug["horizontal"]
 
     grid = session.board_grid()

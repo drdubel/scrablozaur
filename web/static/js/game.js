@@ -1,7 +1,7 @@
 'use strict';
 
-const DIFFICULTY_EMOJI = { easy: '🌱', medium: '🎯', hard: '🔥', impossible: '💀' };
-const DIFFICULTY_LABEL = { easy: 'Łatwy', medium: 'Średni', hard: 'Trudny', impossible: 'Niemożliwy' };
+const DIFFICULTY_EMOJI = { easy: '🌱', medium: '🎯', hard: '🔥', impossible: '💀', smart: '🧠' };
+const DIFFICULTY_LABEL = { easy: 'Łatwy', medium: 'Średni', hard: 'Trudny', impossible: 'Niemożliwy', smart: 'Sprytny' };
 
 class GameController {
   constructor(api, board) {
@@ -168,7 +168,7 @@ class GameController {
       inp.placeholder = `Gracz ${i + 1}`;
       const diffGroup = document.createElement('div');
       diffGroup.className = 'player-diff-buttons';
-      for (const diff of ['easy', 'medium', 'hard', 'impossible']) {
+      for (const diff of ['easy', 'medium', 'hard', 'impossible', 'smart']) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'player-diff-btn' + (diff === def.difficulty ? ' player-diff-btn--active' : '');
