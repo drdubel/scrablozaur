@@ -68,9 +68,7 @@ def iterate(
         )
 
         print(f"[{r}] training candidate...")
-        val_mse = train_model(
-            dataset_path, candidate_path, epochs=epochs, hidden1=hidden1, hidden2=hidden2, quiet=True
-        )
+        val_mse = train_model(dataset_path, candidate_path, epochs=epochs, hidden1=hidden1, hidden2=hidden2, quiet=True)
         os.remove(dataset_path)
 
         print(f"[{r}] evaluating candidate vs champion over {eval_games} games...")
