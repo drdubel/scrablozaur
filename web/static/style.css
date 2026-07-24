@@ -570,6 +570,16 @@ dialog h2 {
   font-size: 1.15rem;
 }
 
+.rack-tile.exchangeable {
+  cursor: pointer;
+}
+
+.rack-tile.selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary), inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 2px 5px rgba(0, 0, 0, 0.15);
+  transform: translateY(-4px);
+}
+
 /* ── Computer move notification (competitive) ──────────────────────────────── */
 .computer-move-info {
   width: 100%;

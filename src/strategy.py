@@ -47,7 +47,7 @@ class SimplePlayer:
 
         return letters_to_exchange
 
-    def play_word(self, dawg: Dawg, parallel: bool = False) -> str:
+    def play_word(self, dawg: Dawg, parallel: bool = False) -> str | None:
         """Find and play the best word from the player's letters on the board.
 
         This method should:
@@ -55,13 +55,21 @@ class SimplePlayer:
           - Use the DAWG to find the best scoring word that can be formed with
             the player's letters and fits one of the patterns.
           - Place the word on the board and update the player's letters.
+
+        Returns the played word, `None` if letters were exchanged instead
+        (a real, repeatable action -- not "no play"), or `""` only when
+        genuinely no action is available (no legal word and can't exchange).
         """
         word, points, position, used = self.board.get_best_word(dawg, self.letters, parallel)
-        if not word and self.board.can_exchange():
-            self.exchange_letters(self.get_letters_to_exchange())
-            self.last_exchanged = True
+        if not word:
+            if self.board.can_exchange():
+                self.exchange_letters(self.get_letters_to_exchange())
+                self.last_exchanged = True
+                return None
+            self.last_exchanged = False
             return ""
 
+        self.last_exchanged = False
         self.score += points
         self.board.place_word(word, position[0], position[1], position[2])
         for ch in used:
@@ -147,7 +155,7 @@ class StrategicPlayer:
 
         return letters_to_exchange
 
-    def play_word(self, dawg: Dawg, parallel: bool = False) -> str:
+    def play_word(self, dawg: Dawg, parallel: bool = False) -> str | None:
         """Find and play the best word from the player's letters on the board.
 
         This method should:
@@ -155,13 +163,17 @@ class StrategicPlayer:
           - Use the DAWG to find the best scoring word that can be formed with
             the player's letters and fits one of the patterns.
           - Place the word on the board and update the player's letters.
+
+        Returns the played word, `None` if letters were exchanged instead
+        (a real, repeatable action -- not "no play"), or `""` only when
+        genuinely no action is available (no legal word and can't exchange).
         """
         word, points, position, used = self.get_best_word(dawg, parallel)
 
-        if self.board.can_exchange() and points < 6 and not self.last_exchanged:
+        if self.board.can_exchange() and points < 6:
             self.exchange_letters(self.get_letters_to_exchange())
             self.last_exchanged = True
-            return ""
+            return None
 
         self.last_exchanged = False
 

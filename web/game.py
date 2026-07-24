@@ -360,7 +360,10 @@ def _refill_rack(session: GameSession, player: Player) -> None:
 # ── End of game (COMPETITIVE only — SANDBOX has no real bag/opponent) ────────
 
 # Standard rule: the game ends once nobody has played a word for this many
-# consecutive turns in a row (pass/exchange both count as "no play").
+# consecutive turns in a row. Only a genuine no-action turn (skip, or a
+# computer finding nothing to play) counts -- exchanging tiles is a real,
+# repeatable action a player can take as many times as they want and never
+# counts toward this on its own (see board.py's exchange_tiles).
 CONSECUTIVE_NO_PLAY_LIMIT = 2
 
 

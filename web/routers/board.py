@@ -6,7 +6,7 @@ import urllib.request
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from web.engine import Board, Dawg, get_dawg
+from web.engine import Dawg, get_dawg
 from web.game import (GameMode, _check_game_over, _deduct_tiles, _refill_rack,
                       computer_auto_play, compute_move_rating, get_suggestions,
                       get_suggestions_for_letters, rack_contains, validate_rack_for_word)
@@ -171,7 +171,10 @@ async def exchange_tiles(
 ) -> BoardStateResponse:
     """Return the given tiles to the bag and draw the same number of new
     ones instead of playing a word — only legal in COMPETITIVE mode while
-    at least 7 tiles remain in the bag (Board.can_exchange)."""
+    at least 7 tiles remain in the bag (the standard exchange rule). A real,
+    repeatable action: unlike /board/skip, it doesn't count toward
+    CONSECUTIVE_NO_PLAY_LIMIT, so a player can exchange as many turns in a
+    row as they want without that alone ending the game."""
     session = _require_session(request)
     if session.game_over:
         raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
@@ -179,7 +182,11 @@ async def exchange_tiles(
         raise HTTPException(status_code=400, detail="Wymiana liter jest dostępna tylko w trybie rywalizacji.")
 
     letters = body.letters.lower()
-    if not Board.can_exchange(session.tile_bag.remaining()):
+    # Board.can_exchange() is an instance method reading the *engine's own*
+    # internal bag, which the web app doesn't use for bag tracking (it has
+    # its own TileBag, session.tile_bag) -- inline the same standard-rule
+    # threshold (>= 7 tiles) that method documents instead of misapplying it.
+    if session.tile_bag.remaining() < 7:
         raise HTTPException(status_code=400, detail="Za mało liter w worku, żeby wymienić (potrzeba co najmniej 7).")
 
     player = session.current_player
@@ -191,7 +198,6 @@ async def exchange_tiles(
     for ch in letters:
         rack_chars.remove(ch)
     player.letters = "".join(rack_chars) + "".join(session.tile_bag.exchange(list(letters)))
-    session.consecutive_no_play += 1
     _check_game_over(session, session.current_player_idx)
 
     if not session.game_over:

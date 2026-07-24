@@ -41,6 +41,10 @@ class ApiClient {
     return this._request('POST', '/board/skip');
   }
 
+  exchangeTiles(letters) {
+    return this._request('POST', '/board/exchange', { letters });
+  }
+
   passTurn() {
     return this._request('POST', '/board/pass');
   }

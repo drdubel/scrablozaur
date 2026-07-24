@@ -16,6 +16,9 @@ class GameController {
     this._scorePreviewTimer = null;
     this._previewAbortCtrl  = null;
 
+    // Indices (into the human rack string) of tiles selected for exchange.
+    this._selectedExchangeIndices = new Set();
+
     this._lastMode      = 'competitive';
     this._lastHumanName = 'Gracz';
     this._playerConfig  = [
@@ -55,6 +58,7 @@ class GameController {
     this._elWordDisplay     = document.getElementById('human-word-display');
     this._elScorePreview    = document.getElementById('human-score-preview');
     this._btnPlaceHuman     = document.getElementById('btn-place-human');
+    this._btnExchangeHuman  = document.getElementById('btn-exchange-human');
     this._btnSkipHuman      = document.getElementById('btn-skip-human');
     this._btnPassHuman      = document.getElementById('btn-pass-human');
     this._elHumanError      = document.getElementById('human-error');
@@ -289,6 +293,7 @@ class GameController {
     this._btnStartGame.addEventListener('click', () => this._startGame());
 
     this._btnPlaceHuman.addEventListener('click', () => this._submitHumanWord());
+    this._btnExchangeHuman.addEventListener('click', () => this._exchangeTiles());
     this._btnSkipHuman.addEventListener('click', () => this._skipTurn());
     this._btnPassHuman.addEventListener('click', () => this._passTurn());
     this._btnSkipComputer.addEventListener('click', () => this._skipTurn());
@@ -561,11 +566,13 @@ class GameController {
   _renderTileRack(state) {
     const human   = state.players.find(p => !p.is_computer);
     const letters = human?.letters ?? '';
+    this._selectedExchangeIndices.clear();
     this._elTileRack.innerHTML = '';
-    for (const ch of letters) {
+    for (let i = 0; i < letters.length; i++) {
+      const ch = letters[i];
       const tile = document.createElement('span');
       const isBlank = ch === '?';
-      tile.className = 'rack-tile' + (isBlank ? ' blank' : '');
+      tile.className = 'rack-tile exchangeable' + (isBlank ? ' blank' : '');
       if (isBlank) {
         tile.textContent = '★';
       } else {
@@ -574,6 +581,15 @@ class GameController {
           `<span class="tile-letter">${ch.toUpperCase()}</span>` +
           `<span class="tile-val">${val}</span>`;
       }
+      tile.addEventListener('click', () => {
+        if (this._selectedExchangeIndices.has(i)) {
+          this._selectedExchangeIndices.delete(i);
+          tile.classList.remove('selected');
+        } else {
+          this._selectedExchangeIndices.add(i);
+          tile.classList.add('selected');
+        }
+      });
       this._elTileRack.appendChild(tile);
     }
     this._elTileRackWrap.hidden = letters.length === 0;
@@ -818,6 +834,26 @@ class GameController {
       const state = await this._api.skipTurn();
       this._applyState(state);
     } catch (err) { console.error('Skip failed:', err); }
+  }
+
+  async _exchangeTiles() {
+    this._hideError(this._elHumanError);
+    if (this._selectedExchangeIndices.size === 0) {
+      this._showError(this._elHumanError, 'Kliknij na stojaku litery, które chcesz wymienić.');
+      return;
+    }
+    const human = this._players.find(p => !p.is_computer);
+    const rack = human?.letters ?? '';
+    const letters = [...this._selectedExchangeIndices].sort((a, b) => a - b).map(i => rack[i]).join('');
+    this._setLoading(this._btnExchangeHuman, true);
+    try {
+      const state = await this._api.exchangeTiles(letters);
+      this._applyState(state);
+    } catch (err) {
+      this._showError(this._elHumanError, err.detail ?? err.message);
+    } finally {
+      this._setLoading(this._btnExchangeHuman, false);
+    }
   }
 
   async _passTurn() {

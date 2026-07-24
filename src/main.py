@@ -1,5 +1,7 @@
 import argparse
+import os
 import resource
+import sys
 import time
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -7,6 +9,10 @@ from random import random
 
 from matplotlib import pyplot as plt  # type: ignore
 from tqdm import tqdm  # type: ignore
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "smart_player"))
+
+from player import SmartPlayer
 
 from scrablozaur import Board, Dawg
 from strategy import SimplePlayer, StrategicPlayer
@@ -98,7 +104,7 @@ def graj(parallel: bool = False, debug: bool = False) -> tuple[int, int, str, fl
         if debug:
             print(line)
 
-    def play(player: SimplePlayer | StrategicPlayer) -> str:
+    def play(player: SimplePlayer | StrategicPlayer | SmartPlayer) -> str | None:
         nonlocal move_time_total, move_count
         move_start = time.perf_counter()
         word = player.play_word(d, parallel=parallel)
@@ -111,38 +117,53 @@ def graj(parallel: bool = False, debug: bool = False) -> tuple[int, int, str, fl
     b = Board()
 
     p1 = StrategicPlayer(b)
-    p2 = SimplePlayer(b)
+    p2 = SmartPlayer(b)
 
     opener = p1 if random() < 0.5 else p2
     second = p2 if opener is p1 else p1
+    players = [opener, second]
 
-    w = play(opener)
-    emit(f"Player 1 plays: {w}")
-    emit(b)
+    # Only a genuine no-action turn (no legal word AND can't exchange --
+    # play_word() returns "" for this, vs None for an exchange) counts
+    # toward ending the game. Exchanging is a real, repeatable action a
+    # player can take as many times as they want (see strategy.py) and
+    # never signals a stuck/deadlocked game on its own.
+    no_play_streak = 0
+    went_out_idx: int | None = None
+    turn = 0
 
     while True:
-        w = play(second)
+        idx = turn % 2
+        player = players[idx]
+        name = "Player 1" if player is p1 else "Player 2"
+        w = play(player)
         if w:
-            emit(f"{'Player 2' if second is p2 else 'Player 1'} plays: {w}")
+            no_play_streak = 0
+            emit(f"{name} plays: {w}")
             emit(b)
-        elif second.last_exchanged:
-            emit(f"{'Player 1' if second is p1 else 'Player 2'} exchanged letters")
+            if not player.letters:
+                went_out_idx = idx
+                break
+        elif w is None:
+            emit(f"{name} exchanged letters")
             emit(b)
         else:
-            emit(f"{'Player 2' if second is p2 else 'Player 1'} cannot play.")
-            break
+            no_play_streak += 1
+            emit(f"{name} cannot play.")
+            emit(b)
+            if no_play_streak >= 4:
+                break
+        turn += 1
 
-        w = play(opener)
-        if w:
-            emit(f"{'Player 1' if opener is p1 else 'Player 2'} plays: {w}")
-            emit(b)
-        elif opener.last_exchanged:
-            emit(f"{'Player 1' if opener is p1 else 'Player 2'} exchanged letters")
-            emit(b)
-        else:
-            emit(f"{'Player 1' if opener is p1 else 'Player 2'} cannot play.")
-            emit(b)
-            break
+    if went_out_idx is not None:
+        others_value = sum(Board.rack_value(pl.letters) for i, pl in enumerate(players) if i != went_out_idx)
+        players[went_out_idx].score += others_value
+        for i, pl in enumerate(players):
+            if i != went_out_idx:
+                pl.score -= Board.rack_value(pl.letters)
+    else:
+        for pl in players:
+            pl.score -= Board.rack_value(pl.letters)
 
     emit(f"Final Scores: Player 1: {p1.score}, Player 2: {p2.score}")
     emit(b)

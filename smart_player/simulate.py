@@ -11,8 +11,11 @@ from typing import Protocol
 
 from scrablozaur import Board, Dawg
 
-# Standard rule: the game ends once nobody has played a word for this many
-# consecutive turns in a row (pass/exchange both count as "no play").
+# Standard rule: the game ends once nobody has taken a genuine no-action
+# turn (no legal word and can't exchange -- play_word() returns "" for
+# this) for this many consecutive turns in a row. Exchanging (play_word()
+# returns None) is a real, repeatable action a player can take as many
+# times as they want and never counts toward this on its own.
 _NO_PLAY_LIMIT = 2
 
 
@@ -20,7 +23,7 @@ class GamePlayer(Protocol):
     score: int
     letters: str
 
-    def play_word(self, dawg: Dawg, parallel: bool = ...) -> str: ...
+    def play_word(self, dawg: Dawg, parallel: bool = ...) -> str | None: ...
 
 
 def play_game(players: list[GamePlayer], dawg: Dawg, parallel: bool = False) -> None:
@@ -41,6 +44,8 @@ def play_game(players: list[GamePlayer], dawg: Dawg, parallel: bool = False) -> 
             if not player.letters:
                 went_out_idx = idx
                 break
+        elif word is None:
+            pass  # exchanged -- doesn't count toward the no-play streak
         else:
             no_play_streak += 1
             if no_play_streak >= _NO_PLAY_LIMIT:

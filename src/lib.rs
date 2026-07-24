@@ -817,6 +817,7 @@ impl Board {
             }
             self.board[r][c] = ch;
         }
+        self.first = false;
         Ok(())
     }
 
@@ -987,7 +988,6 @@ impl Board {
         parallel: bool,
     ) -> Vec<BestWord> {
         if self.first {
-            self.first = false;
             self.best_opening_words(dawg, letters, n)
         } else {
             self.best_words_from_patterns(dawg, letters, n, parallel)
