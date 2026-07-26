@@ -83,6 +83,15 @@ class BoardRenderer {
   setOnTileDrop(fn)      { this._onTileDropCb   = fn; }
   isTyping()             { return this._typing !== null; }
 
+  /** Letters newly placed onto the board in the current typing session, in
+   * order -- excludes the existing board tiles the word runs through (those
+   * are null pass-through entries). game.js maps these back onto rack tiles
+   * to grey out the ones the pending word has consumed. */
+  getTypedLetters() {
+    if (!this._typing) return [];
+    return this._typing.entries.filter(e => e.letter !== null).map(e => e.letter);
+  }
+
   /** Resolve a viewport point (from a touchmove/touchend) to a board cell,
    * or null if it's outside this board -- used by game.js's custom touch
    * drag (native HTML5 DnD doesn't fire from touch input on mobile). */

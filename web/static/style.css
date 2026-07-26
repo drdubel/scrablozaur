@@ -588,6 +588,33 @@ dialog h2 {
   touch-action: none;
 }
 
+/* A tile whose letter has been dragged/typed onto the board -- shown as an
+   empty rack slot so it visibly "leaves" the rack, while still holding its
+   place (no reflow) so the other tiles don't jump around mid-word. Restored
+   the moment the letter is taken back off the board (backspace/Escape), via
+   _syncRackWithTyping. Selector is doubled up (.rack-tile.rack-tile-used) so
+   it also wins over .rack-tile.blank's own background/border for a used
+   blank tile -- otherwise a spent blank would keep its grey-star look
+   instead of matching the other empty slots. color:transparent hides the
+   blank's ★ (bare text, not a .tile-letter span). */
+.rack-tile.rack-tile-used {
+  background: var(--color-empty);
+  border-style: dashed;
+  border-color: var(--color-border);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.08);
+  color: transparent;
+  cursor: default;
+}
+
+.rack-tile-used .tile-letter,
+.rack-tile-used .tile-val {
+  visibility: hidden;
+}
+
+.rack-tile-used:hover {
+  transform: none;
+}
+
 /* Floating clone that follows the finger during a touch-drag (see
    _createDragGhost/_moveDragGhost) -- positioned via transform on a 0,0
    fixed box rather than left/top so each move is a single compositor-only

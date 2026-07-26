@@ -328,6 +328,7 @@ class GameController {
       this._elWordDisplay.textContent  = data ? data.word.toUpperCase() : '—';
       this._elScorePreview.textContent = '—';
       this._board.clearWordHighlight();
+      this._syncRackWithTyping();
       clearTimeout(this._scorePreviewTimer);
       this._previewAbortCtrl?.abort();
       this._previewAbortCtrl = null;
@@ -561,6 +562,9 @@ class GameController {
     const human   = state.players.find(p => !p.is_computer);
     const letters = human?.letters ?? '';
     this._selectedExchangeIndices.clear();
+    // Tile refs kept so _syncRackWithTyping can mark the ones consumed by
+    // the word currently being placed as "left the rack" (see below).
+    this._rackTiles = [];
     this._elTileRack.innerHTML = '';
     for (let i = 0; i < letters.length; i++) {
       const ch = letters[i];
@@ -576,6 +580,9 @@ class GameController {
           `<span class="tile-val">${val}</span>`;
       }
       tile.addEventListener('click', () => {
+        // A tile already placed on the board (shown as an empty slot) is
+        // out of play for exchange until it's taken back off the board.
+        if (tile.classList.contains('rack-tile-used')) return;
         if (this._selectedExchangeIndices.has(i)) {
           this._selectedExchangeIndices.delete(i);
           tile.classList.remove('selected');
@@ -585,9 +592,35 @@ class GameController {
         }
       });
       this._bindRackTileDrag(tile, isBlank ? 'BLANK' : ch);
+      this._rackTiles.push({ el: tile, letter: ch, isBlank });
       this._elTileRack.appendChild(tile);
     }
     this._elTileRackWrap.hidden = letters.length === 0;
+  }
+
+  /** Mark the rack tiles consumed by the word currently being placed so
+   * they visibly "leave" the rack (rendered as empty slots), and restore
+   * any that a backspace/Escape/direction-change freed back up. Driven off
+   * the board's typing state, so it stays in sync whether letters were
+   * dragged onto the board or typed. Greedy assignment (a matching real
+   * tile first, else a blank) mirrors the server's own tile deduction
+   * (_leave_after_word), so what's shown as used is exactly what will be
+   * deducted on submit. */
+  _syncRackWithTyping() {
+    if (!this._rackTiles) return;
+    const typed = this._board.getTypedLetters();
+    const used = new Set();
+    for (const letter of typed) {
+      let idx = this._rackTiles.findIndex((t, i) => !used.has(i) && !t.isBlank && t.letter === letter);
+      if (idx === -1) idx = this._rackTiles.findIndex((t, i) => !used.has(i) && t.isBlank);
+      if (idx !== -1) used.add(idx);
+    }
+    this._rackTiles.forEach((t, i) => {
+      const isUsed = used.has(i);
+      t.el.classList.toggle('rack-tile-used', isUsed);
+      // A tile that just left the rack can't stay selected for exchange.
+      if (isUsed && this._selectedExchangeIndices.delete(i)) t.el.classList.remove('selected');
+    });
   }
 
   // ── Drag-and-drop tile placement (rack → board) ──────────────────────────
@@ -599,7 +632,10 @@ class GameController {
   _bindRackTileDrag(tile, payload) {
     tile.draggable = true;
     tile.addEventListener('dragstart', e => {
-      if (this._panelHuman.hidden) { e.preventDefault(); return; }
+      // Not during the computer's/other turn, and not a tile that already
+      // left the rack onto the board (an empty slot -- take it back off the
+      // board first, via Backspace, to redrag it).
+      if (this._panelHuman.hidden || tile.classList.contains('rack-tile-used')) { e.preventDefault(); return; }
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', payload);
     });
@@ -610,7 +646,7 @@ class GameController {
     // plain tap still reaches the click handler undisturbed.
     let touch = null;
     tile.addEventListener('touchstart', e => {
-      if (this._panelHuman.hidden || e.touches.length !== 1) return;
+      if (this._panelHuman.hidden || tile.classList.contains('rack-tile-used') || e.touches.length !== 1) return;
       const t = e.touches[0];
       touch = { startX: t.clientX, startY: t.clientY, dragging: false, ghost: null, target: null };
     }, { passive: true });
