@@ -1310,6 +1310,49 @@ fn build_dawg(words: &[&str]) -> (Arena, u32, usize) {
     (arena, root, minimized.len())
 }
 
+/// Rebuild the arena keeping only nodes reachable from `root`, renumbered into a
+/// dense 0..N range. Minimization rewires parents to canonical nodes but leaves the
+/// merged-away duplicates sitting in `arena.nodes`; without this pass `serialize` would
+/// dump them all (they were ~97% of the file). Node IDs double as file offsets, so the
+/// reachable set must be renumbered, not merely filtered. Children are visited in
+/// sorted-char order for deterministic, reproducible output.
+fn compact(arena: &Arena, root: u32) -> (Arena, u32) {
+    let mut remap: HashMap<u32, u32> = HashMap::new();
+    let mut order: Vec<u32> = Vec::new();
+    let mut stack: Vec<u32> = vec![root];
+    remap.insert(root, 0);
+    order.push(root);
+
+    while let Some(old) = stack.pop() {
+        let mut children: Vec<(char, u32)> =
+            arena.node(old).children.iter().map(|(&c, &id)| (c, id)).collect();
+        children.sort_unstable_by_key(|&(c, _)| c);
+        for (_, cid) in children {
+            if let std::collections::hash_map::Entry::Vacant(e) = remap.entry(cid) {
+                e.insert(order.len() as u32);
+                order.push(cid);
+                stack.push(cid);
+            }
+        }
+    }
+
+    let mut new_arena = Arena::new();
+    for &old in &order {
+        let nid = new_arena.alloc();
+        let src = arena.node(old);
+        let is_terminal = src.is_terminal;
+        let children: Vec<(char, u32)> =
+            src.children.iter().map(|(&c, &cid)| (c, remap[&cid])).collect();
+        let node = new_arena.node_mut(nid);
+        node.is_terminal = is_terminal;
+        for (c, cid) in children {
+            node.children.insert(c, cid);
+        }
+    }
+
+    (new_arena, 0)
+}
+
 fn serialize(arena: &Arena, root: u32) -> Vec<u8> {
     let n = arena.nodes.len();
     let mut buf: Vec<u8> = Vec::new();
@@ -1352,10 +1395,12 @@ fn cmd_build(words_path: &str, dawg_path: &str) -> io::Result<()> {
 
     let t0 = Instant::now();
     let (arena, root, node_count) = build_dawg(&words);
+    let (arena, root) = compact(&arena, root);
     eprintln!(
-        "  done in {:.2?}  │  {} nodes after minimization",
+        "  done in {:.2?}  │  {} canonical nodes ({} nodes after minimization + compaction)",
         t0.elapsed(),
-        node_count
+        node_count,
+        arena.nodes.len()
     );
 
     let data = serialize(&arena, root);
