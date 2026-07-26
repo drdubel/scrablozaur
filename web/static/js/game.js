@@ -87,6 +87,8 @@ class GameController {
     this._elCompMoveInfo    = document.getElementById('computer-move-info');
     this._elTypingInput     = document.getElementById('board-typing-input');
 
+    this._elExchangeHint    = document.getElementById('exchange-hint');
+
     this._elWordDefPanel    = document.getElementById('word-def-panel');
     this._elWordDefTitle    = document.getElementById('word-def-title');
     this._elWordDefText     = document.getElementById('word-def-text');
@@ -316,6 +318,11 @@ class GameController {
     // Board cell click
     this._board.setOnCellClick((r, c) => this._onBoardCellClick(r, c));
 
+    // Mouse drag-and-drop from the rack (native HTML5 DnD) -- the touch
+    // equivalent is wired per-tile in _bindRackTileDrag instead, since
+    // touch input has no native drag event stream to hook here.
+    this._board.setOnTileDrop((r, c, payload) => this._handleTileDrop(r, c, payload));
+
     // Sync word display + trigger live validation + score preview on typing change
     this._board.setOnTypingUpdate(data => {
       this._elWordDisplay.textContent  = data ? data.word.toUpperCase() : '—';
@@ -483,6 +490,15 @@ class GameController {
 
     this._elGameOver?.remove();
 
+    // Hints (/board/hints) and tile exchange (/board/exchange) are both
+    // rejected server-side outside COMPETITIVE (no rack there to hint from
+    // or exchange against) -- hide rather than leave them clickable into a
+    // guaranteed error.
+    const isCompetitive = state.game_mode === 'competitive';
+    if (this._btnHints) this._btnHints.hidden = !isCompetitive;
+    if (this._btnExchangeHuman) this._btnExchangeHuman.hidden = !isCompetitive;
+    if (this._elExchangeHint) this._elExchangeHint.hidden = !isCompetitive;
+
     if (state.game_mode === 'competitive') {
       this._panelAuto.hidden = true;
       this._renderTileRack(state);
@@ -568,9 +584,113 @@ class GameController {
           tile.classList.add('selected');
         }
       });
+      this._bindRackTileDrag(tile, isBlank ? 'BLANK' : ch);
       this._elTileRack.appendChild(tile);
     }
     this._elTileRackWrap.hidden = letters.length === 0;
+  }
+
+  // ── Drag-and-drop tile placement (rack → board) ──────────────────────────
+  // Two input paths feed the same _handleTileDrop: native HTML5 drag-and-drop
+  // for mouse (dragstart on the tile, drop on a board cell -- see
+  // board.js's setOnTileDrop), and a hand-rolled touch version below, since
+  // touch input never fires HTML5 DnD events on phones/tablets.
+
+  _bindRackTileDrag(tile, payload) {
+    tile.draggable = true;
+    tile.addEventListener('dragstart', e => {
+      if (this._panelHuman.hidden) { e.preventDefault(); return; }
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', payload);
+    });
+
+    // Distinguish a tap (handled by the tile's own 'click' listener, e.g.
+    // toggling exchange-selection) from a drag: only commit to dragging
+    // once the finger has actually moved past a small threshold, so a
+    // plain tap still reaches the click handler undisturbed.
+    let touch = null;
+    tile.addEventListener('touchstart', e => {
+      if (this._panelHuman.hidden || e.touches.length !== 1) return;
+      const t = e.touches[0];
+      touch = { startX: t.clientX, startY: t.clientY, dragging: false, ghost: null, target: null };
+    }, { passive: true });
+
+    tile.addEventListener('touchmove', e => {
+      if (!touch) return;
+      const t = e.touches[0];
+      if (!touch.dragging) {
+        if (Math.hypot(t.clientX - touch.startX, t.clientY - touch.startY) < 10) return;
+        touch.dragging = true;
+        touch.ghost = this._createDragGhost(tile);
+      }
+      e.preventDefault();
+      this._moveDragGhost(touch.ghost, t.clientX, t.clientY);
+      const cell = this._board.cellAt(t.clientX, t.clientY);
+      if (!cell || !touch.target || cell.row !== touch.target.row || cell.col !== touch.target.col) {
+        this._board.clearDragTarget();
+      }
+      if (cell) this._board.setDragTarget(cell.row, cell.col);
+      touch.target = cell;
+    }, { passive: false });
+
+    const endTouch = () => {
+      if (!touch) return;
+      if (touch.dragging) {
+        touch.ghost.remove();
+        this._board.clearDragTarget();
+        if (touch.target) this._handleTileDrop(touch.target.row, touch.target.col, payload);
+      }
+      touch = null;
+    };
+    tile.addEventListener('touchend', endTouch);
+    tile.addEventListener('touchcancel', endTouch);
+  }
+
+  _createDragGhost(tile) {
+    const ghost = tile.cloneNode(true);
+    ghost.className = tile.className + ' rack-tile-ghost';
+    document.body.appendChild(ghost);
+    return ghost;
+  }
+
+  _moveDragGhost(ghost, x, y) {
+    const w = ghost.offsetWidth, h = ghost.offsetHeight;
+    ghost.style.transform = `translate(${x - w / 2}px, ${y - h / 2}px)`;
+  }
+
+  /** Shared by the mouse (native drop event) and touch (manual hit-test)
+   * paths -- payload is either a literal letter or the 'BLANK' sentinel for
+   * a blank tile, which has no letter of its own until the player says
+   * what it stands for. */
+  _handleTileDrop(r, c, payload) {
+    if (this._panelHuman.hidden) return;
+    let letter = payload;
+    if (payload === 'BLANK') {
+      const chosen = (prompt('Jaką literę reprezentuje pusty kafelek?', '') ?? '').trim().toLowerCase();
+      letter = chosen[0];
+      if (!letter || !/^[a-ząćęłńóśźż]$/.test(letter)) return;
+    }
+    this._placeLetterAt(r, c, letter);
+  }
+
+  /** Place one letter at (r, c): continue the word in progress if the drop
+   * is still on its line (typeLetter already auto-skips any existing
+   * board tiles between the cursor and the next empty slot, same as it
+   * does for keyboard typing -- so this only needs to know whether to
+   * keep going, not exactly which cell the engine will land on),
+   * otherwise (re)start typing there -- same as clicking that cell fresh
+   * (see _onBoardCellClick). */
+  _placeLetterAt(r, c, letter) {
+    const horizontal = this._selHumanDir.value === 'true';
+    const continuesLine = this._board.isTyping()
+      && (horizontal ? r === this._typingStartR : c === this._typingStartC);
+    if (!continuesLine) {
+      this._typingStartR = r;
+      this._typingStartC = c;
+      this._board.startTyping(r, c, horizontal);
+    }
+    this._board.typeLetter(letter);
+    this._elTypingInput.focus({ preventScroll: true });
   }
 
   _renderCompMoveInfo(state) {

@@ -65,6 +65,8 @@ class BoardRenderer {
     this._hintSuggestions = [];
     this._onCellClickCb  = null;
     this._onTypingUpdate = null;
+    this._onTileDropCb   = null;
+    this._dragTargetCoords = null;
     // { horizontal, entries:[{r,c,letter,skipped}], cursorR, cursorC }
     this._typing = null;
     this._buildGrid();
@@ -72,7 +74,39 @@ class BoardRenderer {
 
   setOnCellClick(fn)     { this._onCellClickCb  = fn; }
   setOnTypingUpdate(fn)  { this._onTypingUpdate  = fn; }
+  /** fn(r, c, payload) -- payload is whatever string the drag source (a
+   * rack tile, see game.js) put on the dataTransfer. Only wired for mouse
+   * drag-and-drop (native HTML5 DnD); touch dragging has no such native
+   * event stream and instead drives the same callback directly through
+   * game.js's own touch handlers (see setDragTarget/clearDragTarget below,
+   * used to mirror the same hover highlight for both input types). */
+  setOnTileDrop(fn)      { this._onTileDropCb   = fn; }
   isTyping()             { return this._typing !== null; }
+
+  /** Resolve a viewport point (from a touchmove/touchend) to a board cell,
+   * or null if it's outside this board -- used by game.js's custom touch
+   * drag (native HTML5 DnD doesn't fire from touch input on mobile). */
+  cellAt(clientX, clientY) {
+    const el = document.elementFromPoint(clientX, clientY);
+    const cellEl = el?.closest('.cell');
+    if (!cellEl || !this._container.contains(cellEl)) return null;
+    const row = Number(cellEl.dataset.row), col = Number(cellEl.dataset.col);
+    if (Number.isNaN(row) || Number.isNaN(col)) return null;
+    return { row, col };
+  }
+
+  setDragTarget(r, c) {
+    this.clearDragTarget();
+    this._cells[r][c].classList.add('drag-target');
+    this._dragTargetCoords = [r, c];
+  }
+
+  clearDragTarget() {
+    if (!this._dragTargetCoords) return;
+    const [r, c] = this._dragTargetCoords;
+    this._cells[r][c].classList.remove('drag-target');
+    this._dragTargetCoords = null;
+  }
 
   _buildGrid() {
     this._container.innerHTML = '';
@@ -83,8 +117,30 @@ class BoardRenderer {
         const cell = document.createElement('div');
         cell.className = 'cell ' + BONUS_GRID[r][c];
         cell.setAttribute('role', 'gridcell');
+        cell.dataset.row = r;
+        cell.dataset.col = c;
         cell.textContent = BONUS_LABELS[BONUS_GRID[r][c]] ?? '';
         cell.addEventListener('click', () => { if (this._onCellClickCb) this._onCellClickCb(r, c); });
+        cell.addEventListener('dragover', e => {
+          if (!this._onTileDropCb) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+        });
+        cell.addEventListener('dragenter', e => {
+          if (!this._onTileDropCb) return;
+          e.preventDefault();
+          this.setDragTarget(r, c);
+        });
+        cell.addEventListener('dragleave', () => {
+          if (this._dragTargetCoords?.[0] === r && this._dragTargetCoords?.[1] === c) this.clearDragTarget();
+        });
+        cell.addEventListener('drop', e => {
+          if (!this._onTileDropCb) return;
+          e.preventDefault();
+          this.clearDragTarget();
+          const payload = e.dataTransfer.getData('text/plain');
+          if (payload) this._onTileDropCb(r, c, payload);
+        });
         this._container.appendChild(cell);
         row.push(cell);
       }

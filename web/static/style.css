@@ -580,6 +580,35 @@ dialog h2 {
   transform: translateY(-4px);
 }
 
+/* Draggable (mouse HTML5 DnD + the hand-rolled touch equivalent in game.js,
+   see _bindRackTileDrag) -- touch-action:none stops the browser's own
+   scroll/zoom gestures from hijacking a drag that starts on a tile; a plain
+   tap (no movement) still reaches the tile's own 'click' listener fine. */
+.rack-tile {
+  touch-action: none;
+}
+
+/* Floating clone that follows the finger during a touch-drag (see
+   _createDragGhost/_moveDragGhost) -- positioned via transform on a 0,0
+   fixed box rather than left/top so each move is a single compositor-only
+   update. */
+.rack-tile-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  margin: 0;
+  pointer-events: none;
+  z-index: 1000;
+  opacity: 0.9;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
+/* Board cell currently under a dragged tile (mouse dragenter or the touch
+   hit-test) -- both drag paths funnel into board.js's setDragTarget. */
+.cell.drag-target {
+  box-shadow: inset 0 0 0 3px var(--color-primary) !important;
+}
+
 /* ── Computer move notification (competitive) ──────────────────────────────── */
 .computer-move-info {
   width: 100%;
@@ -1174,6 +1203,10 @@ select:focus {
 
 /* ── Three-column board layout ─────────────────────────────────────────────── */
 .board-layout {
+  /* #game-view is otherwise a plain block, so without this the scoreboard
+     and the board would sit flush against each other (0px gap) in every
+     mode -- competitive, sandbox, and sandbox_auto all share this markup. */
+  margin-top: 1.5rem;
   display: grid;
   /* minmax(0, ...) rather than a bare `auto` middle column: an `auto` track
      sizes to its content's own preferred width and won't shrink below it,
@@ -1526,6 +1559,15 @@ select:focus {
   grid-template-columns: repeat(15, var(--cell-size));
   grid-template-rows: repeat(15, var(--cell-size));
   gap: var(--cell-gap);
+  /* Unlike #board (a flex item in .board-center, which shrinks it to
+     content automatically), this div is a plain block child of
+     #scan-board-area -- without an explicit width it stretches to fill
+     that block container, and since a grid with fixed-size tracks doesn't
+     grow its tracks to match, the leftover space just exposes this
+     element's own frame background as a bare strip to the right of the
+     last column. width:max-content plus the margin:auto below keeps the
+     box sized to (and centered on) its actual 15-cell content instead. */
+  width: max-content;
   border: 2px solid #6b573e;
   border-radius: 6px;
   background: var(--gradient-board-frame);
@@ -1899,6 +1941,10 @@ select:focus {
 
   .panel {
     padding: 1rem;
+  }
+
+  .board-layout {
+    margin-top: 1rem;
   }
 
   .scan-view {
