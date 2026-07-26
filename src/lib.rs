@@ -4,6 +4,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufWriter, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -217,6 +218,50 @@ fn letter_index(c: char) -> Option<usize> {
 #[inline]
 fn letter_bit(c: char) -> u32 {
     letter_index(c).map_or(0, |i| 1u32 << i)
+}
+
+// ---------------------------------------------------------------------------
+// Move-generation thread pool
+// ---------------------------------------------------------------------------
+
+// Parallel move generation fans out across board anchors. A single move is
+// cheap, so a pool wider than ~8 threads spends more on coordination than it
+// saves (it can even regress past that). The engine therefore runs its own
+// pool capped at 8 threads by default, instead of rayon's all-cores global
+// pool. Resolution order for the thread count: an explicit `set_num_threads(n)`
+// (must precede the first generation) > the `RAYON_NUM_THREADS` env var (which
+// also propagates to spawned worker processes) > `min(8, cores)`.
+const DEFAULT_MAX_THREADS: usize = 8;
+static REQUESTED_THREADS: AtomicUsize = AtomicUsize::new(0); // 0 = unset
+static GEN_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+fn desired_threads() -> usize {
+    let requested = REQUESTED_THREADS.load(Ordering::Relaxed);
+    if requested != 0 {
+        return requested;
+    }
+    if let Some(n) = std::env::var("RAYON_NUM_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+    {
+        return n;
+    }
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    cores.min(DEFAULT_MAX_THREADS)
+}
+
+/// The move-generation pool, built once on first use from `desired_threads()`.
+fn gen_pool() -> &'static rayon::ThreadPool {
+    GEN_POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(desired_threads())
+            .thread_name(|i| format!("scrablozaur-gen-{i}"))
+            .build()
+            .expect("failed to build move-generation thread pool")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1384,15 +1429,23 @@ struct GenCtx<'a> {
     board: &'a Board,
     gaddag: &'a Dawg,
     cross: &'a [[u32; BOARD_SIZE]; BOARD_SIZE],
+    /// Sum of face values of the perpendicular neighbours at each empty square
+    /// (0 where none) — the cross-word's existing contribution, tile-independent.
+    cross_score: &'a [[u32; BOARD_SIZE]; BOARD_SIZE],
+    /// Whether a cross-word forms at each empty square (has a perpendicular tile).
+    has_cross: &'a [[bool; BOARD_SIZE]; BOARD_SIZE],
+    /// The rack, for word-order real-vs-blank allocation while scoring.
+    letters: &'a str,
     ar: usize,
     ac: usize,
     horizontal: bool,
 }
 
-/// A generated placement: (row, col, horizontal, word) of the leftmost/topmost
-/// cell. Scored afterwards by `calculate_word_points`, exactly as the legacy
-/// path scores its candidates, so the two agree tile-for-tile.
-type GenMove = (usize, usize, bool, String);
+/// A generated, scored placement: (row, col, horizontal, word, score) of the
+/// leftmost/topmost cell. Scored during generation via `GenCtx::score_word`,
+/// which reproduces `calculate_word_points` exactly using precomputed
+/// cross-scores instead of re-walking the board.
+type GenMove = (usize, usize, bool, String, u32);
 
 impl<'a> GenCtx<'a> {
     /// Board cell `off` squares along the play direction from the anchor, or
@@ -1427,6 +1480,7 @@ impl<'a> GenCtx<'a> {
         &self,
         node: u32,
         off: isize,
+        budget: usize,
         freq: &mut LetterFreq,
         left: &mut Vec<char>,
         right: &mut Vec<char>,
@@ -1438,12 +1492,20 @@ impl<'a> GenCtx<'a> {
         };
         let bch = self.board.board[r][c];
         if bch != '-' {
-            // Existing tile: forced letter, no rack cost, no cross-check.
+            // Existing tile: forced letter, no rack cost, no cross-check, and it
+            // does not consume the left budget (only new tiles do).
             if let Some(next) = self.gaddag.find_child(node, bch) {
-                self.go_on(off, bch, next, freq, left, right, out);
+                self.go_on(off, bch, next, budget, freq, left, right, out);
             }
             return;
         }
+        // A new tile strictly left of the anchor spends one unit of left budget.
+        // When it is exhausted, words extending further left belong to a
+        // different anchor (Appel–Jacobson dedup), so stop.
+        if off < 0 && budget == 0 {
+            return;
+        }
+        let next_budget = if off < 0 { budget - 1 } else { budget };
         // Empty square: try each arc letter permitted by the cross-check. Use a
         // real tile if one is left, else a blank (greedy real-first is optimal
         // for feasibility — reals only fit their own letter, blanks fit any).
@@ -1467,7 +1529,7 @@ impl<'a> GenCtx<'a> {
             } else {
                 continue; // no tile can play this letter
             }
-            self.go_on(off, l, next, freq, left, right, out);
+            self.go_on(off, l, next, next_budget, freq, left, right, out);
             if used_real {
                 freq[li] += 1;
             } else {
@@ -1484,6 +1546,7 @@ impl<'a> GenCtx<'a> {
         off: isize,
         l: char,
         new_node: u32,
+        budget: usize,
         freq: &mut LetterFreq,
         left: &mut Vec<char>,
         right: &mut Vec<char>,
@@ -1498,11 +1561,12 @@ impl<'a> GenCtx<'a> {
                     if self.gaddag.node_is_terminal(sep_node) && self.is_free(1) {
                         self.record(left, right, out);
                     }
-                    self.gen(sep_node, 1, freq, left, right, out);
+                    // Right phase is unbounded; budget only limits the left half.
+                    self.gen(sep_node, 1, budget, freq, left, right, out);
                 }
             }
             // Keep extending further left (onto an empty or existing-tile square).
-            self.gen(new_node, off - 1, freq, left, right, out);
+            self.gen(new_node, off - 1, budget, freq, left, right, out);
             left.pop();
         } else {
             // Right phase: letters accrue in board order.
@@ -1510,13 +1574,13 @@ impl<'a> GenCtx<'a> {
             if self.gaddag.node_is_terminal(new_node) && self.is_free(off + 1) {
                 self.record(left, right, out);
             }
-            self.gen(new_node, off + 1, freq, left, right, out);
+            self.gen(new_node, off + 1, budget, freq, left, right, out);
             right.pop();
         }
     }
 
     /// Emit the word currently spelled by `left` (reversed) followed by `right`,
-    /// anchored at its leftmost/topmost cell.
+    /// anchored at its leftmost/topmost cell, scored in place.
     fn record(&self, left: &[char], right: &[char], out: &mut Vec<GenMove>) {
         let len = left.len() + right.len();
         if len < 2 {
@@ -1532,16 +1596,57 @@ impl<'a> GenCtx<'a> {
         let leftmost_off = -(left.len() as isize - 1);
         // The leftmost cell was placed, so it is always in bounds.
         if let Some((r, c)) = self.cell(leftmost_off) {
-            out.push((r, c, self.horizontal, word));
+            let score = self.score_word(r, c, &word);
+            out.push((r, c, self.horizontal, word, score));
         }
+    }
+
+    /// Score the word placed at (r0, c0) along the play direction. Reproduces
+    /// `Board::calculate_word_points` exactly — same word-order real-vs-blank
+    /// allocation, same per-tile letter/word multipliers, same independent
+    /// cross-word scoring and +50 bingo — but reads the perpendicular
+    /// contribution from `cross_score`/`has_cross` instead of re-walking the
+    /// board. `calculate_word_points` stays the authority; `gen-verify` asserts
+    /// they agree.
+    fn score_word(&self, r0: usize, c0: usize, word: &str) -> u32 {
+        let mut main_total = 0u32;
+        let mut main_word_mul = 1u32;
+        let mut cross_total = 0u32;
+        let mut tiles_from_hand = 0usize;
+        let mut hand_freq = real_letter_counts(self.letters);
+        for (i, ch) in word.chars().enumerate() {
+            let (r, c) = word_cell(r0, c0, self.horizontal, i);
+            let (lm, wm) = quadrant_bonus(r, c);
+            let (lm, wm) = (lm as u32, wm as u32);
+            if self.board.board[r][c] == '-' {
+                // New tile: a real copy if the hand still has one, else a blank (0).
+                let v = match hand_freq.get_mut(&ch) {
+                    Some(count) if *count > 0 => {
+                        *count -= 1;
+                        letter_points(ch)
+                    }
+                    _ => 0,
+                };
+                tiles_from_hand += 1;
+                main_total += v * lm;
+                main_word_mul *= wm;
+                if self.has_cross[r][c] {
+                    cross_total += (v * lm + self.cross_score[r][c]) * wm;
+                }
+            } else {
+                main_total += letter_points(ch);
+            }
+        }
+        main_total * main_word_mul + cross_total + if tiles_from_hand == RACK_SIZE { 50 } else { 0 }
     }
 }
 
 impl Board {
-    /// Empty squares orthogonally adjacent to at least one tile — the anchors
-    /// every non-opening play must cover, so generating from each finds every
-    /// legal move.
-    fn anchor_squares(&self) -> Vec<(usize, usize)> {
+    /// Anchors — empty squares orthogonally adjacent to at least one tile, which
+    /// every non-opening play must cover. Returns both the boolean grid (used by
+    /// the left-limit) and the list to iterate.
+    fn anchor_grid(&self) -> ([[bool; BOARD_SIZE]; BOARD_SIZE], Vec<(usize, usize)>) {
+        let mut grid = [[false; BOARD_SIZE]; BOARD_SIZE];
         let mut anchors = Vec::new();
         for r in 0..BOARD_SIZE {
             for c in 0..BOARD_SIZE {
@@ -1553,37 +1658,88 @@ impl Board {
                     || (c > 0 && self.board[r][c - 1] != '-')
                     || (c + 1 < BOARD_SIZE && self.board[r][c + 1] != '-');
                 if adjacent {
+                    grid[r][c] = true;
                     anchors.push((r, c));
                 }
             }
         }
-        anchors
+        (grid, anchors)
     }
 
-    /// Precompute the cross-check bitset for every empty square, for plays in
-    /// the given direction (`horizontal` → vertical cross-words). Squares with
-    /// no perpendicular neighbour stay `CROSS_ANY`.
-    fn compute_cross_checks(&self, dawg: &Dawg, horizontal: bool) -> [[u32; BOARD_SIZE]; BOARD_SIZE] {
-        let mut grid = [[CROSS_ANY; BOARD_SIZE]; BOARD_SIZE];
+    /// Appel–Jacobson left-limit: how many new tiles a play from this anchor may
+    /// place before the anchor square (leftward for horizontal, upward for
+    /// vertical). Counts empty squares until the first tile or the first other
+    /// anchor — words extending past those belong to a different anchor, so this
+    /// makes each play reachable from exactly one anchor (no duplicates).
+    fn left_budget(
+        &self,
+        is_anchor: &[[bool; BOARD_SIZE]; BOARD_SIZE],
+        r: usize,
+        c: usize,
+        horizontal: bool,
+    ) -> usize {
+        let mut budget = 0usize;
+        let mut k = 1usize;
+        loop {
+            let cell = if horizontal {
+                c.checked_sub(k).map(|cc| (r, cc))
+            } else {
+                r.checked_sub(k).map(|rr| (rr, c))
+            };
+            let (rr, cc) = match cell {
+                Some(rc) => rc,
+                None => break,
+            };
+            if self.board[rr][cc] != '-' || is_anchor[rr][cc] {
+                break;
+            }
+            budget += 1;
+            k += 1;
+        }
+        budget
+    }
+
+    /// Precompute, for every empty square and plays in the given direction
+    /// (`horizontal` → vertical cross-words): the cross-check bitset, the sum of
+    /// the perpendicular neighbours' face values (`cross_score`), and whether a
+    /// cross-word forms (`has_cross`). Squares with no perpendicular neighbour
+    /// keep `CROSS_ANY` / 0 / false. One neighbour walk feeds all three.
+    #[allow(clippy::type_complexity)]
+    fn compute_cross_data(
+        &self,
+        dawg: &Dawg,
+        horizontal: bool,
+    ) -> (
+        [[u32; BOARD_SIZE]; BOARD_SIZE],
+        [[u32; BOARD_SIZE]; BOARD_SIZE],
+        [[bool; BOARD_SIZE]; BOARD_SIZE],
+    ) {
+        let mut checks = [[CROSS_ANY; BOARD_SIZE]; BOARD_SIZE];
+        let mut scores = [[0u32; BOARD_SIZE]; BOARD_SIZE];
+        let mut has = [[false; BOARD_SIZE]; BOARD_SIZE];
         for r in 0..BOARD_SIZE {
             for c in 0..BOARD_SIZE {
                 if self.board[r][c] != '-' {
                     continue;
                 }
-                let (prefix, suffix) = if horizontal {
-                    // vertical cross-word: tiles above (top→down) then below
-                    (self.tiles_before(r, c, false), self.tiles_after(r, c, false))
-                } else {
-                    // horizontal cross-word: tiles to the left then the right
-                    (self.tiles_before(r, c, true), self.tiles_after(r, c, true))
-                };
+                // Perpendicular to the play direction.
+                let (prefix, suffix) = (
+                    self.tiles_before(r, c, !horizontal),
+                    self.tiles_after(r, c, !horizontal),
+                );
                 if prefix.is_empty() && suffix.is_empty() {
                     continue;
                 }
-                grid[r][c] = cross_bits(dawg, &prefix, &suffix);
+                has[r][c] = true;
+                scores[r][c] = prefix
+                    .iter()
+                    .chain(suffix.iter())
+                    .map(|&ch| letter_points(ch))
+                    .sum();
+                checks[r][c] = cross_bits(dawg, &prefix, &suffix);
             }
         }
-        grid
+        (checks, scores, has)
     }
 
     /// Contiguous run of tiles immediately before (r, c) along a row
@@ -1626,10 +1782,68 @@ impl Board {
         run
     }
 
+    /// Generate every legal play via anchor + cross-check + bidirectional
+    /// extension, each scored in place. With `use_limit`, the Appel–Jacobson
+    /// left-limit makes every play come from exactly one anchor (no duplicates);
+    /// without it, left extension is unbounded and duplicates must be deduped by
+    /// the caller (used only by `gen-verify` to prove the limit drops only dups).
+    fn gaddag_generate(
+        &self,
+        dawg: &Dawg,
+        gaddag: &Dawg,
+        letters: &str,
+        parallel: bool,
+        use_limit: bool,
+    ) -> Vec<GenMove> {
+        let (checks_h, scores_h, has_h) = self.compute_cross_data(dawg, true);
+        let (checks_v, scores_v, has_v) = self.compute_cross_data(dawg, false);
+        let (is_anchor, anchors) = self.anchor_grid();
+
+        let gen_one = |(ar, ac): (usize, usize)| -> Vec<GenMove> {
+            let mut out = Vec::new();
+            let (mut freq, _) = build_freq(letters);
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            let dirs = [
+                (true, &checks_h, &scores_h, &has_h),
+                (false, &checks_v, &scores_v, &has_v),
+            ];
+            for (horizontal, cross, cross_score, has_cross) in dirs {
+                let budget = if use_limit {
+                    self.left_budget(&is_anchor, ar, ac, horizontal)
+                } else {
+                    BOARD_SIZE
+                };
+                let ctx = GenCtx {
+                    board: self,
+                    gaddag,
+                    cross,
+                    cross_score,
+                    has_cross,
+                    letters,
+                    ar,
+                    ac,
+                    horizontal,
+                };
+                ctx.gen(gaddag.root, 0, budget, &mut freq, &mut left, &mut right, &mut out);
+                left.clear();
+                right.clear();
+            }
+            out
+        };
+
+        if parallel {
+            // Run on the engine's own (default 8-thread) pool, not rayon's
+            // all-cores global pool — see `gen_pool`.
+            gen_pool().install(|| anchors.par_iter().flat_map_iter(|&a| gen_one(a)).collect())
+        } else {
+            anchors.iter().flat_map(|&a| gen_one(a)).collect()
+        }
+    }
+
     /// GADDAG-based replacement for `best_words_from_patterns`: generate every
-    /// legal play via anchor + cross-check + bidirectional extension, then score
-    /// and keep the top `n`. `dawg` supplies cross-word checks; `gaddag` drives
-    /// the traversal.
+    /// legal play (already scored, no duplicates), keep the top `n`. `dawg`
+    /// supplies cross-word checks; `gaddag` drives the traversal.
     fn gaddag_best_words(
         &self,
         dawg: &Dawg,
@@ -1638,48 +1852,11 @@ impl Board {
         n: usize,
         parallel: bool,
     ) -> Vec<BestWord> {
-        let cross_h = self.compute_cross_checks(dawg, true);
-        let cross_v = self.compute_cross_checks(dawg, false);
-        let anchors = self.anchor_squares();
-
-        let gen_one = |(ar, ac): (usize, usize)| -> Vec<GenMove> {
-            let mut out = Vec::new();
-            let (mut freq, _) = build_freq(letters);
-            let mut left = Vec::new();
-            let mut right = Vec::new();
-            for (horizontal, cross) in [(true, &cross_h), (false, &cross_v)] {
-                let ctx = GenCtx { board: self, gaddag, cross, ar, ac, horizontal };
-                ctx.gen(gaddag.root, 0, &mut freq, &mut left, &mut right, &mut out);
-                left.clear();
-                right.clear();
-            }
-            out
-        };
-
-        let raw: Vec<GenMove> = if parallel {
-            anchors.par_iter().flat_map_iter(|&a| gen_one(a)).collect()
-        } else {
-            anchors.iter().flat_map(|&a| gen_one(a)).collect()
-        };
-
-        // Dedup identical placements (a word covering two anchors is generated
-        // from each), then score every survivor exactly as the legacy path does.
-        let mut seen: std::collections::HashSet<(String, usize, usize, bool)> =
-            std::collections::HashSet::new();
-        let mut best: Vec<(String, u32, usize, usize, bool)> = Vec::new();
-        for (r, c, horizontal, word) in raw {
-            if !seen.insert((word.clone(), r, c, horizontal)) {
-                continue;
-            }
-            let score = self
-                .calculate_word_points(&word, r, c, horizontal, letters)
-                .unwrap_or(0);
-            best.push((word, score, r, c, horizontal));
-        }
-        best.sort_by_key(|&(_, score, ..)| std::cmp::Reverse(score));
+        let mut best = self.gaddag_generate(dawg, gaddag, letters, parallel, true);
+        best.sort_by_key(|m| std::cmp::Reverse(m.4));
         best.truncate(n);
         best.into_iter()
-            .map(|(word, score, r, c, horizontal)| {
+            .map(|(r, c, horizontal, word, score)| {
                 let used = self.hand_tiles_for_word(&word, r, c, horizontal, letters);
                 (word, score, (r, c, horizontal), used)
             })
@@ -2014,7 +2191,10 @@ fn cmd_gen_verify(dawg_path: &str, gaddag_path: &str, games: usize) -> io::Resul
     let gad = dpy.gaddag.as_ref().unwrap();
 
     let mut positions = 0usize;
-    let mut mismatches = 0usize;
+    let mut mismatches = 0usize; // gaddag best score != legacy best score
+    let mut score_mismatches = 0usize; // fast in-place score != calculate_word_points
+    let mut limit_mismatches = 0usize; // limited moves != unlimited deduped
+    let mut dup_found = 0usize; // duplicate placement survived the left-limit
     for g in 0..games {
         let mut board = Board::new().expect("new board");
         let mut rack = String::new();
@@ -2026,19 +2206,63 @@ fn cmd_gen_verify(dawg_path: &str, gaddag_path: &str, games: usize) -> io::Resul
                 break;
             }
             if !board.first {
-                let legacy = board.best_words_from_patterns(&dpy, &rack, 1, false);
-                let gaddag_moves = board.gaddag_best_words(&dpy.inner, gad, &rack, 1, false);
-                let ls = legacy.first().map(|m| m.1).unwrap_or(0);
-                let gs = gaddag_moves.first().map(|m| m.1).unwrap_or(0);
                 positions += 1;
+                // Production path: generate with the left-limit, already scored.
+                let limited = board.gaddag_generate(&dpy.inner, gad, &rack, false, true);
+                let gs = limited.iter().map(|m| m.4).max().unwrap_or(0);
+
+                // Best-move parity vs the legacy pattern search.
+                let legacy = board.best_words_from_patterns(&dpy, &rack, 1, false);
+                let ls = legacy.first().map(|m| m.1).unwrap_or(0);
                 if ls != gs {
                     mismatches += 1;
                     if mismatches <= 15 {
                         eprintln!(
-                            "\nMISMATCH game {g}: legacy={ls} {:?}  gaddag={gs} {:?}\nrack: {rack}\n{}",
+                            "\nMISMATCH game {g}: legacy={ls} {:?}  gaddag={gs}\nrack: {rack}\n{}",
                             legacy.first().map(|m| (&m.0, m.1)),
-                            gaddag_moves.first().map(|m| (&m.0, m.1)),
                             board.__str__(),
+                        );
+                    }
+                }
+
+                // (a) The in-place fast score must equal calculate_word_points.
+                for (r, c, h, word, score) in &limited {
+                    let auth = board.calculate_word_points(word, *r, *c, *h, &rack).unwrap_or(0);
+                    if *score != auth {
+                        score_mismatches += 1;
+                        if score_mismatches <= 10 {
+                            eprintln!("SCORE MISMATCH {word} @({r},{c},{h}): fast={score} auth={auth}");
+                        }
+                    }
+                }
+
+                // (b) The left-limit must drop only duplicates: the limited move
+                // set (which should already be duplicate-free) must equal the
+                // unlimited set after deduping.
+                let mut placements = std::collections::HashSet::new();
+                for (r, c, h, w, _) in &limited {
+                    if !placements.insert((w.clone(), *r, *c, *h)) {
+                        dup_found += 1;
+                    }
+                }
+                let unlimited = board.gaddag_generate(&dpy.inner, gad, &rack, false, false);
+                let mut seen = std::collections::HashSet::new();
+                let mut unl_scores: Vec<u32> = Vec::new();
+                for (r, c, h, w, s) in &unlimited {
+                    if seen.insert((w.clone(), *r, *c, *h)) {
+                        unl_scores.push(*s);
+                    }
+                }
+                let mut lim_scores: Vec<u32> = limited.iter().map(|m| m.4).collect();
+                lim_scores.sort_unstable();
+                unl_scores.sort_unstable();
+                if lim_scores != unl_scores {
+                    limit_mismatches += 1;
+                    if limit_mismatches <= 10 {
+                        eprintln!(
+                            "LIMIT MISMATCH: limited={} unlimited-deduped={}\nrack: {rack}",
+                            lim_scores.len(),
+                            unl_scores.len()
                         );
                     }
                 }
@@ -2056,8 +2280,12 @@ fn cmd_gen_verify(dawg_path: &str, gaddag_path: &str, games: usize) -> io::Resul
             }
         }
     }
-    println!("\ngen-verify: {positions} positions checked, {mismatches} score mismatch(es)");
-    if mismatches > 0 {
+    println!(
+        "\ngen-verify: {positions} positions | best-score mismatches={mismatches} | \
+         fast-score mismatches={score_mismatches} | limit mismatches={limit_mismatches} | \
+         duplicates past limit={dup_found}"
+    );
+    if mismatches + score_mismatches + limit_mismatches + dup_found > 0 {
         std::process::exit(2);
     }
     Ok(())
@@ -2137,10 +2365,39 @@ pub fn main_cli() -> io::Result<()> {
 // Python module
 // ---------------------------------------------------------------------------
 
+/// Set how many threads parallel move generation (`get_best_words(..., parallel=True)`)
+/// uses. Must be called before the first generation; raises `RuntimeError` if the
+/// pool is already built. Overrides the `RAYON_NUM_THREADS` env var and the
+/// `min(8, cores)` default.
+#[pyfunction]
+fn set_num_threads(n: usize) -> PyResult<()> {
+    if n == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "num_threads must be >= 1",
+        ));
+    }
+    if GEN_POOL.get().is_some() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "thread pool already initialised; call set_num_threads before the first move generation",
+        ));
+    }
+    REQUESTED_THREADS.store(n, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Number of threads parallel move generation will use (builds the pool on the
+/// first call if it does not exist yet).
+#[pyfunction]
+fn num_threads() -> usize {
+    gen_pool().current_num_threads()
+}
+
 #[pymodule]
 fn scrablozaur(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DawgPy>()?;
     m.add_class::<Board>()?;
+    m.add_function(pyo3::wrap_pyfunction!(set_num_threads, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(num_threads, m)?)?;
     Ok(())
 }
 

@@ -1,3 +1,17 @@
+def set_num_threads(n: int) -> None:
+    """Set how many threads parallel move generation uses.
+
+    Applies to `Board.get_best_words(..., parallel=True)`. Must be called before
+    the first generation; raises `RuntimeError` if the pool is already built.
+    Overrides the `RAYON_NUM_THREADS` environment variable and the default of
+    `min(8, cores)` — the engine caps its own pool below the full core count
+    because a single move is too cheap to parallelise across many threads.
+    """
+
+def num_threads() -> int:
+    """Number of threads parallel move generation will use (builds the pool on
+    the first call if it does not exist yet)."""
+
 class Dawg:
     """DAWG (Directed Acyclic Word Graph) dictionary loaded from a binary file.
 
