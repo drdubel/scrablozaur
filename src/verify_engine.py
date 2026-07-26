@@ -18,6 +18,7 @@ sys.path.insert(0, str(_ROOT))
 from scrablozaur import Board, Dawg  # noqa: E402
 
 DAWG_PATH = _ROOT / "words" / "dawg.bin"
+GADDAG_PATH = _ROOT / "words" / "gaddag.bin"
 
 
 def board_grid(board: Board) -> list[list[str]]:
@@ -44,7 +45,7 @@ def check_first_move_covers_every_offset() -> list[str]:
     centre square, including the word's first letter landing exactly on
     it (offset 0) -- previously the search started at offset 1 and missed
     this case entirely."""
-    dawg = Dawg(str(DAWG_PATH))
+    dawg = Dawg(str(DAWG_PATH), str(GADDAG_PATH))
     board = Board()
     letters = "yclgaup"
     _, best_score, _, _ = board.get_best_word(dawg, letters, parallel=False)
@@ -69,7 +70,7 @@ def check_pattern_boundaries() -> list[str]:
     in the first place."""
     grid = [["-"] * 15 for _ in range(15)]
     grid[5][10] = "c"
-    grid[4][3] = "x"
+    grid[4][3] = "e"
     board = Board.from_grid(grid)
 
     errors = []
@@ -95,7 +96,7 @@ def check_pattern_boundaries() -> list[str]:
 def check_min_word_length() -> list[str]:
     """A play must be at least 2 letters -- rejected explicitly, not just
     because the dictionary happens to have no 1-letter entries."""
-    dawg = Dawg(str(DAWG_PATH))
+    dawg = Dawg(str(DAWG_PATH), str(GADDAG_PATH))
     board = Board()
     errors = []
     try:

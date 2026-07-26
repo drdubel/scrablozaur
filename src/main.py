@@ -266,13 +266,21 @@ def benchmark(N: int, n_workers: int | None = None, debug: bool = False) -> None
 
     parallel = True if n_workers == 1 else False
 
+    # Per-move rayon parallelism is only engaged with a single worker; with
+    # several workers each game runs single-threaded (process-level parallelism).
+    if parallel:
+        engine_threads = int(os.environ.get("RAYON_NUM_THREADS") or min(8, os.cpu_count() or 1))
+        print(f"Engine move generation: parallel, {engine_threads} rayon thread(s) per move")
+    else:
+        print("Engine move generation: single-threaded per move (parallelism is across workers)")
+
     wall_start = time.perf_counter()
 
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
         n_workers = executor._max_workers  # type: ignore
         try:
             with tqdm(total=N, desc="Games played") as pbar:
-                batch_size = n_workers * 100
+                batch_size = n_workers * 1000
                 for i in range(0, N, batch_size):
                     futures = [executor.submit(graj, parallel, debug) for _ in range(min(batch_size, N - i))]
 
@@ -348,7 +356,19 @@ if __name__ == "__main__":
         default=None,
         help="Number of worker processes to use (default: all available cores)",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=None,
+        help="Rayon threads for the engine's parallel move generation "
+        "(default: min(8, cores)); only engaged when a single worker runs move-gen in parallel",
+    )
     parser.add_argument("--debug", action="store_true", help="Print detailed game logs for debugging purposes")
     args = parser.parse_args()
+
+    if args.threads is not None:
+        # Set before any worker is spawned so each inherits it; the Rust engine
+        # reads RAYON_NUM_THREADS when it builds its move-generation pool.
+        os.environ["RAYON_NUM_THREADS"] = str(args.threads)
 
     benchmark(args.games, args.workers, args.debug)

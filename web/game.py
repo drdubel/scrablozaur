@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 from scrablozaur import Board, Dawg
-from web.engine import DAWG_PATH
+from web.engine import DAWG_PATH, GADDAG_PATH
 
 # smart_player is a standalone script-style package (like board_reader, see
 # web/scan.py), not importable as a normal module -- add its dir to sys.path
@@ -694,9 +694,9 @@ class _SimulatedGame:
 _worker_dawg: Dawg | None = None
 
 
-def _init_worker(dawg_path: str) -> None:
+def _init_worker(dawg_path: str, gaddag_path: str) -> None:
     global _worker_dawg
-    _worker_dawg = Dawg(dawg_path)
+    _worker_dawg = Dawg(dawg_path, gaddag_path)
 
 
 def _simulate_game(player_specs: list[tuple[str, Difficulty]]) -> _SimulatedGame:
@@ -740,7 +740,9 @@ def _get_executor() -> ProcessPoolExecutor:
     global _executor
     with _executor_lock:
         if _executor is None:
-            _executor = ProcessPoolExecutor(initializer=_init_worker, initargs=(str(DAWG_PATH),))
+            _executor = ProcessPoolExecutor(
+                initializer=_init_worker, initargs=(str(DAWG_PATH), str(GADDAG_PATH))
+            )
         return _executor
 
 

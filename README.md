@@ -6,11 +6,11 @@ A high-performance Polish-language Scrabble engine written in Rust, exposed to P
 
 ## Features
 
-- **Minimized DAWG** — 2.75 million-word Polish dictionary compressed into a compact binary format; sub-microsecond lookups via a binary-searched, flat node layout
+- **Minimized DAWG** — 2.58 million-word Polish dictionary compressed into a compact binary format; sub-microsecond lookups via a binary-searched, flat node layout
 - **Pattern search** — flexible wildcard syntax (`-` one letter, `*` any number) with blank-tile support
 - **Board-aware scoring** — all bonus squares (Double/Triple Letter and Word), bingo bonus for using all 7 tiles
 - **Cross-word validation** — every candidate placement is checked against all perpendicular words it creates
-- **Rayon parallelism** — board patterns are evaluated concurrently across all logical CPU cores
+- **Rayon parallelism** — anchors are searched concurrently on a dedicated pool capped at `min(8, cores)` by default (a single move is too cheap to scale past that); override with `set_num_threads(n)` or `RAYON_NUM_THREADS`
 - **O(1) letter lookup** — the letter bag is represented as a frequency array, eliminating linear scans during DAWG traversal
 - **Python bindings** — clean PyO3 API with bundled `.pyi` stubs for full type-checker support
 
@@ -359,11 +359,11 @@ cargo run --release -- gen-bench    words/dawg.bin  words/gaddag.bin  # GADDAG v
 Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):
 
 ```
-Results (5 × 2759379 = 13796895 lookups):
-  total time  : 1.052s
-  throughput  : 13119246 lookups/s
-  per lookup  : 76.2 ns
-  hits        : 13796895/13796895 (100.0%)
+Results (5 × 2584337 = 12921685 lookups):
+  total time  : 911.724ms
+  throughput  : 14172796 lookups/s
+  per lookup  : 70.6 ns
+  hits        : 12921685/12921685 (100.0%)
 ```
 
 ---
@@ -397,7 +397,7 @@ scrablozaur/
 │   └── static/          # HTML/CSS/vanilla-JS frontend
 ├── board_reader/        # photo -> board-state OCR pipeline (see its own README)
 ├── words/
-│   ├── words.txt        # 2.75 M-word Polish dictionary (source)
+│   ├── words.txt        # 2.58 M-word Polish dictionary (source)
 │   └── dawg.bin         # compiled DAWG (pre-built)
 ├── test/                # sample board states (.in files) for manual testing
 ├── tests/               # cli_build.rs -- `cargo test` integration test for the CLI

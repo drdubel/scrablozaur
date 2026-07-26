@@ -39,7 +39,8 @@ from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
 from player import SmartPlayer  # noqa: E402
 from simulate import play_game  # noqa: E402
 
-_dawg = Dawg(os.path.join(os.path.dirname(__file__), "..", "words", "dawg.bin"))
+_words_dir = os.path.join(os.path.dirname(__file__), "..", "words")
+_dawg = Dawg(os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
 
 # (leave, unseen_tiles, board_features, score - opponent.score at that moment).
 _LogEntry = tuple[str, int, tuple[float, ...], int]
