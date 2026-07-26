@@ -17,7 +17,7 @@ from player import SmartPlayer
 from scrablozaur import Board, Dawg
 from strategy import SimplePlayer, StrategicPlayer
 
-d = Dawg("words/dawg.bin")
+d = Dawg("words/dawg.bin", "words/gaddag.bin")
 
 
 def _rusage_self_now() -> float:
@@ -116,8 +116,8 @@ def graj(parallel: bool = False, debug: bool = False) -> tuple[int, int, str, fl
 
     b = Board()
 
-    p1 = StrategicPlayer(b)
-    p2 = SmartPlayer(b)
+    p1 = SimplePlayer(b)
+    p2 = SimplePlayer(b)
 
     opener = p1 if random() < 0.5 else p2
     second = p2 if opener is p1 else p1

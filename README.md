@@ -114,6 +114,30 @@ To verify quickly with a smaller input file:
 cargo run --release -- build words/sth.txt /tmp/dawg.bin
 ```
 
+### Rebuild the GADDAG (move generation)
+
+`Board.get_best_words` uses a GADDAG for fast anchor-based move generation. A
+pre-built `words/gaddag.bin` is included; `Dawg("words/dawg.bin")` auto-loads
+the sibling `gaddag.bin`. Recompile it from the same word list with:
+
+```bash
+cargo run --release -- build-gaddag words/words.txt words/gaddag.bin
+```
+
+The GADDAG is larger than the DAWG (~36 MiB vs ~3 MiB for the full Polish
+lexicon) and the build peaks around ~7 GB RAM. If no `gaddag.bin` is present,
+move generation transparently falls back to the legacy DAWG pattern search.
+
+Two commands validate and benchmark the generator against that fallback:
+
+```bash
+cargo run --release -- gen-verify words/dawg.bin words/gaddag.bin 200  # best-move parity
+cargo run --release -- gen-bench  words/dawg.bin words/gaddag.bin 200  # single-thread speedup
+```
+
+`gen-verify` must report zero score mismatches; `gen-bench` reports the
+per-position generation time for each and their ratio.
+
 ---
 
 ## Python API
@@ -321,12 +345,15 @@ let (letter_mul, word_mul) = BONUS_TABLE[r2][c2];  // O(1) lookup
 
 ## CLI
 
-The crate includes three diagnostic commands:
+The crate includes these diagnostic commands:
 
 ```bash
-cargo run --release -- build  words/words.txt  words/dawg.bin   # compile DAWG
-cargo run --release -- lookup words/dawg.bin   hamulec          # single lookup
-cargo run --release -- bench  words/dawg.bin   words/words.txt  # throughput benchmark
+cargo run --release -- build        words/words.txt words/dawg.bin    # compile DAWG
+cargo run --release -- build-gaddag words/words.txt words/gaddag.bin  # compile GADDAG (move gen)
+cargo run --release -- lookup       words/dawg.bin  hamulec           # single lookup
+cargo run --release -- bench        words/dawg.bin  words/words.txt   # lookup throughput
+cargo run --release -- gen-verify   words/dawg.bin  words/gaddag.bin  # GADDAG vs legacy parity
+cargo run --release -- gen-bench    words/dawg.bin  words/gaddag.bin  # GADDAG vs legacy speed
 ```
 
 Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):

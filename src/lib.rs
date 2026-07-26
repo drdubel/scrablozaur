@@ -4,6 +4,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufWriter, Write};
+use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // Per-quadrant bonus lookup. Index by (min(r, 14-r), min(c, 14-c)).
@@ -169,6 +170,56 @@ fn build_freq(letters: &str) -> (LetterFreq, usize) {
 }
 
 // ---------------------------------------------------------------------------
+// GADDAG support: 32-letter Polish alphabet + cross-check bitsets
+// ---------------------------------------------------------------------------
+
+/// The 32 letters of the Polish alphabet, in collation order. A cross-check
+/// set is a `u32` with one bit per letter (see `letter_bit`), so a single
+/// word forms a legal perpendicular cross-word at a square iff its bit is set.
+const POLISH_ALPHABET: &str = "aąbcćdeęfghijklłmnńoóprsśtuwyzźż";
+const ALPHABET_SIZE: usize = 32;
+/// All 32 alphabet bits set — the cross-check for a square with no
+/// perpendicular neighbours (any letter is allowed, no cross-word forms).
+const CROSS_ANY: u32 = if ALPHABET_SIZE == 32 { u32::MAX } else { (1u32 << ALPHABET_SIZE) - 1 };
+
+/// Delimiter separating a GADDAG entry's reversed prefix from its forward
+/// suffix. `'\0'` sorts before every letter, so the builder's sorted-input
+/// requirement and the runtime binary search both treat it consistently.
+const SEP: char = '\0';
+
+// Codepoint -> alphabet index (0..31), or -1 for non-alphabet chars (`SEP`,
+// blank `'?'`, punctuation). Filled once from POLISH_ALPHABET; the range
+// matches FREQ_SIZE so a lookup is a single bounds-checked array index.
+static LETTER_INDEX: OnceLock<[i8; FREQ_SIZE]> = OnceLock::new();
+fn letter_index_table() -> &'static [i8; FREQ_SIZE] {
+    LETTER_INDEX.get_or_init(|| {
+        let mut table = [-1i8; FREQ_SIZE];
+        for (i, c) in POLISH_ALPHABET.chars().enumerate() {
+            table[c as usize] = i as i8;
+        }
+        table
+    })
+}
+
+/// Bit index (0..32) of a Polish letter, or `None` for anything else.
+fn letter_index(c: char) -> Option<usize> {
+    let i = c as usize;
+    if i < FREQ_SIZE {
+        let idx = letter_index_table()[i];
+        if idx >= 0 {
+            return Some(idx as usize);
+        }
+    }
+    None
+}
+
+/// Single-bit cross-check mask for `c` (0 if `c` is not an alphabet letter).
+#[inline]
+fn letter_bit(c: char) -> u32 {
+    letter_index(c).map_or(0, |i| 1u32 << i)
+}
+
+// ---------------------------------------------------------------------------
 // Build-time DAWG node
 // ---------------------------------------------------------------------------
 
@@ -214,7 +265,10 @@ struct Dawg {
 
 impl Dawg {
     fn load(path: &str) -> io::Result<Self> {
-        let data = fs::read(path)?;
+        Self::from_bytes(fs::read(path)?)
+    }
+
+    fn from_bytes(data: Vec<u8>) -> io::Result<Self> {
         if data.len() < 8 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "file too short"));
         }
@@ -466,15 +520,45 @@ impl Dawg {
 #[pyclass(name = "Dawg")]
 struct DawgPy {
     inner: Dawg,
+    /// The GADDAG for the same lexicon, driving `get_best_words`. Loaded from
+    /// `gaddag.bin` alongside the DAWG (auto-located next to it, or given
+    /// explicitly). `None` if no GADDAG file is present, in which case move
+    /// generation falls back to the legacy DAWG pattern search.
+    gaddag: Option<Dawg>,
+}
+
+/// If `path` is `.../dawg.bin`, the sibling `.../gaddag.bin`; otherwise `None`.
+fn sibling_gaddag_path(path: &str) -> Option<String> {
+    let p = std::path::Path::new(path);
+    let name = p.file_name()?.to_str()?;
+    let sibling = name.replacen("dawg", "gaddag", 1);
+    if sibling == name {
+        return None;
+    }
+    Some(p.with_file_name(sibling).to_str()?.to_string())
 }
 
 #[pymethods]
 impl DawgPy {
+    /// Load a DAWG from `path`. If `gaddag_path` is omitted, a sibling
+    /// `gaddag.bin` (same directory, `dawg`→`gaddag` in the filename) is loaded
+    /// when present; move generation uses it automatically. Passing a path that
+    /// does not exist is an error; omitting it and finding no sibling simply
+    /// leaves the GADDAG absent (legacy generation).
     #[new]
-    fn new(path: &str) -> PyResult<Self> {
-        Dawg::load(path)
-            .map(|inner| DawgPy { inner })
-            .map_err(|e| PyIOError::new_err(e.to_string()))
+    #[pyo3(signature = (path, gaddag_path=None))]
+    fn new(path: &str, gaddag_path: Option<&str>) -> PyResult<Self> {
+        let inner = Dawg::load(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        let gaddag = match gaddag_path {
+            Some(gp) => Some(Dawg::load(gp).map_err(|e| PyIOError::new_err(e.to_string()))?),
+            None => match sibling_gaddag_path(path) {
+                Some(gp) if std::path::Path::new(&gp).exists() => {
+                    Some(Dawg::load(&gp).map_err(|e| PyIOError::new_err(e.to_string()))?)
+                }
+                _ => None,
+            },
+        };
+        Ok(DawgPy { inner, gaddag })
     }
 
     fn contains(&self, word: &str) -> bool {
@@ -487,6 +571,11 @@ impl DawgPy {
 
     fn node_count(&self) -> usize {
         self.inner.node_count()
+    }
+
+    /// Whether a GADDAG is loaded (so `get_best_words` uses the fast path).
+    fn has_gaddag(&self) -> bool {
+        self.gaddag.is_some()
     }
 
     fn search(&self, pattern: &str, letters: &str) -> Vec<String> {
@@ -989,6 +1078,10 @@ impl Board {
     ) -> Vec<BestWord> {
         if self.first {
             self.best_opening_words(dawg, letters, n)
+        } else if let Some(gaddag) = &dawg.gaddag {
+            // Fast path: GADDAG anchor generation (equivalent to the legacy
+            // pattern search, verified by the `gen-verify` CLI command).
+            self.gaddag_best_words(&dawg.inner, gaddag, letters, n, parallel)
         } else {
             self.best_words_from_patterns(dawg, letters, n, parallel)
         }
@@ -1237,6 +1330,364 @@ impl Board {
 }
 
 // ---------------------------------------------------------------------------
+// GADDAG move generation (Gordon 1994): anchor + precomputed cross-checks +
+// bidirectional extension. The GADDAG is stored in the same flat format as the
+// DAWG (a `Dawg` loaded from gaddag.bin), so the same node accessors apply; the
+// only difference is that its edges spell reversed-prefix `SEP` forward-suffix.
+// ---------------------------------------------------------------------------
+
+/// Cross-check bitset for placing a tile on an empty square whose perpendicular
+/// neighbours spell `prefix` (above/left, in reading order) and `suffix`
+/// (below/right): bit `letter_index(L)` is set iff `prefix + L + suffix` is a
+/// word. Uses the DAWG (`dawg`), since cross-words are ordinary dictionary
+/// words. A square with no perpendicular neighbours never calls this — it keeps
+/// `CROSS_ANY`.
+fn cross_bits(dawg: &Dawg, prefix: &[char], suffix: &[char]) -> u32 {
+    let mut node = dawg.root;
+    for &ch in prefix {
+        match dawg.find_child(node, ch) {
+            Some(n) => node = n,
+            None => return 0,
+        }
+    }
+    let mut bits = 0u32;
+    let cnt = dawg.node_children_count(node);
+    for i in 0..cnt {
+        let (l, child) = dawg.node_child(node, i);
+        let bit = letter_bit(l);
+        if bit == 0 {
+            continue;
+        }
+        let mut n = child;
+        let mut ok = true;
+        for &ch in suffix {
+            match dawg.find_child(n, ch) {
+                Some(x) => n = x,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok && dawg.node_is_terminal(n) {
+            bits |= bit;
+        }
+    }
+    bits
+}
+
+/// Immutable per-(anchor, orientation) context for one GADDAG traversal. The
+/// mutable search state (rack `freq`, the accumulating word halves, and the
+/// output list) is threaded through the recursion as `&mut` arguments so a
+/// `GenCtx` can be shared read-only and each rayon thread keeps its own state.
+struct GenCtx<'a> {
+    board: &'a Board,
+    gaddag: &'a Dawg,
+    cross: &'a [[u32; BOARD_SIZE]; BOARD_SIZE],
+    ar: usize,
+    ac: usize,
+    horizontal: bool,
+}
+
+/// A generated placement: (row, col, horizontal, word) of the leftmost/topmost
+/// cell. Scored afterwards by `calculate_word_points`, exactly as the legacy
+/// path scores its candidates, so the two agree tile-for-tile.
+type GenMove = (usize, usize, bool, String);
+
+impl<'a> GenCtx<'a> {
+    /// Board cell `off` squares along the play direction from the anchor, or
+    /// `None` if it falls off the board.
+    #[inline]
+    fn cell(&self, off: isize) -> Option<(usize, usize)> {
+        let (r, c) = if self.horizontal {
+            (self.ar as isize, self.ac as isize + off)
+        } else {
+            (self.ar as isize + off, self.ac as isize)
+        };
+        if r >= 0 && r < BOARD_SIZE as isize && c >= 0 && c < BOARD_SIZE as isize {
+            Some((r as usize, c as usize))
+        } else {
+            None
+        }
+    }
+
+    /// True if the cell at `off` is empty or off the board — i.e. a clean word
+    /// boundary, with no existing tile that the word would have to include.
+    #[inline]
+    fn is_free(&self, off: isize) -> bool {
+        match self.cell(off) {
+            Some((r, c)) => self.board.board[r][c] == '-',
+            None => true,
+        }
+    }
+
+    /// Fill the square at `off`: follow an existing tile's arc, or try every
+    /// rack letter the current GADDAG node and the square's cross-check allow.
+    fn gen(
+        &self,
+        node: u32,
+        off: isize,
+        freq: &mut LetterFreq,
+        left: &mut Vec<char>,
+        right: &mut Vec<char>,
+        out: &mut Vec<GenMove>,
+    ) {
+        let (r, c) = match self.cell(off) {
+            Some(rc) => rc,
+            None => return,
+        };
+        let bch = self.board.board[r][c];
+        if bch != '-' {
+            // Existing tile: forced letter, no rack cost, no cross-check.
+            if let Some(next) = self.gaddag.find_child(node, bch) {
+                self.go_on(off, bch, next, freq, left, right, out);
+            }
+            return;
+        }
+        // Empty square: try each arc letter permitted by the cross-check. Use a
+        // real tile if one is left, else a blank (greedy real-first is optimal
+        // for feasibility — reals only fit their own letter, blanks fit any).
+        let allowed = self.cross[r][c];
+        let qi = '?' as usize;
+        let cnt = self.gaddag.node_children_count(node);
+        for i in 0..cnt {
+            let (l, next) = self.gaddag.node_child(node, i);
+            if l == SEP {
+                continue; // direction switch is handled in go_on, not here
+            }
+            if allowed & letter_bit(l) == 0 {
+                continue;
+            }
+            let li = l as usize;
+            let used_real = li < FREQ_SIZE && freq[li] > 0;
+            if used_real {
+                freq[li] -= 1;
+            } else if freq[qi] > 0 {
+                freq[qi] -= 1;
+            } else {
+                continue; // no tile can play this letter
+            }
+            self.go_on(off, l, next, freq, left, right, out);
+            if used_real {
+                freq[li] += 1;
+            } else {
+                freq[qi] += 1;
+            }
+        }
+    }
+
+    /// Having committed letter `l` at `off` (reaching `new_node`), record any
+    /// completed word and recurse: keep extending left, switch direction across
+    /// `SEP`, or keep extending right.
+    fn go_on(
+        &self,
+        off: isize,
+        l: char,
+        new_node: u32,
+        freq: &mut LetterFreq,
+        left: &mut Vec<char>,
+        right: &mut Vec<char>,
+        out: &mut Vec<GenMove>,
+    ) {
+        if off <= 0 {
+            // Left phase: letters accrue anchor-first, i.e. reversed board order.
+            left.push(l);
+            // Switch to the right half only if the word's left end is clean.
+            if self.is_free(off - 1) {
+                if let Some(sep_node) = self.gaddag.find_child(new_node, SEP) {
+                    if self.gaddag.node_is_terminal(sep_node) && self.is_free(1) {
+                        self.record(left, right, out);
+                    }
+                    self.gen(sep_node, 1, freq, left, right, out);
+                }
+            }
+            // Keep extending further left (onto an empty or existing-tile square).
+            self.gen(new_node, off - 1, freq, left, right, out);
+            left.pop();
+        } else {
+            // Right phase: letters accrue in board order.
+            right.push(l);
+            if self.gaddag.node_is_terminal(new_node) && self.is_free(off + 1) {
+                self.record(left, right, out);
+            }
+            self.gen(new_node, off + 1, freq, left, right, out);
+            right.pop();
+        }
+    }
+
+    /// Emit the word currently spelled by `left` (reversed) followed by `right`,
+    /// anchored at its leftmost/topmost cell.
+    fn record(&self, left: &[char], right: &[char], out: &mut Vec<GenMove>) {
+        let len = left.len() + right.len();
+        if len < 2 {
+            return; // a legal play spells a word of at least two letters
+        }
+        let mut word = String::with_capacity(len * 2);
+        for &ch in left.iter().rev() {
+            word.push(ch);
+        }
+        for &ch in right {
+            word.push(ch);
+        }
+        let leftmost_off = -(left.len() as isize - 1);
+        // The leftmost cell was placed, so it is always in bounds.
+        if let Some((r, c)) = self.cell(leftmost_off) {
+            out.push((r, c, self.horizontal, word));
+        }
+    }
+}
+
+impl Board {
+    /// Empty squares orthogonally adjacent to at least one tile — the anchors
+    /// every non-opening play must cover, so generating from each finds every
+    /// legal move.
+    fn anchor_squares(&self) -> Vec<(usize, usize)> {
+        let mut anchors = Vec::new();
+        for r in 0..BOARD_SIZE {
+            for c in 0..BOARD_SIZE {
+                if self.board[r][c] != '-' {
+                    continue;
+                }
+                let adjacent = (r > 0 && self.board[r - 1][c] != '-')
+                    || (r + 1 < BOARD_SIZE && self.board[r + 1][c] != '-')
+                    || (c > 0 && self.board[r][c - 1] != '-')
+                    || (c + 1 < BOARD_SIZE && self.board[r][c + 1] != '-');
+                if adjacent {
+                    anchors.push((r, c));
+                }
+            }
+        }
+        anchors
+    }
+
+    /// Precompute the cross-check bitset for every empty square, for plays in
+    /// the given direction (`horizontal` → vertical cross-words). Squares with
+    /// no perpendicular neighbour stay `CROSS_ANY`.
+    fn compute_cross_checks(&self, dawg: &Dawg, horizontal: bool) -> [[u32; BOARD_SIZE]; BOARD_SIZE] {
+        let mut grid = [[CROSS_ANY; BOARD_SIZE]; BOARD_SIZE];
+        for r in 0..BOARD_SIZE {
+            for c in 0..BOARD_SIZE {
+                if self.board[r][c] != '-' {
+                    continue;
+                }
+                let (prefix, suffix) = if horizontal {
+                    // vertical cross-word: tiles above (top→down) then below
+                    (self.tiles_before(r, c, false), self.tiles_after(r, c, false))
+                } else {
+                    // horizontal cross-word: tiles to the left then the right
+                    (self.tiles_before(r, c, true), self.tiles_after(r, c, true))
+                };
+                if prefix.is_empty() && suffix.is_empty() {
+                    continue;
+                }
+                grid[r][c] = cross_bits(dawg, &prefix, &suffix);
+            }
+        }
+        grid
+    }
+
+    /// Contiguous run of tiles immediately before (r, c) along a row
+    /// (`horizontal`) or column, in reading order (left→right / top→down).
+    fn tiles_before(&self, r: usize, c: usize, horizontal: bool) -> Vec<char> {
+        let mut run = Vec::new();
+        let mut k = 1usize;
+        loop {
+            let cell = if horizontal {
+                c.checked_sub(k).map(|cc| (r, cc))
+            } else {
+                r.checked_sub(k).map(|rr| (rr, c))
+            };
+            let (rr, cc) = match cell {
+                Some(rc) => rc,
+                None => break,
+            };
+            if self.board[rr][cc] == '-' {
+                break;
+            }
+            run.push(self.board[rr][cc]);
+            k += 1;
+        }
+        run.reverse(); // collected nearest-first; reading order wants farthest-first
+        run
+    }
+
+    /// Contiguous run of tiles immediately after (r, c), in reading order.
+    fn tiles_after(&self, r: usize, c: usize, horizontal: bool) -> Vec<char> {
+        let mut run = Vec::new();
+        let mut k = 1usize;
+        loop {
+            let (rr, cc) = if horizontal { (r, c + k) } else { (r + k, c) };
+            if rr >= BOARD_SIZE || cc >= BOARD_SIZE || self.board[rr][cc] == '-' {
+                break;
+            }
+            run.push(self.board[rr][cc]);
+            k += 1;
+        }
+        run
+    }
+
+    /// GADDAG-based replacement for `best_words_from_patterns`: generate every
+    /// legal play via anchor + cross-check + bidirectional extension, then score
+    /// and keep the top `n`. `dawg` supplies cross-word checks; `gaddag` drives
+    /// the traversal.
+    fn gaddag_best_words(
+        &self,
+        dawg: &Dawg,
+        gaddag: &Dawg,
+        letters: &str,
+        n: usize,
+        parallel: bool,
+    ) -> Vec<BestWord> {
+        let cross_h = self.compute_cross_checks(dawg, true);
+        let cross_v = self.compute_cross_checks(dawg, false);
+        let anchors = self.anchor_squares();
+
+        let gen_one = |(ar, ac): (usize, usize)| -> Vec<GenMove> {
+            let mut out = Vec::new();
+            let (mut freq, _) = build_freq(letters);
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            for (horizontal, cross) in [(true, &cross_h), (false, &cross_v)] {
+                let ctx = GenCtx { board: self, gaddag, cross, ar, ac, horizontal };
+                ctx.gen(gaddag.root, 0, &mut freq, &mut left, &mut right, &mut out);
+                left.clear();
+                right.clear();
+            }
+            out
+        };
+
+        let raw: Vec<GenMove> = if parallel {
+            anchors.par_iter().flat_map_iter(|&a| gen_one(a)).collect()
+        } else {
+            anchors.iter().flat_map(|&a| gen_one(a)).collect()
+        };
+
+        // Dedup identical placements (a word covering two anchors is generated
+        // from each), then score every survivor exactly as the legacy path does.
+        let mut seen: std::collections::HashSet<(String, usize, usize, bool)> =
+            std::collections::HashSet::new();
+        let mut best: Vec<(String, u32, usize, usize, bool)> = Vec::new();
+        for (r, c, horizontal, word) in raw {
+            if !seen.insert((word.clone(), r, c, horizontal)) {
+                continue;
+            }
+            let score = self
+                .calculate_word_points(&word, r, c, horizontal, letters)
+                .unwrap_or(0);
+            best.push((word, score, r, c, horizontal));
+        }
+        best.sort_by_key(|&(_, score, ..)| std::cmp::Reverse(score));
+        best.truncate(n);
+        best.into_iter()
+            .map(|(word, score, r, c, horizontal)| {
+                let used = self.hand_tiles_for_word(&word, r, c, horizontal, letters);
+                (word, score, (r, c, horizontal), used)
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DAWG construction
 // ---------------------------------------------------------------------------
 
@@ -1379,9 +1830,12 @@ fn serialize(arena: &Arena, root: u32) -> Vec<u8> {
 
 fn usage(prog: &str) {
     eprintln!(
-        "Usage:\n  {prog} build  <words.txt>  <dawg.bin>\n  \
-                    {prog} lookup <dawg.bin>   <word>\n  \
-                    {prog} bench  <dawg.bin>   <words.txt>"
+        "Usage:\n  {prog} build         <words.txt>  <dawg.bin>\n  \
+                    {prog} build-gaddag  <words.txt>  <gaddag.bin>\n  \
+                    {prog} lookup        <dawg.bin>   <word>\n  \
+                    {prog} bench         <dawg.bin>   <words.txt>\n  \
+                    {prog} gen-verify    <dawg.bin>   <gaddag.bin>  [games]\n  \
+                    {prog} gen-bench     <dawg.bin>   <gaddag.bin>  [games]"
     );
 }
 
@@ -1410,6 +1864,69 @@ fn cmd_build(words_path: &str, dawg_path: &str) -> io::Result<()> {
     }
     eprintln!(
         "  {:.3} MiB → '{dawg_path}'",
+        data.len() as f64 / (1 << 20) as f64
+    );
+    Ok(())
+}
+
+/// Append every GADDAG entry for `word`: for each split point `a`, the
+/// reversed prefix `c_a c_{a-1} … c_0`, then `SEP`, then the forward suffix
+/// `c_{a+1} … c_{n-1}`. During search a word is placed starting at any of its
+/// letters (the "anchor"): walk left through the reversed prefix, cross `SEP`,
+/// then walk right through the suffix. The node after the last suffix letter
+/// (or after `SEP` for an anchor on the final letter) is terminal.
+fn gaddag_entries(word: &str, out: &mut Vec<String>) {
+    let chars: Vec<char> = word.chars().collect();
+    let n = chars.len();
+    for a in 0..n {
+        let mut s = String::with_capacity(n + 1);
+        for i in (0..=a).rev() {
+            s.push(chars[i]);
+        }
+        s.push(SEP);
+        for &c in &chars[a + 1..] {
+            s.push(c);
+        }
+        out.push(s);
+    }
+}
+
+fn cmd_build_gaddag(words_path: &str, gaddag_path: &str) -> io::Result<()> {
+    eprintln!("Reading '{words_path}'…");
+    let text = fs::read_to_string(words_path)?;
+    let mut words: Vec<&str> = text.split_whitespace().collect();
+    words.sort_unstable();
+    words.dedup();
+    eprintln!("  {} unique words", words.len());
+
+    eprintln!("Expanding GADDAG entries…");
+    let mut entries: Vec<String> = Vec::new();
+    for w in &words {
+        gaddag_entries(w, &mut entries);
+    }
+    eprintln!("  {} entries; sorting…", entries.len());
+    entries.sort_unstable();
+    entries.dedup();
+    eprintln!("  {} unique entries", entries.len());
+
+    let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+    let t0 = Instant::now();
+    let (arena, root, node_count) = build_dawg(&refs);
+    let (arena, root) = compact(&arena, root);
+    eprintln!(
+        "  done in {:.2?}  │  {} canonical nodes ({} after minimization + compaction)",
+        t0.elapsed(),
+        node_count,
+        arena.nodes.len()
+    );
+
+    let data = serialize(&arena, root);
+    {
+        let file = fs::File::create(gaddag_path)?;
+        BufWriter::new(file).write_all(&data)?;
+    }
+    eprintln!(
+        "  {:.3} MiB → '{gaddag_path}'",
         data.len() as f64 / (1 << 20) as f64
     );
     Ok(())
@@ -1462,12 +1979,153 @@ fn cmd_bench(dawg_path: &str, words_path: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Advance a self-play position by one move using the current best play,
+/// returning false when no move is possible (game over for our purposes).
+/// Draws the rack up to a full hand, plays the engine's best word, and removes
+/// the used tiles from `rack`.
+fn selfplay_step(board: &mut Board, dpy: &DawgPy, rack: &mut String) -> bool {
+    let drawn = board.give_letters(rack);
+    rack.push_str(&drawn);
+    if rack.is_empty() {
+        return false;
+    }
+    let (word, _score, (r, c, horizontal), used) = board.get_best_word(dpy, rack, false);
+    if word.is_empty() {
+        return false;
+    }
+    let _ = board.place_word(&word, r, c, horizontal);
+    for ch in used {
+        if let Some(pos) = rack.char_indices().find(|&(_, x)| x == ch).map(|(i, _)| i) {
+            rack.remove(pos);
+        }
+    }
+    true
+}
+
+/// Differential test: for many self-play positions, the GADDAG generator's best
+/// score must equal the legacy pattern search's. Exits non-zero on any mismatch.
+fn cmd_gen_verify(dawg_path: &str, gaddag_path: &str, games: usize) -> io::Result<()> {
+    let dawg = Dawg::load(dawg_path)?;
+    let gaddag = Dawg::load(gaddag_path)?;
+    let dpy = DawgPy {
+        inner: dawg,
+        gaddag: Some(gaddag),
+    };
+    let gad = dpy.gaddag.as_ref().unwrap();
+
+    let mut positions = 0usize;
+    let mut mismatches = 0usize;
+    for g in 0..games {
+        let mut board = Board::new().expect("new board");
+        let mut rack = String::new();
+        for _ in 0..40 {
+            // Draw first so the comparison sees the same rack the move uses.
+            let drawn = board.give_letters(&rack);
+            rack.push_str(&drawn);
+            if rack.is_empty() {
+                break;
+            }
+            if !board.first {
+                let legacy = board.best_words_from_patterns(&dpy, &rack, 1, false);
+                let gaddag_moves = board.gaddag_best_words(&dpy.inner, gad, &rack, 1, false);
+                let ls = legacy.first().map(|m| m.1).unwrap_or(0);
+                let gs = gaddag_moves.first().map(|m| m.1).unwrap_or(0);
+                positions += 1;
+                if ls != gs {
+                    mismatches += 1;
+                    if mismatches <= 15 {
+                        eprintln!(
+                            "\nMISMATCH game {g}: legacy={ls} {:?}  gaddag={gs} {:?}\nrack: {rack}\n{}",
+                            legacy.first().map(|m| (&m.0, m.1)),
+                            gaddag_moves.first().map(|m| (&m.0, m.1)),
+                            board.__str__(),
+                        );
+                    }
+                }
+            }
+            // Advance the position with the (gaddag) best move.
+            let (word, _s, (r, c, h), used) = board.get_best_word(&dpy, &rack, false);
+            if word.is_empty() {
+                break;
+            }
+            let _ = board.place_word(&word, r, c, h);
+            for ch in used {
+                if let Some(p) = rack.char_indices().find(|&(_, x)| x == ch).map(|(i, _)| i) {
+                    rack.remove(p);
+                }
+            }
+        }
+    }
+    println!("\ngen-verify: {positions} positions checked, {mismatches} score mismatch(es)");
+    if mismatches > 0 {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+/// Benchmark: single-threaded move-generation time, legacy vs GADDAG, over
+/// self-play positions. Reports average per position and the speedup.
+fn cmd_gen_bench(dawg_path: &str, gaddag_path: &str, games: usize) -> io::Result<()> {
+    let dawg = Dawg::load(dawg_path)?;
+    let gaddag = Dawg::load(gaddag_path)?;
+    let dpy = DawgPy {
+        inner: dawg,
+        gaddag: Some(gaddag),
+    };
+    let gad = dpy.gaddag.as_ref().unwrap();
+
+    let mut positions = 0usize;
+    let mut leg_secs = 0.0f64;
+    let mut gad_secs = 0.0f64;
+    for _ in 0..games {
+        let mut board = Board::new().expect("new board");
+        let mut rack = String::new();
+        for _ in 0..40 {
+            let drawn = board.give_letters(&rack);
+            rack.push_str(&drawn);
+            if rack.is_empty() {
+                break;
+            }
+            if !board.first {
+                let t = Instant::now();
+                let leg = std::hint::black_box(board.best_words_from_patterns(&dpy, &rack, 1, false));
+                leg_secs += t.elapsed().as_secs_f64();
+                let t = Instant::now();
+                let g = std::hint::black_box(board.gaddag_best_words(&dpy.inner, gad, &rack, 1, false));
+                gad_secs += t.elapsed().as_secs_f64();
+                let _ = (leg, g);
+                positions += 1;
+            }
+            if !selfplay_step(&mut board, &dpy, &mut rack) {
+                break;
+            }
+        }
+    }
+
+    let leg_ms = 1e3 * leg_secs / positions.max(1) as f64;
+    let gad_ms = 1e3 * gad_secs / positions.max(1) as f64;
+    println!("\ngen-bench ({positions} positions, single-threaded):");
+    println!("  legacy pattern search : {leg_ms:.3} ms/position");
+    println!("  gaddag generation     : {gad_ms:.3} ms/position");
+    println!("  speedup               : {:.2}x", leg_secs / gad_secs.max(1e-12));
+    Ok(())
+}
+
 pub fn main_cli() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("build") if args.len() == 4 => cmd_build(&args[2], &args[3]),
+        Some("build-gaddag") if args.len() == 4 => cmd_build_gaddag(&args[2], &args[3]),
         Some("lookup") if args.len() == 4 => cmd_lookup(&args[2], &args[3]),
         Some("bench") if args.len() == 4 => cmd_bench(&args[2], &args[3]),
+        Some("gen-verify") if args.len() == 4 || args.len() == 5 => {
+            let games = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(200);
+            cmd_gen_verify(&args[2], &args[3], games)
+        }
+        Some("gen-bench") if args.len() == 4 || args.len() == 5 => {
+            let games = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(200);
+            cmd_gen_bench(&args[2], &args[3], games)
+        }
         _ => {
             usage(&args[0]);
             std::process::exit(1);
@@ -1484,4 +2142,111 @@ fn scrablozaur(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DawgPy>()?;
     m.add_class::<Board>()?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod gaddag_tests {
+    use super::*;
+
+    /// Build a flat DAWG/GADDAG in memory from the given entries (any strings,
+    /// including GADDAG entries containing `SEP`), via the real build pipeline.
+    fn compile(entries: &[&str]) -> Dawg {
+        let mut ws: Vec<&str> = entries.to_vec();
+        ws.sort_unstable();
+        ws.dedup();
+        let (arena, root, _) = build_dawg(&ws);
+        let (arena, root) = compact(&arena, root);
+        Dawg::from_bytes(serialize(&arena, root)).unwrap()
+    }
+
+    fn compile_gaddag(words: &[&str]) -> Dawg {
+        let mut entries = Vec::new();
+        for w in words {
+            gaddag_entries(w, &mut entries);
+        }
+        let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        compile(&refs)
+    }
+
+    /// Every word in the lexicon must be reconstructible from every one of its
+    /// letters (anchors), following the reversed-prefix / SEP / suffix path.
+    #[test]
+    fn gaddag_reconstructs_every_word_from_every_anchor() {
+        let words = ["kot", "kota", "koty", "as", "ma", "mama", "tom"];
+        let g = compile_gaddag(&words);
+        for w in words {
+            let chars: Vec<char> = w.chars().collect();
+            for a in 0..chars.len() {
+                // Walk reversed prefix, SEP, then suffix; the end must be terminal.
+                let mut node = g.root;
+                let mut ok = true;
+                for i in (0..=a).rev() {
+                    match g.find_child(node, chars[i]) {
+                        Some(n) => node = n,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                assert!(ok, "prefix walk failed for {w} anchor {a}");
+                node = g.find_child(node, SEP).expect("SEP edge");
+                for &c in &chars[a + 1..] {
+                    node = g.find_child(node, c).expect("suffix edge");
+                }
+                assert!(g.node_is_terminal(node), "{w} not terminal at anchor {a}");
+            }
+        }
+        // A non-word must not appear as any anchor's path.
+        let n = g.find_child(g.root, 'x');
+        assert!(n.is_none() || !g.node_is_terminal(g.find_child(n.unwrap(), SEP).unwrap_or(g.root)));
+    }
+
+    /// cross_bits sets exactly the letters that complete a valid cross-word.
+    #[test]
+    fn cross_bits_matches_dictionary() {
+        // Dictionary where only some completions of "k_t" / "_t" are words.
+        let dawg = compile(&["kot", "kit", "at", "ot", "ma"]);
+        // prefix "k", suffix "t": allowed middles are o (kot) and i (kit).
+        let bits = cross_bits(&dawg, &['k'], &['t']);
+        assert_ne!(bits & letter_bit('o'), 0);
+        assert_ne!(bits & letter_bit('i'), 0);
+        assert_eq!(bits & letter_bit('a'), 0, "kat is not in the lexicon");
+        // prefix empty, suffix "t": allowed leaders are a (at) and o (ot).
+        let bits = cross_bits(&dawg, &[], &['t']);
+        assert_ne!(bits & letter_bit('a'), 0);
+        assert_ne!(bits & letter_bit('o'), 0);
+        assert_eq!(bits & letter_bit('k'), 0);
+    }
+
+    /// The GADDAG generator finds a simple hook, and blanks stand in for a
+    /// missing letter.
+    #[test]
+    fn generator_finds_hook_and_uses_blank() {
+        let dawg = compile(&["kot", "koty", "ty", "oto"]);
+        let gaddag = compile_gaddag(&["kot", "koty", "ty", "oto"]);
+        let mut board = Board::new().unwrap();
+        board.place_word("kot", 7, 7, true).unwrap();
+        board.first = false;
+
+        // With a 'y' in hand, "koty" (hooking 'y' after "kot") must be found.
+        let moves = board.gaddag_best_words(&dawg, &gaddag, "y", 5, false);
+        assert!(
+            moves.iter().any(|(w, ..)| w == "koty"),
+            "expected 'koty' hook, got {:?}",
+            moves.iter().map(|m| &m.0).collect::<Vec<_>>()
+        );
+
+        // With only a blank, the same hook must still be found (blank = y).
+        let moves_blank = board.gaddag_best_words(&dawg, &gaddag, "?", 5, false);
+        assert!(
+            moves_blank.iter().any(|(w, ..)| w == "koty"),
+            "expected 'koty' via blank, got {:?}",
+            moves_blank.iter().map(|m| &m.0).collect::<Vec<_>>()
+        );
+    }
 }

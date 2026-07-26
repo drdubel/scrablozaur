@@ -1,8 +1,22 @@
 class Dawg:
-    """DAWG (Directed Acyclic Word Graph) dictionary loaded from a binary file."""
+    """DAWG (Directed Acyclic Word Graph) dictionary loaded from a binary file.
 
-    def __init__(self, path: str) -> None:
-        """Load a DAWG from a .bin file built with the `build` command."""
+    Also carries a GADDAG for the same lexicon (loaded from a sibling
+    `gaddag.bin`, or an explicit path) that powers `Board.get_best_words`
+    move generation. Word lookups (`contains`) always use the compact DAWG.
+    """
+
+    def __init__(self, path: str, gaddag_path: str | None = None) -> None:
+        """Load a DAWG from a .bin file built with the `build` command.
+
+        If `gaddag_path` is omitted, a sibling GADDAG is auto-loaded when
+        present: same directory, with `dawg` replaced by `gaddag` in the
+        filename (e.g. `words/dawg.bin` -> `words/gaddag.bin`, built with the
+        `build-gaddag` command). When a GADDAG is loaded, `Board.get_best_words`
+        uses fast anchor-based generation; otherwise it falls back to the legacy
+        DAWG pattern search. Pass an explicit `gaddag_path` to override, or leave
+        both absent to run purely on the DAWG.
+        """
 
     def contains(self, word: str) -> bool:
         """Return True if the word exists in the dictionary."""
@@ -12,6 +26,10 @@ class Dawg:
 
     def node_count(self) -> int:
         """Return the number of nodes in the DAWG after minimization."""
+
+    def has_gaddag(self) -> bool:
+        """Whether a GADDAG is loaded, i.e. whether `Board.get_best_words`
+        uses the fast anchor-based generator rather than the legacy fallback."""
 
     def search(self, pattern: str, letters: str) -> list[str]:
         """Find all words matching the pattern, using letters from the bag.
@@ -110,13 +128,19 @@ class Board:
     ) -> list[tuple[str, int, tuple[int, int, bool], list[str]]]:
         """Find the `n` best scoring words that can be placed on the board with the given letters.
 
-        This method searches through all valid patterns on the board and uses the DAWG
-        to find matching words that can be formed with the provided letters. It returns
-        up to `n` candidates, best scoring first, each with its position and orientation.
-        Each returned list contains the letters used from the player's hand for that candidate,
-        one entry per newly placed tile. Real tiles are allocated before blanks, so a letter
-        used more times than the hand has real copies of it reports `'?'` (a blank standing in
-        for it, scoring 0) for the extra occurrences rather than the literal letter.
+        Returns up to `n` candidates, best scoring first, each with its position and
+        orientation. Each returned list contains the letters used from the player's hand
+        for that candidate, one entry per newly placed tile. Real tiles are allocated before
+        blanks, so a letter used more times than the hand has real copies of it reports `'?'`
+        (a blank standing in for it, scoring 0) for the extra occurrences rather than the
+        literal letter.
+
+        When the `Dawg` carries a GADDAG (see `Dawg.__init__`), this enumerates every legal
+        play via anchor-based bidirectional generation and returns the true top `n`. The
+        legacy DAWG fallback keeps only the single best word per board span before ranking,
+        so for `n > 1` it can under-report a span's other high-scoring plays; the best move
+        (`n == 1`, `get_best_word`) is identical for both. Scores are computed identically
+        either way.
         """
 
     def get_best_word(
