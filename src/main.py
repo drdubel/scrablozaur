@@ -220,7 +220,10 @@ def _print_benchmark_results(
                 ["CPU time (total)", f"{cpu_total:.2f}s"],
                 ["CPU time (avg/core)", f"{avg_cpu_per_core:.2f}s"],
                 ["CPU utilization (avg/core)", f"{cpu_total / (wall_elapsed * n_workers) * 100:.1f}%"],
-                ["Avg time per move", f"{avg_move_time_ms:.2f} ms"],
+                ["Avg time per game", f"{wall_elapsed / games_played * 1000:.2f} ms"],
+                ["Avg time per move (avg per game)", f"{avg_move_time_ms:.2f} ms"],
+                ["Avg moves per game", f"{sum(word_counts.values()) / games_played:.2f}"],
+                ["Moves played", str(sum(word_counts.values()))],
                 ["Distinct words played", str(len(word_counts))],
                 ["Best single-player score", f"{best_score}"],
             ],
@@ -243,20 +246,7 @@ def _print_benchmark_results(
         )
     )
 
-    most_placed = word_counts.most_common(10)
-    least_placed = sorted(word_counts.items(), key=lambda item: item[1])[:10]
     print()
-    print(
-        _render_table(
-            ["#", "Most placed", "Count", "Least placed", "Count"],
-            [
-                [str(i + 1), most_word, str(most_count), least_word, str(least_count)]
-                for i, ((most_word, most_count), (least_word, least_count)) in enumerate(zip(most_placed, least_placed))
-            ],
-            align="llrlr",
-        )
-    )
-
     print("Best game transcript written to:", best_game_path)
 
     plt.hist(list(p1_scores.keys()), weights=list(p1_scores.values()), bins=20, label="Player 1")
