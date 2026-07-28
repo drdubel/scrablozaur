@@ -28,7 +28,9 @@ INPUT_DIM = len(ALPHABET) + 1 + N_BOARD_FEATURES
 _WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "models", "leave_value.pt")
 
 
-def encode_leave(leave: str, unseen_tiles: int, board_features: tuple[float, ...]) -> torch.Tensor:
+def encode_leave(
+    leave: str, unseen_tiles: int, board_features: tuple[float, ...]
+) -> torch.Tensor:
     """Feature vector for a rack leave: one count per tile type, a scalar
     for how many tiles are still unseen (not on the board or in this
     player's hand -- i.e. in the bag or the opponent's rack), and the 5
@@ -46,7 +48,9 @@ def encode_leave(leave: str, unseen_tiles: int, board_features: tuple[float, ...
     return x
 
 
-def encode_leaves(leaves: np.ndarray, unseen_tiles: np.ndarray, board_features: np.ndarray) -> torch.Tensor:
+def encode_leaves(
+    leaves: np.ndarray, unseen_tiles: np.ndarray, board_features: np.ndarray
+) -> torch.Tensor:
     """Vectorized batch equivalent of calling encode_leave() once per
     sample -- same feature semantics, see its docstring. `board_features`
     is an (N, 5) array (already plain floats -- see generate_data.py's
@@ -79,7 +83,9 @@ class LeaveValueNet(nn.Module):
     """MLP over rack-leave features. No convolution: a leave is an
     unordered multiset of tiles, with no spatial structure to exploit."""
 
-    def __init__(self, hidden1: int = _LEGACY_HIDDEN1, hidden2: int = _LEGACY_HIDDEN2) -> None:
+    def __init__(
+        self, hidden1: int = _LEGACY_HIDDEN1, hidden2: int = _LEGACY_HIDDEN2
+    ) -> None:
         super().__init__()
         self.hidden1 = hidden1
         self.hidden2 = hidden2
@@ -109,6 +115,11 @@ def get_model(path: str = DEFAULT_WEIGHTS_PATH) -> LeaveValueNet:
     falling back to the original architecture for older checkpoints that
     predate that (see _LEGACY_HIDDEN1/2 above)."""
     if path not in _models:
+        # This tiny MLP is only ever run on small batches (one decision's ~50
+        # candidates or ~127 exchange subsets); Torch's intra-op threading gives
+        # no measurable speedup there (flat across 1..8 threads) and oversubscribes
+        # when many pool workers each spin up all-core Torch. Pin to one thread.
+        torch.set_num_threads(1)
         ckpt = torch.load(path, map_location="cpu", weights_only=True)
         if ckpt["alphabet"] != ALPHABET:
             raise ValueError(f"{path} was trained against a different tile alphabet")
@@ -121,7 +132,9 @@ def get_model(path: str = DEFAULT_WEIGHTS_PATH) -> LeaveValueNet:
                 f"{path} was trained with input_dim={ckpt_input_dim}, but the current feature set is "
                 f"INPUT_DIM={INPUT_DIM} -- regenerate the dataset and retrain against the current encoding."
             )
-        model = LeaveValueNet(ckpt.get("hidden1", _LEGACY_HIDDEN1), ckpt.get("hidden2", _LEGACY_HIDDEN2))
+        model = LeaveValueNet(
+            ckpt.get("hidden1", _LEGACY_HIDDEN1), ckpt.get("hidden2", _LEGACY_HIDDEN2)
+        )
         model.load_state_dict(ckpt["state_dict"])
         model.eval()
         _models[path] = model

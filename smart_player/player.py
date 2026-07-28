@@ -11,6 +11,7 @@ import itertools
 import os
 import sys
 
+import numpy as np
 import torch
 
 from scrablozaur import Board, Dawg
@@ -19,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import StrategicPlayer  # noqa: E402
 
 from board_features import encode_board  # noqa: E402
-from model import DEFAULT_WEIGHTS_PATH, encode_leave, get_model  # noqa: E402
+from model import DEFAULT_WEIGHTS_PATH, encode_leave, encode_leaves, get_model  # noqa: E402
 
 
 def remove_used(letters: str, used: list[str]) -> str:
@@ -46,19 +47,40 @@ class SmartPlayer(StrategicPlayer):
         super().__init__(board)
         self.model_path = model_path
 
-    def get_best_word(self, dawg: Dawg, parallel: bool) -> tuple[str, int, tuple[int, int, bool], list[str]]:
+    def get_best_word(
+        self, dawg: Dawg, parallel: bool
+    ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
         # The real board/rack don't change across the ~50 candidates being
         # compared in one decision -- only each candidate's hypothetical
-        # placement does. Computing board features (and unseen-tile count)
-        # once per turn here, instead of once per evaluate_word() call,
-        # avoids redundantly recomputing the same value up to 50x per move.
+        # placement does. Compute the shared board features and unseen-tile
+        # count once per turn here, then score every candidate's leave in a
+        # *single* batched forward pass, rather than one batch-size-1 forward
+        # (and its per-call dispatch overhead) per candidate.
         self._board_features = encode_board(self.board)
         self._unseen_tiles = len(self.get_letters_left())
-        return super().get_best_word(dawg, parallel)
+        words = self.get_best_words(dawg, self.letters, parallel)
+        if not words:
+            return ("", 0, (0, 0, True), [])
+        leaves = [
+            remove_used(self.letters, used) for (_word, _pts, _pos, used) in words
+        ]
+        values = self._leave_values(leaves)
+        # Same key and first-max tie-break as StrategicPlayer's per-candidate
+        # max(evaluate_word): highest move score plus rounded leave value.
+        best_word, _ = max(zip(words, values), key=lambda wv: wv[0][1] + round(wv[1]))
+        return (best_word[0], best_word[1], best_word[2], best_word[3])
 
     def evaluate_word(
-        self, dawg: Dawg, word: str, points: int, position: tuple[int, int, bool], used: list[str]
+        self,
+        dawg: Dawg,
+        word: str,
+        points: int,
+        position: tuple[int, int, bool],
+        used: list[str],
     ) -> int:
+        """Single-candidate ranking value (move score + rounded leave value).
+        `get_best_word` ranks the real candidate set in one batched pass
+        instead of calling this per candidate; kept for direct/external use."""
         leave = remove_used(self.letters, used)
         return points + round(self._leave_value(leave))
 
@@ -75,6 +97,23 @@ class SmartPlayer(StrategicPlayer):
             x = encode_leave(leave, self._unseen_tiles, self._board_features)
             return get_model(self.model_path)(x.unsqueeze(0)).item()
 
+    def _leave_values(self, leaves: list[str]) -> list[float]:
+        """Batched `_leave_value`: predicted value of each leave in `leaves`,
+        in the current turn's cached board context, via one forward pass.
+        Reuses model.encode_leaves (the vectorized encoder already used for
+        dataset construction) so the whole (N, INPUT_DIM) batch is built with
+        a handful of numpy passes rather than N per-sample tensor builds."""
+        if not leaves:
+            return []
+        leaves_arr = np.asarray(leaves)
+        unseen = np.full(len(leaves), self._unseen_tiles, dtype=np.float32)
+        board_feats = np.tile(
+            np.asarray(self._board_features, dtype=np.float32), (len(leaves), 1)
+        )
+        x = encode_leaves(leaves_arr, unseen, board_feats)
+        with torch.inference_mode():
+            return get_model(self.model_path)(x).tolist()
+
     def _best_exchange(self) -> tuple[str, float]:
         """Brute-force every non-empty subset of the rack to discard (i.e.
         every non-full subset to keep) and return (letters_to_exchange,
@@ -84,24 +123,35 @@ class SmartPlayer(StrategicPlayer):
         hand-tuned heuristic."""
         letters = self.letters
         n = len(letters)
-        best_value = float("-inf")
-        best_discard = ""
+        keeps: list[str] = []
+        discards: list[str] = []
         for discard_size in range(1, n + 1):
             for discard_idx in itertools.combinations(range(n), discard_size):
                 idx_set = set(discard_idx)
-                keep = "".join(ch for i, ch in enumerate(letters) if i not in idx_set)
-                value = self._leave_value(keep)
-                if value > best_value:
-                    best_value = value
-                    best_discard = "".join(letters[i] for i in discard_idx)
-        return best_discard, best_value
+                keeps.append(
+                    "".join(ch for i, ch in enumerate(letters) if i not in idx_set)
+                )
+                discards.append("".join(letters[i] for i in discard_idx))
+        if not keeps:
+            return "", float("-inf")
+        # One batched forward over all subsets instead of 127 batch-size-1 calls.
+        values = self._leave_values(keeps)
+        # `max` returns the first index at the maximum -- the same subset the
+        # original strict `value > best_value` scan (which kept the earliest
+        # max) would have chosen.
+        best_i = max(range(len(values)), key=values.__getitem__)
+        return discards[best_i], values[best_i]
 
     def play_word(self, dawg: Dawg, parallel: bool = False) -> str | None:
         """Returns the played word, `None` if letters were exchanged instead
         (a real, repeatable action -- not "no play"), or `""` only when
         genuinely no action is available (no legal word and can't exchange)."""
         word, points, position, used = self.get_best_word(dawg, parallel)
-        word_value = points + round(self._leave_value(remove_used(self.letters, used))) if word else float("-inf")
+        word_value = (
+            points + round(self._leave_value(remove_used(self.letters, used)))
+            if word
+            else float("-inf")
+        )
 
         if self.board.can_exchange():
             discard, exchange_value = self._best_exchange()

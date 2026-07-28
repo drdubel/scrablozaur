@@ -43,7 +43,9 @@ class SimplePlayer:
         else:
             min_vowel = 1
             min_consonant = 2
-            letters_to_exchange += "".join(vowels[::-1][min_vowel:]) + "".join(consonants[::-1][min_consonant:])
+            letters_to_exchange += "".join(vowels[::-1][min_vowel:]) + "".join(
+                consonants[::-1][min_consonant:]
+            )
 
         return letters_to_exchange
 
@@ -60,7 +62,9 @@ class SimplePlayer:
         (a real, repeatable action -- not "no play"), or `""` only when
         genuinely no action is available (no legal word and can't exchange).
         """
-        word, points, position, used = self.board.get_best_word(dawg, self.letters, parallel)
+        word, points, position, used = self.board.get_best_word(
+            dawg, self.letters, parallel
+        )
         if not word:
             if self.board.can_exchange():
                 self.exchange_letters(self.get_letters_to_exchange())
@@ -109,9 +113,13 @@ class StrategicPlayer:
 
     def get_letters_left(self) -> list[str]:
         """Return the letters used in the last played word for scoring purposes."""
-        used_letters = [ch for ch in self.board.__str__().split() if ch != "-"] + [ch for ch in self.letters]
+        used_letters = [ch for ch in self.board.__str__().split() if ch != "-"] + [
+            ch for ch in self.letters
+        ]
 
-        return list((Counter(self.board.fresh_tile_bag()) - Counter(used_letters)).elements())
+        return list(
+            (Counter(self.board.fresh_tile_bag()) - Counter(used_letters)).elements()
+        )
 
     def get_best_words(
         self, dawg: Dawg, letters: str, parallel: bool
@@ -121,21 +129,39 @@ class StrategicPlayer:
 
         return words
 
-    def get_best_word(self, dawg: Dawg, parallel: bool) -> tuple[str, int, tuple[int, int, bool], list[str]]:
+    def get_best_word(
+        self, dawg: Dawg, parallel: bool
+    ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
         """Find the best scoring word from the player's letters on the board."""
         words = self.get_best_words(dawg, self.letters, parallel)
+        # The leave heuristic (sum of letter_points over the unseen tiles) is
+        # identical for every candidate in this decision -- it depends only on
+        # the board and rack, not the candidate -- so compute it once here
+        # instead of re-deriving it inside evaluate_word for all ~50 candidates.
+        self._leave_points = sum(
+            self.board.letter_points(ch) for ch in self.get_letters_left()
+        )
         best_word = max(words, key=lambda w: self.evaluate_word(dawg, *w), default=None)
 
-        return (best_word[0], best_word[1], best_word[2], best_word[3]) if best_word else ("", 0, (0, 0, True), [])
+        return (
+            (best_word[0], best_word[1], best_word[2], best_word[3])
+            if best_word
+            else ("", 0, (0, 0, True), [])
+        )
 
     def evaluate_word(
-        self, dawg: Dawg, word: str, points: int, position: tuple[int, int, bool], used: list[str]
+        self,
+        dawg: Dawg,
+        word: str,
+        points: int,
+        position: tuple[int, int, bool],
+        used: list[str],
     ) -> int:
-        """Evaluate the score of placing a word on the board at the given position and orientation."""
-        left_points = sum(self.board.letter_points(ch) for ch in self.get_letters_left())
-        score = points + left_points
-
-        return score
+        """Rank a candidate by its move score plus the value of the leave. The
+        leave term is constant across a decision's candidates, so get_best_word
+        precomputes it into self._leave_points once per move; this stays
+        argmax-equivalent to computing it per candidate."""
+        return points + self._leave_points
 
     def get_letters_to_exchange(self) -> str:
         """Determine which letters to exchange based on the current hand and letter balance."""
@@ -151,7 +177,9 @@ class StrategicPlayer:
         else:
             min_vowel = 1
             min_consonant = 2
-            letters_to_exchange += "".join(vowels[::-1][min_vowel:]) + "".join(consonants[::-1][min_consonant:])
+            letters_to_exchange += "".join(vowels[::-1][min_vowel:]) + "".join(
+                consonants[::-1][min_consonant:]
+            )
 
         return letters_to_exchange
 
