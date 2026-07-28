@@ -360,9 +360,9 @@ Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):
 
 ```
 Results (5 × 2584337 = 12921685 lookups):
-  total time  : 911.724ms
-  throughput  : 14172796 lookups/s
-  per lookup  : 70.6 ns
+  total time  : 401.829ms
+  throughput  : 32157174 lookups/s
+  per lookup  : 31.1 ns
   hits        : 12921685/12921685 (100.0%)
 ```
 
