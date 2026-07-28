@@ -89,7 +89,9 @@ def _render_table(headers: list[str], rows: list[list[str]], align: str | None =
     return "\n".join(lines)
 
 
-def graj(parallel: bool = False, debug: bool = False) -> tuple[int, int, str, float, Counter[str], float, int]:
+def graj(
+    p1_type: str, p2_type: str, parallel: bool = False, debug: bool = False
+) -> tuple[int, int, str, float, Counter[str], float, int]:
     cpu_start = _rusage_self_now()
 
     log: list[str] = []
@@ -116,8 +118,25 @@ def graj(parallel: bool = False, debug: bool = False) -> tuple[int, int, str, fl
 
     b = Board()
 
-    p1 = SimplePlayer(b)
-    p2 = SimplePlayer(b)
+    match p1_type:
+        case "1":
+            p1 = SimplePlayer(b)
+        case "2":
+            p1 = StrategicPlayer(b)
+        case "3":
+            p1 = SmartPlayer(b)
+        case _:
+            raise ValueError(f"Unknown player type: {p1_type}")
+
+    match p2_type:
+        case "1":
+            p2 = SimplePlayer(b)
+        case "2":
+            p2 = StrategicPlayer(b)
+        case "3":
+            p2 = SmartPlayer(b)
+        case _:
+            raise ValueError(f"Unknown player type: {p2_type}")
 
     opener = p1 if random() < 0.5 else p2
     second = p2 if opener is p1 else p1
@@ -249,7 +268,7 @@ def _print_benchmark_results(
     # plt.show()
 
 
-def benchmark(N: int, n_workers: int | None = None, debug: bool = False) -> None:
+def benchmark(N: int, p1_type: str, p2_type: str, n_workers: int | None = None, debug: bool = False) -> None:
     # Scores are heavily repeated across thousands of games, so track
     # {score: occurrences} per player instead of one entry per game -- keeps
     # memory bounded by the number of distinct scores rather than N.
@@ -282,7 +301,9 @@ def benchmark(N: int, n_workers: int | None = None, debug: bool = False) -> None
             with tqdm(total=N, desc="Games played") as pbar:
                 batch_size = n_workers * 1000
                 for i in range(0, N, batch_size):
-                    futures = [executor.submit(graj, parallel, debug) for _ in range(min(batch_size, N - i))]
+                    futures = [
+                        executor.submit(graj, p1_type, p2_type, parallel, debug) for _ in range(min(batch_size, N - i))
+                    ]
 
                     for future in as_completed(futures):
                         p1, p2, transcript, cpu_time, game_words, move_time, move_count = future.result()
@@ -350,9 +371,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark the engine by playing simulated games.")
     parser.add_argument("games", type=int, nargs="?", default=10000, help="Number of games to play (default: 10000)")
     parser.add_argument(
-        "workers",
-        type=int,
+        "p1",
+        type=str,
         nargs="?",
+        default="1",
+        help="Player 1 type: 1=Simple, 2=Strategic, 3=Smart (default: 1)",
+    )
+    parser.add_argument(
+        "p2",
+        type=str,
+        nargs="?",
+        default="1",
+        help="Player 2 type: 1=Simple, 2=Strategic, 3=Smart (default: 1)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
         default=None,
         help="Number of worker processes to use (default: all available cores)",
     )
@@ -371,4 +405,4 @@ if __name__ == "__main__":
         # reads RAYON_NUM_THREADS when it builds its move-generation pool.
         os.environ["RAYON_NUM_THREADS"] = str(args.threads)
 
-    benchmark(args.games, args.workers, args.debug)
+    benchmark(args.games, args.p1, args.p2, args.workers, args.debug)
