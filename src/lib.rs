@@ -220,6 +220,19 @@ fn letter_bit(c: char) -> u32 {
     letter_index(c).map_or(0, |i| 1u32 << i)
 }
 
+/// Symbol index for the flat DAWG's per-node child bitmap: `0..31` for the
+/// alphabet letters (matching `letter_index`), `32` for the GADDAG `SEP` edge.
+/// `None` for anything else — there should be no such edges in a well-formed
+/// lexicon, and the runtime falls back to a linear scan for them.
+#[inline]
+fn symbol_index(c: char) -> Option<u32> {
+    if c == SEP {
+        Some(ALPHABET_SIZE as u32)
+    } else {
+        letter_index(c).map(|i| i as u32)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Move-generation thread pool
 // ---------------------------------------------------------------------------
@@ -302,10 +315,28 @@ impl Arena {
 // Flat, read-only DAWG loaded from a binary file
 // ---------------------------------------------------------------------------
 
+/// One decoded outgoing edge of a flat DAWG node: the edge letter, its
+/// precomputed cross-check bit (`letter_bit`, `0` for `SEP`/non-alphabet), and
+/// the child node id. Decoding the codepoint and bit once at load keeps them
+/// off the traversal hot path.
+struct Child {
+    ch: char,
+    bit: u32,
+    id: u32,
+}
+
+/// Flat, read-only DAWG/GADDAG decoded from its binary file into a
+/// direct-indexed form. Per node: a `terminal` flag and a 33-bit child-presence
+/// `bitmap` (bit `symbol_index(letter)`); `child_start` delimits each node's
+/// slice of the contiguous `children`, packed in symbol-index order. `find_child`
+/// is O(1) via the bitmap + a popcount; iteration reads the decoded `Child`
+/// slice directly, with no per-edge codepoint decoding.
 struct Dawg {
-    data: Vec<u8>,
     root: u32,
-    offset_table: Vec<usize>,
+    terminal: Vec<bool>,
+    child_start: Vec<u32>,
+    bitmap: Vec<u64>,
+    children: Vec<Child>,
 }
 
 impl Dawg {
@@ -320,54 +351,95 @@ impl Dawg {
         let root = u32::from_le_bytes(data[0..4].try_into().unwrap());
         let node_count = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
 
-        let mut offset_table = Vec::with_capacity(node_count);
+        let mut terminal = Vec::with_capacity(node_count);
+        let mut child_start = Vec::with_capacity(node_count + 1);
+        let mut bitmap = Vec::with_capacity(node_count);
+        let mut children: Vec<Child> = Vec::new();
+
         let mut pos = 8usize;
         for _ in 0..node_count {
-            offset_table.push(pos);
+            child_start.push(children.len() as u32);
+            terminal.push(data[pos] != 0);
             pos += 1;
             let n_children = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-            pos += 4 + n_children * 8;
+            pos += 4;
+            let start = children.len();
+            for _ in 0..n_children {
+                let cp = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+                let cid = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
+                pos += 8;
+                let ch = char::from_u32(cp).unwrap();
+                children.push(Child { ch, bit: letter_bit(ch), id: cid });
+            }
+            // Pack this node's children in symbol-index order (any non-alphabet,
+            // non-SEP edge sorts after all known symbols) so the child bitmap and
+            // the popcount indexing in `find_child` stay exact.
+            children[start..].sort_by_key(|c| symbol_index(c.ch).unwrap_or(u32::MAX));
+            let mut bm = 0u64;
+            for c in &children[start..] {
+                if let Some(sym) = symbol_index(c.ch) {
+                    bm |= 1u64 << sym;
+                }
+            }
+            bitmap.push(bm);
         }
+        child_start.push(children.len() as u32);
 
         Ok(Self {
-            data,
             root,
-            offset_table,
+            terminal,
+            child_start,
+            bitmap,
+            children,
         })
     }
 
     #[inline]
     fn node_is_terminal(&self, id: u32) -> bool {
-        self.data[self.offset_table[id as usize]] != 0
+        self.terminal[id as usize]
     }
 
     #[inline]
     fn node_children_count(&self, id: u32) -> usize {
-        let base = self.offset_table[id as usize] + 1;
-        u32::from_le_bytes(self.data[base..base + 4].try_into().unwrap()) as usize
+        let i = id as usize;
+        (self.child_start[i + 1] - self.child_start[i]) as usize
+    }
+
+    /// The node's decoded outgoing edges, packed in symbol-index order.
+    #[inline]
+    fn node_children(&self, id: u32) -> &[Child] {
+        let i = id as usize;
+        &self.children[self.child_start[i] as usize..self.child_start[i + 1] as usize]
     }
 
     #[inline]
     fn node_child(&self, id: u32, i: usize) -> (char, u32) {
-        let base = self.offset_table[id as usize] + 1 + 4 + i * 8;
-        let cp = u32::from_le_bytes(self.data[base..base + 4].try_into().unwrap());
-        let cid = u32::from_le_bytes(self.data[base + 4..base + 8].try_into().unwrap());
-        (char::from_u32(cp).unwrap(), cid)
+        let ch = &self.children[self.child_start[id as usize] as usize + i];
+        (ch.ch, ch.id)
     }
 
+    /// O(1) edge lookup: the child bitmap tells whether an edge for `c` exists,
+    /// and a popcount of the bits below it gives its index in the packed slice.
     #[inline]
     fn find_child(&self, id: u32, c: char) -> Option<u32> {
-        let (mut lo, mut hi) = (0usize, self.node_children_count(id));
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let (mc, mid_id) = self.node_child(id, mid);
-            match mc.cmp(&c) {
-                std::cmp::Ordering::Equal => return Some(mid_id),
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
+        let i = id as usize;
+        match symbol_index(c) {
+            Some(sym) => {
+                let bit = 1u64 << sym;
+                let bm = self.bitmap[i];
+                if bm & bit == 0 {
+                    return None;
+                }
+                let off = (bm & (bit - 1)).count_ones() as usize;
+                Some(self.children[self.child_start[i] as usize + off].id)
             }
+            // Non-alphabet, non-SEP edges are absent from the bitmap; scan for them.
+            None => self
+                .node_children(id)
+                .iter()
+                .find(|ch| ch.ch == c)
+                .map(|ch| ch.id),
         }
-        None
     }
 
     fn contains(&self, word: &str) -> bool {
@@ -403,7 +475,7 @@ impl Dawg {
     }
 
     fn node_count(&self) -> usize {
-        self.offset_table.len()
+        self.terminal.len()
     }
 
     /// Traverse the DAWG matching `pattern` against the given letter bag.
@@ -1434,8 +1506,10 @@ struct GenCtx<'a> {
     cross_score: &'a [[u32; BOARD_SIZE]; BOARD_SIZE],
     /// Whether a cross-word forms at each empty square (has a perpendicular tile).
     has_cross: &'a [[bool; BOARD_SIZE]; BOARD_SIZE],
-    /// The rack, for word-order real-vs-blank allocation while scoring.
-    letters: &'a str,
+    /// Count of each real (non-blank) rack letter, indexed by `letter_index`.
+    /// Precomputed once per move so `score_word`'s word-order real-vs-blank
+    /// allocation is a cheap array copy, not a per-word map allocation.
+    rack_counts: [u8; ALPHABET_SIZE],
     ar: usize,
     ac: usize,
     horizontal: bool,
@@ -1511,13 +1585,15 @@ impl<'a> GenCtx<'a> {
         // for feasibility — reals only fit their own letter, blanks fit any).
         let allowed = self.cross[r][c];
         let qi = '?' as usize;
-        let cnt = self.gaddag.node_children_count(node);
-        for i in 0..cnt {
-            let (l, next) = self.gaddag.node_child(node, i);
+        // Iterate the node's decoded children directly: `bit` is the precomputed
+        // cross-check mask (0 for SEP), so the hot loop avoids re-decoding the
+        // edge codepoint and recomputing `letter_bit` on every arc.
+        for entry in self.gaddag.node_children(node) {
+            let l = entry.ch;
             if l == SEP {
                 continue; // direction switch is handled in go_on, not here
             }
-            if allowed & letter_bit(l) == 0 {
+            if allowed & entry.bit == 0 {
                 continue;
             }
             let li = l as usize;
@@ -1529,7 +1605,7 @@ impl<'a> GenCtx<'a> {
             } else {
                 continue; // no tile can play this letter
             }
-            self.go_on(off, l, next, next_budget, freq, left, right, out);
+            self.go_on(off, l, entry.id, next_budget, freq, left, right, out);
             if used_real {
                 freq[li] += 1;
             } else {
@@ -1613,16 +1689,18 @@ impl<'a> GenCtx<'a> {
         let mut main_word_mul = 1u32;
         let mut cross_total = 0u32;
         let mut tiles_from_hand = 0usize;
-        let mut hand_freq = real_letter_counts(self.letters);
+        // A fresh copy of the real-letter counts to spend as we walk the word --
+        // a 32-byte stack array, not a per-word HashMap allocation.
+        let mut hand = self.rack_counts;
         for (i, ch) in word.chars().enumerate() {
             let (r, c) = word_cell(r0, c0, self.horizontal, i);
             let (lm, wm) = quadrant_bonus(r, c);
             let (lm, wm) = (lm as u32, wm as u32);
             if self.board.board[r][c] == '-' {
                 // New tile: a real copy if the hand still has one, else a blank (0).
-                let v = match hand_freq.get_mut(&ch) {
-                    Some(count) if *count > 0 => {
-                        *count -= 1;
+                let v = match letter_index(ch) {
+                    Some(idx) if hand[idx] > 0 => {
+                        hand[idx] -= 1;
                         letter_points(ch)
                     }
                     _ => 0,
@@ -1799,6 +1877,15 @@ impl Board {
         let (checks_v, scores_v, has_v) = self.compute_cross_data(dawg, false);
         let (is_anchor, anchors) = self.anchor_grid();
 
+        // Real (non-blank) rack letter counts, computed once and shared read-only
+        // by every anchor's GenCtx so `score_word` needn't rebuild a map per word.
+        let mut rack_counts = [0u8; ALPHABET_SIZE];
+        for ch in letters.chars() {
+            if let Some(i) = letter_index(ch) {
+                rack_counts[i] += 1;
+            }
+        }
+
         let gen_one = |(ar, ac): (usize, usize)| -> Vec<GenMove> {
             let mut out = Vec::new();
             let (mut freq, _) = build_freq(letters);
@@ -1820,7 +1907,7 @@ impl Board {
                     cross,
                     cross_score,
                     has_cross,
-                    letters,
+                    rack_counts,
                     ar,
                     ac,
                     horizontal,
