@@ -13,9 +13,8 @@ from tqdm import tqdm  # type: ignore
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "smart_player"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from smart_player.player import SmartPlayer
-
 from scrablozaur import Board, Dawg
+from smart_player.player import SmartPlayer
 from strategy import SimplePlayer, StrategicPlayer
 
 d = Dawg("words/dawg.bin", "words/gaddag.bin")
@@ -117,8 +116,8 @@ def graj(parallel: bool = False, debug: bool = False) -> tuple[int, int, str, fl
 
     b = Board()
 
-    p1 = StrategicPlayer(b)
-    p2 = SmartPlayer(b)
+    p1 = SimplePlayer(b)
+    p2 = SimplePlayer(b)
 
     opener = p1 if random() < 0.5 else p2
     second = p2 if opener is p1 else p1
