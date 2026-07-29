@@ -70,19 +70,46 @@ class Board:
     """Scrabble board with a DAWG dictionary and a bag of letters."""
 
     def __init__(self) -> None:
-        """Initialize an empty 15x15 board with a full standard tile bag."""
+        """Initialize an empty 15x15 board with a full standard tile bag.
+
+        The bag's draw order is seeded from the clock (mixed with a
+        per-process counter). Use `Board.seeded` when you need it repeatable.
+        """
 
     @staticmethod
-    def from_grid(board: list[list[str]]) -> Board:
+    def seeded(seed: int) -> Board:
+        """An empty board whose bag draws deterministically from `seed`.
+
+        Two boards built with the same seed and driven through the same
+        sequence of draws and exchanges deal identical tiles. This is what
+        lets a benchmark play one bag twice with the seats swapped and compare
+        the two results as a matched pair.
+        """
+
+    def copy(self) -> Board:
+        """Deep copy of the whole position: grid, blank mask, bag, opening-move
+        flag, and the draw RNG's stream position.
+
+        The only faithful way to branch a position -- `str()` + `from_grid()`
+        loses the bag and, without a blank mask, which tiles were blanks.
+        """
+
+    @staticmethod
+    def from_grid(board: list[list[str]], blanks: list[list[bool]] | None = None) -> Board:
         """Construct a board pre-filled from a 15x15 grid of characters.
 
         Each cell can be:
           - a letter (e.g. 'a', 'b', ..., 'z') – fixed letter on the board
           - '-' – empty cell where a letter can be placed
 
-        The board must be exactly 15 rows of 15 columns each. Starts with a
-        full standard tile bag, same as `Board()` -- letters already on the
-        grid are not subtracted from it.
+        `blanks`, if given, is a 15x15 mask marking which occupied squares hold
+        a blank tile playing as that letter; pair it with `Board.blank_mask()`
+        to round-trip a position without losing scoring information.
+
+        The board must be exactly 15 rows of 15 columns each. Tiles already on
+        the grid are subtracted from the bag (a blank consuming a `'?'` rather
+        than a copy of the letter it stands in for), and the call raises if the
+        grid needs more copies of a tile than the distribution has.
         """
 
     def __str__(self) -> str:
@@ -95,11 +122,33 @@ class Board:
         The points are calculated based on letter values and board bonuses.
         """
 
-    def place_word(self, word: str, row: int, col: int, horizontal: bool) -> None:
+    def place_word(
+        self,
+        word: str,
+        row: int,
+        col: int,
+        horizontal: bool,
+        used: list[str] | None = None,
+    ) -> list[tuple[int, int]]:
         """Place a word on the board at the given position and orientation.
 
-        The word must fit on the board and can only be placed on empty cells ('-').
-        This method modifies the board state by filling in the letters of the word.
+        Returns the cells the play actually filled, in placement order -- pass
+        that straight to `unplace_word` to undo it.
+
+        `used` is the move's tile list exactly as `get_best_words` returns it:
+        one entry per newly covered square, `'?'` where a blank stood in for a
+        letter. Passing it is what lets the board remember that a square holds
+        a blank, so that square keeps scoring 0 in every later word that runs
+        through it. Omitting it treats every placed tile as a real one, which
+        silently over-scores the rest of the game if the play used a blank.
+        """
+
+    def unplace_word(self, cells: list[tuple[int, int]], was_first: bool = False) -> None:
+        """Undo a `place_word`, given the cells it returned.
+
+        `was_first` restores the opening-move flag, which a search unwinding
+        the first play of the game has to put back. Cheaper than cloning the
+        board at every node.
         """
 
     def get_row_patterns(self, row_idx: int) -> list[tuple[int, int]]:
@@ -162,19 +211,38 @@ class Board:
     ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
         """Find the best scoring word that can be placed on the board with the given letters.
 
-        Equivalent to `get_best_words(dawg, letters, first, n=1, parallel=parallel)[0]`,
+        Equivalent to `get_best_words(dawg, letters, n=1, parallel=parallel)[0]`,
         or `("", 0, (0, 0, True), [])` if no valid word can be placed.
         The returned list contains the letters used from the player's hand, one entry per newly
         placed tile, with `'?'` for any tile a blank had to stand in for (see `get_best_words`).
         """
 
-    def check_word_placement(self, dawg: Dawg, word: str, row: int, col: int, horizontal: bool) -> None:
-        """Check if a word can be placed at the given position and orientation.
+    def all_moves(
+        self, dawg: Dawg, letters: str, parallel: bool = True
+    ) -> list[tuple[str, int, tuple[int, int, bool], list[str]]]:
+        """Every legal play, unsorted and untruncated.
 
-        This method raises an exception if the word cannot be placed due to:
-          - Out of bounds
-          - Overlapping with existing letters that do not match
-          - Not connecting to any existing words (except for the first move)
+        Same tuple shape as `get_best_words`. Use this when you rank candidates
+        by something other than raw score: `get_best_words` keeps the top `n`
+        *by score*, and a tile-dumping play, a blocking play, or the play that
+        goes out first in an endgame can each be worth more than its score and
+        fall outside that cut. Skips the sort, so it is also cheaper than
+        asking `get_best_words` for a huge `n`.
+
+        Requires a GADDAG (see `Dawg.__init__`) and raises `ValueError` without
+        one -- the legacy pattern search only yields the best word per board
+        span, so it cannot enumerate.
+        """
+
+    def check_word_placement(self, dawg: Dawg, word: str, row: int, col: int, horizontal: bool) -> None:
+        """Check the cross-words a placement would form.
+
+        Raises if the play is shorter than 2 letters, runs out of bounds, or
+        forms a perpendicular cross-word that is not in the dictionary.
+
+        It does *not* check the main word against the dictionary, and it does
+        not check connectivity to existing tiles -- callers that accept
+        arbitrary (e.g. human-entered) moves must do both themselves.
         """
 
     def give_letters(self, letters: str) -> str:
@@ -183,6 +251,34 @@ class Board:
         The `letters` argument represents the current letters in the player's hand.
         This method returns a string of new letters drawn from the bag, ensuring
         that the total number of letters (current + drawn) does not exceed 7.
+        Advances the board's draw RNG (see `Board.seeded`).
+        """
+
+    def bag_remaining(self) -> int:
+        """How many tiles are left in the bag.
+
+        Public information in Scrabble, so this is safe for a player to
+        consult -- unlike `bag_tiles`.
+        """
+
+    def bag_tiles(self) -> list[str]:
+        """The bag's actual contents.
+
+        Hidden information: for benchmarks, tests and exact position setup, not
+        for a player's own decision-making.
+        """
+
+    def set_bag(self, tiles: list[str]) -> None:
+        """Replace the bag wholesale.
+
+        For constructing exact positions (endgame tests, pre-endgame
+        enumeration) without replaying a whole game up to them.
+        """
+
+    def blank_mask(self) -> list[list[bool]]:
+        """15x15 mask of which occupied squares hold a blank tile.
+
+        Pairs with `from_grid(grid, blanks)` to round-trip a position.
         """
 
     def exchange_letters(self, letters: str, letters_to_exchange: str) -> str:

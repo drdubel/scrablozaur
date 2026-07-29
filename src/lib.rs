@@ -1320,7 +1320,7 @@ impl Board {
 
     #[pyo3(signature = (dawg, letters, n, parallel=true))]
     fn get_best_words(
-        &mut self,
+        &self,
         dawg: &DawgPy,
         letters: &str,
         n: usize,
@@ -1403,11 +1403,41 @@ impl Board {
     }
 
     #[pyo3(signature = (dawg, letters, parallel=true))]
-    fn get_best_word(&mut self, dawg: &DawgPy, letters: &str, parallel: bool) -> BestWord {
+    fn get_best_word(&self, dawg: &DawgPy, letters: &str, parallel: bool) -> BestWord {
         self.get_best_words(dawg, letters, 1, parallel)
             .into_iter()
             .next()
             .unwrap_or_else(|| (String::new(), 0, (0, 0, true), Vec::new()))
+    }
+
+    /// Every legal play, unsorted and untruncated.
+    ///
+    /// `get_best_words` keeps the top `n` *by raw score*, which is the wrong
+    /// filter for anything that ranks by equity: a tile-dumping play, a
+    /// blocking play, or the play that goes out first in an endgame can all be
+    /// worth more than their score suggests and fall outside the cut. Callers
+    /// that rank candidates themselves want this instead, and skip the sort.
+    /// Requires a GADDAG: the legacy pattern search only ever yields the best
+    /// word per board span, so it cannot enumerate. Raises rather than
+    /// returning an empty list, which a caller would read as "no legal plays".
+    #[pyo3(signature = (dawg, letters, parallel=true))]
+    fn all_moves(&self, dawg: &DawgPy, letters: &str, parallel: bool) -> PyResult<Vec<BestWord>> {
+        if self.first {
+            return Ok(self.best_opening_words(dawg, letters, usize::MAX));
+        }
+        let Some(gaddag) = &dawg.gaddag else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "all_moves needs a GADDAG; this Dawg was loaded without one",
+            ));
+        };
+        Ok(self
+            .gaddag_generate(&dawg.inner, gaddag, letters, parallel, true)
+            .into_iter()
+            .map(|(r, c, horizontal, word, score)| {
+                let used = self.hand_tiles_for_word(&word, r, c, horizontal, letters);
+                (word, score, (r, c, horizontal), used)
+            })
+            .collect())
     }
 }
 
