@@ -32,6 +32,10 @@ orchestrates 5-6 across every detected tile (`classify_tiles()` /
   untuned stage just falls back to its hardcoded defaults.
 - `cv_utils.py` -- generic OpenCV display helpers plus the shared interactive-trackbar
   framework (`run_tuner()`) that three of `tuner.py`'s four subcommands build on.
+- `parallel_utils.py` -- one process-wide `ThreadPoolExecutor`, shared by every stage
+  with independent per-tile work (`tile_detector.py`, `read_letters.py`) instead of each
+  spinning up its own. Deliberately layered *on top of* OpenCV's own internal threading
+  rather than replacing it -- see the module docstring for the measurement behind that.
 - `tuner.py` -- interactive tuners for stages 1-2 and 4-6 (see [Tuning](#tuning)).
 
 ### Detection philosophy
@@ -86,6 +90,7 @@ tests/eval_letters.py          (default: easy + medium)
 
 Hard-difficulty photos are excluded by default (extreme angle/lighting that would
 mostly just add noise to the aggregate score) -- pass `-d emh` to include them.
+Both scripts also report board-detection failures separately (currently 0).
 
 ## Tuning
 
@@ -128,6 +133,10 @@ python scripts/review_templates.py --digits
 python scripts/train_digit_classifier.py --epochs 12
 ```
 
+The digit flow has no `generate_synthetic_dataset.py` step of its own: unlike the
+letter CNN, `train_digit_classifier.py` synthesises its training set in memory
+each run, mixing it with the reviewed real crops in `src/data/real_digit_templates/`.
+
 Both CNNs are optional at inference time: if `torch` or the `.pt` weights
 aren't available, `letter_classifier.py` degrades to template matching alone
 (and skips digit-based disambiguation) rather than failing.
@@ -137,30 +146,31 @@ aren't available, `letter_classifier.py` degrades to template matching alone
 ```
 board_reader/
 ├── src/                  # the pipeline itself (flat modules, no package/__init__.py)
-│   ├── data/             # harvested + reviewed real glyph/digit templates (staging/accepted/rejected)
-│   ├── data_train/       # generated CNN training set (letters)
-│   ├── data_train_digits/ # generated CNN training set (digits)
-│   ├── models/           # trained CNN weights (letter_cnn.pt, digit_cnn.pt)
-│   └── hsv_config.json   # tuned parameter presets (see Tuning)
-├── scripts/              # offline tooling: harvest -> review -> clean -> generate -> train
+│   ├── data/             # harvested real glyph/digit crops (staging/accepted/rejected)  [not in git]
+│   ├── data_train/       # generated CNN training set, letters                           [not in git]
+│   ├── models/           # trained CNN weights (letter_cnn.pt, digit_cnn.pt)             [in git]
+│   └── hsv_config.json   # tuned parameter presets, see Tuning                           [in git]
+├── scripts/              # offline tooling: harvest -> review -> clean -> generate -> train,
+│                         #   plus benchmark_pipeline.py (stage-by-stage timing)
 ├── tests/                # eval_*.py (accuracy against ground truth) + ground_truth.py loader
-└── test/                 # test fixtures: in/imgN_<difficulty>.jpg photos, out/boardN.txt ground truth
+├── test/                 # fixtures: in/imgN_<difficulty>.jpg, out/boardN.txt ground truth [not in git]
+└── ruff.toml             # lint config for this subtree
 ```
 
 Note the two similarly-named directories: `tests/` holds runnable eval
 *scripts*; `test/` holds the *data* they evaluate against.
 
-**Only the `.py` files above are in version control.** The repo root's
-`.gitignore` is a strict whitelist (`*.txt`, `.in`, `.rs`, `.py`, `.pyi` plus
-a few named files); everything else -- `src/data/`, `src/data_train*/`,
-`src/models/*.pt`, `src/hsv_config.json`, and all of `test/` -- is local-disk
-only, gitignored, and absent from a fresh clone. The [accuracy](#accuracy)
-numbers above assume this working copy's local models/data are present; a
-fresh clone starts with no trained CNN weights, no harvested templates, and
-no test fixtures, and needs either a copy of those local files or a full run
-through [Training](#training-the-letterdigit-classifiers) (synthetic font
-templates alone still let `letter_classifier.py` degrade gracefully, just at
-lower accuracy than the numbers above).
+**What a fresh clone does and doesn't get.** The repo root's `.gitignore` is a
+strict whitelist, and it does include `*.pt` and `*.json` -- so both trained CNN
+checkpoints (`src/models/letter_cnn.pt`, `src/models/digit_cnn.pt`) and the tuned
+`src/hsv_config.json` *are* committed. A fresh clone can therefore run the
+pipeline at full accuracy with no training step.
+
+What is *not* committed is the training and evaluation material: `src/data/`
+(harvested glyph crops), `src/data_train/` (the generated training set), and all
+of `test/` (the photos and ground truth). So a fresh clone can *run* the reader
+but cannot reproduce the [accuracy](#accuracy) numbers above or retrain the CNNs
+without a copy of those local files.
 
 ## Requirements
 

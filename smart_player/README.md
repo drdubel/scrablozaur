@@ -6,13 +6,17 @@ rather than raw per-move score.
 ## Why
 
 `StrategicPlayer.evaluate_word` (`src/strategy.py`) picks among the top 50
-scoring candidates using `points + sum(letter_points(ch) for ch in
+scoring candidates using `points` plus `sum(letter_points(ch) for ch in
 get_letters_left())`. `get_letters_left()` returns the tiles not yet on the
 board or in the player's own hand -- i.e. still in the bag or the
 opponent's rack -- which is identical for every candidate word being
 compared in a single decision. That heuristic term is therefore a constant
 offset per turn: it never actually changes which word gets picked, only raw
-`points` does. `StrategicPlayer` is, in effect, greedy.
+`points` does. `StrategicPlayer` is, in effect, greedy. (The code now makes
+this explicit: `get_best_word` precomputes the term once into
+`self._leave_points` and `evaluate_word` returns `points +
+self._leave_points` -- argmax-equivalent, just without recomputing a
+constant ~50 times per turn.)
 
 `SmartPlayer` (`player.py`) replaces that heuristic with a small learned
 model of the *leave* -- the rack a candidate move would actually leave
@@ -284,7 +288,7 @@ change to average scores (~392/421) or game length (min 19 moves, vs. 2
 before any of these fixes).
 
 **Added tile exchange as a human action in the web app.** The backend
-endpoint (`POST /board/exchange`, `web/routers/board.py`) already existed
+endpoint (`POST /api/board/exchange`, `web/routers/board.py`) already existed
 but had no frontend at all -- exploring the codebase to add one surfaced
 a second, real, previously-untested bug: it called `Board.can_exchange`
 (an *instance* method reading the Rust engine's own internal bag) as if

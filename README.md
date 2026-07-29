@@ -1,12 +1,13 @@
 # Scrablozaur
 
-A high-performance Polish-language Scrabble engine written in Rust, exposed to Python via [PyO3](https://pyo3.rs). Scrablozaur combines a minimized DAWG dictionary, a board-aware pattern matcher, and Rayon-parallel move search to find the highest-scoring legal play from any board position in milliseconds.
+A high-performance Polish-language Scrabble engine written in Rust, exposed to Python via [PyO3](https://pyo3.rs). Scrablozaur combines a minimized DAWG dictionary, a GADDAG move generator, and Rayon-parallel search to find the highest-scoring legal play from any board position in milliseconds.
 
 ---
 
 ## Features
 
 - **Minimized DAWG** — 2.58 million-word Polish dictionary compressed into a compact binary format; sub-microsecond lookups via a binary-searched, flat node layout
+- **GADDAG move generation** — the primary generator: anchor-based bidirectional search over a GADDAG of the same lexicon, ~7× faster per position than the legacy pattern search it falls back to (measured by `gen-bench`, verified move-for-move by `gen-verify`)
 - **Pattern search** — flexible wildcard syntax (`-` one letter, `*` any number) with blank-tile support
 - **Board-aware scoring** — all bonus squares (Double/Triple Letter and Word), bingo bonus for using all 7 tiles
 - **Cross-word validation** — every candidate placement is checked against all perpendicular words it creates
@@ -53,7 +54,7 @@ Multipliers apply only to tiles placed on that square during the current move; t
 
 ## Tile Distribution
 
-The bag contains **98 tiles** across 32 letters of the Polish alphabet.
+The bag contains **100 tiles**: 98 lettered tiles across the 32 letters of the Polish alphabet, plus 2 blanks.
 
 | Letter | Count | Points | &nbsp; | Letter | Count | Points | &nbsp; | Letter | Count | Points |
 |:------:|------:|-------:|--------|:------:|------:|-------:|--------|:------:|------:|-------:|
@@ -70,7 +71,7 @@ The bag contains **98 tiles** across 32 letters of the Polish alphabet.
 | H      |     2 |      3 |        | R      |     4 |      1 |        |        |       |        |
 | I      |     8 |      1 |        |        |       |        |        |        |       |        |
 
-A blank tile (`?`) may substitute for any letter during a search but scores 0 points.
+A blank tile (`?`) may substitute for any letter during a search but scores 0 points. `Board.fresh_tile_bag()` returns this exact 100-tile distribution.
 
 ---
 
@@ -78,10 +79,10 @@ A blank tile (`?`) may substitute for any letter during a search but scores 0 po
 
 | Dependency     | Version | Purpose                                          |
 |:---------------|:--------|:--------------------------------------------------|
-| Rust toolchain | ≥ 1.70  | Compiling the engine                             |
-| Python         | ≥ 3.12  | Running game logic, the `web/` app, `board_reader/` |
+| Rust toolchain | ≥ 1.83  | Compiling the engine (pyo3 0.28's MSRV)          |
+| Python         | ≥ 3.12  | Running game logic, the `web/` app, `board_reader/` (`.python-version` pins 3.14) |
 | [uv](https://docs.astral.sh/uv/) | latest | Managing the Python environment (`.venv`) and dependencies |
-| maturin        | ≥ 1.0   | Building the Python extension (a `uv` dev-dependency, see `pyproject.toml`) |
+| maturin        | ≥ 1.14  | Building the Python extension (a `uv` dev-dependency, see `pyproject.toml`) |
 | rayon          | 1.12    | Parallel pattern evaluation (bundled)            |
 | pyo3           | 0.28    | Python bindings (bundled)                        |
 
@@ -96,9 +97,14 @@ uv sync                            # installs Python deps (web/ + board_reader/)
 uv run maturin develop --release   # compiles the Rust extension into that same .venv
 ```
 
-The compiled `.so` lands in `target/release/` and is registered into `.venv`
-automatically. Re-run `maturin develop --release` after any change to
-`src/lib.rs`.
+`maturin develop` installs the extension straight into the active `.venv`
+(`.venv/lib/python3.*/site-packages/scrablozaur/`, alongside the bundled
+`__init__.pyi` stubs), so `import scrablozaur` works immediately. Re-run
+`maturin develop --release` after any change to `src/lib.rs`.
+
+`target/release/` is Cargo's own output directory — it holds the CLI binary
+(`scrablozaur`) and the `libscrablozaur.dylib`/`.so` cdylib, neither of which
+Python imports.
 
 ### Rebuild the DAWG dictionary
 
@@ -136,7 +142,9 @@ cargo run --release -- gen-bench  words/dawg.bin words/gaddag.bin 200  # single-
 ```
 
 `gen-verify` must report zero score mismatches; `gen-bench` reports the
-per-position generation time for each and their ratio.
+per-position generation time for each and their ratio — currently ~1.35 ms/position
+for the legacy pattern search vs ~0.19 ms for GADDAG generation, a **7.0×**
+single-threaded speedup. Both take an optional trailing game count (default 200).
 
 ---
 
@@ -159,8 +167,9 @@ d.search("ha-ulec", "m")     # ['hamulec']
 d.search("*", "aekrtu")      # all words buildable from these letters
 d.search("k-t", "oar?")      # k + one letter + t, '?' = blank tile
 
-# diagnostic
-d.node_count()               # number of DAWG nodes after minimization
+# diagnostics
+d.node_count()               # number of DAWG nodes after minimization (116734)
+d.has_gaddag()               # True when the sibling gaddag.bin was auto-loaded
 ```
 
 ### `Board`
@@ -169,13 +178,15 @@ d.node_count()               # number of DAWG nodes after minimization
 from scrablozaur import Board, Dawg
 
 d = Dawg("words/dawg.bin")
-b = Board([["-"] * 15 for _ in range(15)])
+b = Board()                            # empty 15x15 board + full 100-tile bag
+# Board.from_grid([["-"] * 15 for _ in range(15)])  # or start from a given grid
 
 # draw letters from the bag (fills hand up to 7 tiles)
 hand = b.give_letters("")              # e.g. "aeimnrt"
 
-# find the best first move (must cover the centre square)
-word, score, (row, col, horizontal), used = b.get_best_word(d, hand, first=True)
+# find the best move — the board tracks first-move state itself, so the opening
+# move (which must cover the centre square) needs no special flag
+word, score, (row, col, horizontal), used = b.get_best_word(d, hand)
 
 # score and validate before committing — calculate_word_points must be called
 # before place_word; after placement the tiles are no longer on empty squares
@@ -183,21 +194,27 @@ word, score, (row, col, horizontal), used = b.get_best_word(d, hand, first=True)
 pts = b.calculate_word_points(word, row=row, col=col, horizontal=horizontal, letters=hand)
 b.check_word_placement(d, word, row=row, col=col, horizontal=horizontal)  # raises on invalid
 
-b.place_word(word, row, col, horizontal)
+b.place_word(word, row, col, horizontal)   # this is what retires first-move eligibility
 for ch in used:
     hand = hand.replace(ch, "", 1)
 hand += b.give_letters(hand)
 
-# subsequent moves
-word, score, (row, col, horizontal), used = b.get_best_word(d, hand, first=False)
+# subsequent moves — identical call
+word, score, (row, col, horizontal), used = b.get_best_word(d, hand)
+
+# top-N candidates instead of just the best
+b.get_best_words(d, hand, 10)   # [(word, score, (row, col, horizontal), used), ...]
 
 # inspect candidate patterns
 b.get_all_patterns()     # list of (index, start, end, horizontal)
-b.get_row_patterns(7)    # patterns in row 7
-b.get_col_patterns(4)    # patterns in column 4
+b.get_row_patterns(7)    # (start, end) column spans in row 7
+b.get_col_patterns(4)    # (start, end) row spans in column 4
 
 print(b)                 # pretty-print the board
 ```
+
+`used` lists one entry per newly placed tile, with `'?'` wherever a blank had
+to stand in for a letter the hand had run out of.
 
 ### Full two-player simulation
 
@@ -213,10 +230,8 @@ class Player:
         self.letters = board.give_letters("")
         self.score = 0
 
-    def play(self, first: bool = False) -> str:
-        word, points, (row, col, horiz), used = self.board.get_best_word(
-            d, self.letters, first
-        )
+    def play(self) -> str:
+        word, points, (row, col, horiz), used = self.board.get_best_word(d, self.letters)
         if not word:
             return ""
         self.score += points
@@ -227,19 +242,39 @@ class Player:
         return word
 
 
-b = Board([["-"] * 15 for _ in range(15)])
-p1, p2 = Player(b), Player(b)
+b = Board()
+players = [Player(b), Player(b)]
 
-p1.play(first=True)
-while True:
-    if not p2.play():
+# A game ends when both players fail to play in a row, or when someone goes
+# out — not on the first single no-play, which would cut most games short.
+no_play_streak = 0
+turn = 0
+while no_play_streak < len(players):
+    p = players[turn % len(players)]
+    no_play_streak = 0 if p.play() else no_play_streak + 1
+    if not p.letters:          # went out: bag and rack are both empty
         break
-    if not p1.play():
-        break
+    turn += 1
 
-print(f"Player 1: {p1.score}  Player 2: {p2.score}")
+# Standard end-of-game rack adjustment: everyone loses their own rack's value,
+# and a player who went out also gains every opponent's.
+for p in players:
+    penalty = Board.rack_value(p.letters)
+    p.score -= penalty
+    if not p.letters:
+        continue
+    for other in players:
+        if other is not p and not other.letters:
+            other.score += penalty
+
+print(f"Player 1: {players[0].score}  Player 2: {players[1].score}")
 print(b)
 ```
+
+`src/strategy.py` ships ready-made `SimplePlayer`/`StrategicPlayer` classes
+(and `smart_player/player.py` a learned `SmartPlayer`) that wrap this loop
+with tile exchanging and the same end-of-game scoring — see
+[`smart_player/README.md`](smart_player/README.md).
 
 ---
 
@@ -255,12 +290,16 @@ print(b)
 | `?`     | Blank tile in the hand — matches any letter, scores 0 |
 
 ```python
-d.search("l--y",  "oadn")    # 4-letter words: l, 2 from hand, y
-d.search("l*y",   "oadn")    # l, any count from hand, y
-d.search("k-t",   "oar?")    # k, one letter, t  — blank tile available
-d.search("*",     "aeimnrt") # every word buildable from 7 tiles
-d.search("ham*",  "lec")     # words starting with 'ham', hand extends freely
+d.search("l--y",  "oadn")    # ['lady', 'lany', 'lody']
+d.search("l*y",   "oadn")    # ['lady', 'landy', 'lany', 'lny', 'lody']
+d.search("k-t",   "oar?")    # ['kat', 'ket', 'kit', 'kot', 'kąt'] — '?' fills 'e'/'i'
+d.search("*",     "aeimnrt") # every word buildable from those 7 tiles
+d.search("ham*",  "ulec")    # ['hamulce', 'hamulec']
 ```
+
+Note that `*` is not a free-form suffix: like `-`, every letter it matches is
+consumed from the hand. `d.search("ham*", "lec")` returns `[]`, because
+completing `hamulec` also needs a `u` the hand does not hold.
 
 The hand is treated as a **multiset**: `"aab"` allows `a` twice but `b` only once across all wildcard positions combined. Duplicates caused by blank-tile substitution are removed automatically.
 
@@ -309,7 +348,11 @@ per node:
     [4] child node ID
 ```
 
-Child edges are stored sorted by codepoint, enabling binary search in O(log k) where k ≤ 32 (`words.txt`'s alphabet: 23 Latin letters + 9 Polish diacritics. The offset of each node is precomputed into a flat table at load time so every node access is a direct array index with no pointer chasing.
+Child edges are stored sorted by codepoint, enabling binary search in O(log k) where k ≤ 32 (`words.txt`'s alphabet: 23 Latin letters + 9 Polish diacritics). The offset of each node is precomputed into a flat table at load time so every node access is a direct array index with no pointer chasing.
+
+`gaddag.bin` uses the identical format and loader — it is simply a different
+lexicon, one entry per (word, anchor) pair, with a `\0` separator edge between
+each entry's reversed prefix and forward suffix (so k ≤ 33 there).
 
 ### Pattern matching
 
@@ -324,13 +367,31 @@ A `mandatory_slots` counter tracks how many `-` tokens remain in the unprocessed
 
 ### Move search
 
-`get_best_word` works in three phases:
+`get_best_words` (and its `n == 1` wrapper `get_best_word`) dispatches to one of
+three routines depending on board state and what the `Dawg` carries:
 
-1. **Pattern generation** — every row and column is scanned for contiguous spans that contain both placed tiles (anchors) and empty squares; those are the positions where a new word could legally connect to the board.
+1. **Opening move** (`best_opening_words`) — the board is empty, so there are no
+   anchors to hook onto. Every word buildable from the hand is enumerated with
+   `search("*", …)` and scored at every offset that still covers the centre
+   square.
 
-2. **Parallel evaluation** — patterns are dispatched to a Rayon work-stealing pool. Each thread independently runs `best_word_from_pattern_inner`: DAWG search → cross-word validation → scoring, with no shared mutable state between threads. Patterns whose empty-slot count exceeds the hand size are skipped before entering the DAWG.
+2. **GADDAG generation** (`gaddag_best_words`) — the normal path once a tile is
+   on the board. Each anchor square is expanded bidirectionally through the
+   GADDAG, with per-square cross-check bitsets (one `u32` bit per alphabet
+   letter) pruning any letter that would form an illegal perpendicular word
+   before the traversal ever reaches it. This enumerates *every* legal play, so
+   the top `n` are the true top `n`.
 
-3. **Global reduction** — `max_by_key` selects the highest-scoring result across all threads.
+3. **Legacy pattern search** (`best_words_from_patterns`) — the fallback when no
+   `gaddag.bin` was loaded. Every row and column is scanned for contiguous spans
+   containing both placed tiles and empty squares, each span is searched against
+   the DAWG, cross-word-validated and scored, and the results are ranked. It
+   keeps only the single best word per span, so for `n > 1` it can under-report a
+   span's other high-scoring plays; the best move is identical either way.
+
+Paths 2 and 3 both fan their per-anchor / per-span work out across a Rayon
+work-stealing pool with no shared mutable state between threads, then reduce to
+the global top `n`. `gen-verify` checks the two agree move-for-move.
 
 ### Bonus table
 
@@ -352,8 +413,8 @@ cargo run --release -- build        words/words.txt words/dawg.bin    # compile 
 cargo run --release -- build-gaddag words/words.txt words/gaddag.bin  # compile GADDAG (move gen)
 cargo run --release -- lookup       words/dawg.bin  hamulec           # single lookup
 cargo run --release -- bench        words/dawg.bin  words/words.txt   # lookup throughput
-cargo run --release -- gen-verify   words/dawg.bin  words/gaddag.bin  # GADDAG vs legacy parity
-cargo run --release -- gen-bench    words/dawg.bin  words/gaddag.bin  # GADDAG vs legacy speed
+cargo run --release -- gen-verify   words/dawg.bin  words/gaddag.bin  [games]  # GADDAG vs legacy parity
+cargo run --release -- gen-bench    words/dawg.bin  words/gaddag.bin  [games]  # GADDAG vs legacy speed
 ```
 
 Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):
@@ -371,10 +432,18 @@ Results (5 × 2584337 = 12921685 lookups):
 ## Web App & Board Scanner
 
 This engine also powers a FastAPI web app at `web/` (vanilla-JS/HTML frontend
-under `web/static/`): a playable board UI (`web/game.py`) plus a "scan board"
-assistant that reads a real physical board from a photo and suggests the
-best move, backed by the computer-vision pipeline in
-[`board_reader/`](board_reader/README.md).
+under `web/static/`, Polish UI). All routers are mounted under `/api`:
+
+| Router | Prefix | What it serves |
+|:---|:---|:---|
+| `routers/game.py` | `/api/game` | session lifecycle — new game, player types, state |
+| `routers/board.py` | `/api/board` | moves: human/computer plays, exchange, skip, pass, undo, hints |
+| `routers/scan.py` | `/api/scan` | "scan board" assistant — photo → board state → suggested move |
+| `routers/benchmark.py` | `/api/benchmark` | run bot-vs-bot batches from the browser and chart the results |
+
+The scan assistant is backed by the computer-vision pipeline in
+[`board_reader/`](board_reader/README.md); the playable board and its bots are
+backed by `src/strategy.py` and [`smart_player/`](smart_player/README.md).
 
 ```bash
 uv sync
@@ -387,22 +456,28 @@ uv run uvicorn web.main:app --reload
 ```
 scrablozaur/
 ├── src/
-│   ├── lib.rs           # Rust engine: DAWG, Board, pattern search, scoring
+│   ├── lib.rs           # Rust engine: DAWG/GADDAG, Board, move search, scoring
 │   ├── main.rs          # thin binary entry point (delegates to lib.rs's CLI)
-│   └── main.py          # Python self-play benchmark script
-├── web/                 # FastAPI web app (game UI + board-photo scanner)
+│   ├── main.py          # Python self-play benchmark script (`graj()`, `benchmark()`)
+│   ├── strategy.py      # SimplePlayer / StrategicPlayer bot classes
+│   └── verify_engine.py # engine sanity checks
+├── web/                 # FastAPI web app (game UI + board scanner + benchmark UI)
 │   ├── main.py          # app entry point (`uvicorn web.main:app`)
 │   ├── game.py, scan.py, engine.py, models.py
-│   ├── routers/         # game/board/scan API routes
+│   ├── routers/         # game/board/scan/benchmark API routes (mounted under /api)
 │   └── static/          # HTML/CSS/vanilla-JS frontend
-├── board_reader/        # photo -> board-state OCR pipeline (see its own README)
+├── board_reader/        # photo -> board-state CV pipeline (see its own README)
+├── smart_player/        # learned rack-leave evaluator / SmartPlayer (see its own README)
 ├── words/
 │   ├── words.txt        # 2.58 M-word Polish dictionary (source)
-│   └── dawg.bin         # compiled DAWG (pre-built)
+│   ├── dawg.bin         # compiled DAWG, ~3 MiB (pre-built, committed)
+│   └── gaddag.bin       # compiled GADDAG, ~36 MiB (pre-built, committed)
 ├── test/                # sample board states (.in files) for manual testing
-├── tests/               # cli_build.rs -- `cargo test` integration test for the CLI
-├── scrablozaur.pyi      # Python type stubs
-├── pyproject.toml       # uv-managed Python dependencies (web/ + board_reader/)
+├── tests/
+│   ├── cli_build.rs     # `cargo test` integration test for the CLI
+│   └── test_strategy.py # player-logic tests
+├── scrablozaur.pyi      # Python type stubs (installed as scrablozaur/__init__.pyi)
+├── pyproject.toml       # uv-managed Python dependencies (web/ + board_reader/ + smart_player/)
 ├── uv.lock
 └── Cargo.toml           # Rust package manifest
 ```
