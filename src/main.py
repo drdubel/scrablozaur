@@ -274,6 +274,8 @@ def benchmark(N: int, p1_type: str, p2_type: str, n_workers: int | None = None, 
     games_played = 0
 
     parallel = True if n_workers == 1 else False
+    if n_workers is None:
+        n_workers = os.cpu_count() - 1 or 1
 
     # Per-move rayon parallelism is only engaged with a single worker; with
     # several workers each game runs single-threaded (process-level parallelism).
@@ -286,7 +288,8 @@ def benchmark(N: int, p1_type: str, p2_type: str, n_workers: int | None = None, 
     wall_start = time.perf_counter()
 
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        n_workers = executor._max_workers  # type: ignore
+        n_workers = executor._max_workers
+        print(f"Running {N} games with {n_workers} worker process(es)...")
         try:
             with tqdm(total=N, desc="Games played") as pbar:
                 batch_size = n_workers * 1000
