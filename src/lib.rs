@@ -743,6 +743,16 @@ fn alphabet_rank(c: char) -> i32 {
     }
 }
 
+/// Shuffle in place (Fisher-Yates) using `rng`. The modulo bias here is on the
+/// order of 100/2^64 and not worth a rejection loop.
+fn shuffle(tiles: &mut [char], rng: &mut u64) {
+    for i in (1..tiles.len()).rev() {
+        xorshift(rng);
+        let j = (*rng as usize) % (i + 1);
+        tiles.swap(i, j);
+    }
+}
+
 /// Standard Polish Scrabble tile distribution (100 tiles).
 fn fresh_tile_bag() -> Vec<char> {
     vec![
@@ -779,29 +789,20 @@ struct Board {
 impl Board {
     #[new]
     fn new() -> PyResult<Self> {
-        Ok(Board {
-            board: [['-'; BOARD_SIZE]; BOARD_SIZE],
-            blanks: [[false; BOARD_SIZE]; BOARD_SIZE],
-            tile_bag: fresh_tile_bag(),
-            first: true,
-            rng: time_seed(),
-        })
+        Ok(Self::with_seed(time_seed()))
     }
 
-    /// A fresh board whose bag draws deterministically from `seed`. Two boards
-    /// built with the same seed and driven through the same sequence of
-    /// draws/exchanges deal identical tiles, which is what lets the arena play
-    /// one bag twice with the seats swapped.
+    /// A fresh board whose bag is shuffled deterministically from `seed`. Two
+    /// boards built with the same seed deal the same tiles in the same order,
+    /// which is what lets the arena play one bag twice with the seats swapped.
     #[staticmethod]
     fn seeded(seed: u64) -> PyResult<Self> {
-        Ok(Board {
-            board: [['-'; BOARD_SIZE]; BOARD_SIZE],
-            blanks: [[false; BOARD_SIZE]; BOARD_SIZE],
-            tile_bag: fresh_tile_bag(),
-            first: true,
-            // 0 is a fixed point of xorshift64; nudge it to keep every seed usable.
-            rng: if seed == 0 { 0x9E3779B97F4A7C15 } else { seed },
-        })
+        // 0 is a fixed point of xorshift64; nudge it to keep every seed usable.
+        Ok(Self::with_seed(if seed == 0 {
+            0x9E3779B97F4A7C15
+        } else {
+            seed
+        }))
     }
 
     /// Deep copy, including the bag and the RNG stream position. The only way
@@ -872,12 +873,16 @@ impl Board {
                 }
             }
         }
+        // Whatever the grid left in the bag is still in distribution order;
+        // shuffle it so the first draw isn't alphabetical.
+        let mut rng = time_seed();
+        shuffle(&mut tile_bag, &mut rng);
         Ok(Board {
             board: result,
             blanks: blank_mask,
             tile_bag,
             first,
-            rng: time_seed(),
+            rng,
         })
     }
 
@@ -895,9 +900,14 @@ impl Board {
         // A rack over capacity (shouldn't happen, but don't underflow on it).
         let draw_count = RACK_SIZE.saturating_sub(held).min(self.tile_bag.len());
         for _ in 0..draw_count {
-            xorshift(&mut self.rng);
-            let idx = (self.rng as usize) % self.tile_bag.len();
-            drawn.push(self.tile_bag.swap_remove(idx));
+            // The bag is shuffled once at construction and drawn from the end,
+            // so the tile *sequence* is fixed up front. Picking a random index
+            // per draw instead would make the sequence depend on how many
+            // tiles each draw happened to take, which destroys the
+            // correlation a paired benchmark relies on.
+            if let Some(tile) = self.tile_bag.pop() {
+                drawn.push(tile);
+            }
         }
         drawn
     }
@@ -908,14 +918,17 @@ impl Board {
         self.tile_bag.len()
     }
 
-    /// The bag's actual contents. Hidden information: for the arena, tests and
-    /// endgame setup, never for a player's own decision-making.
+    /// The bag's actual contents, in draw order — the *last* element is the
+    /// next tile out. Hidden information: for the arena, tests and endgame
+    /// setup, never for a player's own decision-making.
     fn bag_tiles(&self) -> Vec<char> {
         self.tile_bag.clone()
     }
 
-    /// Replace the bag wholesale. Used to construct exact positions (endgame
-    /// tests, pre-endgame enumeration) without replaying a whole game.
+    /// Replace the bag wholesale, in draw order (last element drawn first).
+    /// Used to construct exact positions (endgame tests, pre-endgame
+    /// enumeration) without replaying a whole game. Not shuffled — the caller
+    /// decides the order, which is the point.
     fn set_bag(&mut self, tiles: Vec<char>) {
         self.tile_bag = tiles;
     }
@@ -934,9 +947,15 @@ impl Board {
             }
         }
         let remaining: String = remaining.into_iter().collect();
+        // Draw the replacements *before* returning the discards, so a player
+        // can't draw back the tiles they just threw away.
         let drawn = self.give_letters(&remaining);
         for ch in letters_to_exchange.chars() {
-            self.tile_bag.push(ch);
+            // Slot each returned tile at a uniformly random depth. Pushing to
+            // the end would put it straight back on top of the draw pile.
+            xorshift(&mut self.rng);
+            let idx = (self.rng as usize) % (self.tile_bag.len() + 1);
+            self.tile_bag.insert(idx, ch);
         }
         remaining + &drawn
     }
@@ -1443,6 +1462,20 @@ impl Board {
 
 // Pure Rust methods — no PyO3 overhead, safe to call from rayon threads.
 impl Board {
+    /// Empty board with a full bag, shuffled once from `seed`.
+    fn with_seed(seed: u64) -> Board {
+        let mut rng = seed;
+        let mut tile_bag = fresh_tile_bag();
+        shuffle(&mut tile_bag, &mut rng);
+        Board {
+            board: [['-'; BOARD_SIZE]; BOARD_SIZE],
+            blanks: [[false; BOARD_SIZE]; BOARD_SIZE],
+            tile_bag,
+            first: true,
+            rng,
+        }
+    }
+
     /// Face value of the tile at (r, c) as it actually scores: 0 for a blank,
     /// whatever letter it is standing in for. Every read of an *already
     /// placed* tile's value must go through here — reading `letter_points` off
@@ -2846,6 +2879,42 @@ mod gaddag_tests {
         // And through a cross-word: "ty" played vertically off the blank 't'
         // scores blank t(0) + y(2) = 2.
         assert_eq!(board.calculate_word_points("ty", 7, 9, false, "y").unwrap(), 2);
+    }
+
+    /// The same seed deals the same tiles in the same order, and different
+    /// seeds don't. The arena's whole design rests on this.
+    #[test]
+    fn seeded_boards_deal_identically() {
+        let deal = |seed: u64| {
+            let mut b = Board::seeded(seed).unwrap();
+            (0..6).map(|_| b.give_letters("")).collect::<Vec<_>>()
+        };
+        assert_eq!(deal(12345), deal(12345));
+        assert_ne!(deal(12345), deal(12346));
+        // Seed 0 is xorshift64's fixed point and must not deal a constant bag.
+        let zero = deal(0);
+        assert!(zero[0] != zero[1], "seed 0 degenerated into a constant stream");
+    }
+
+    /// Exchanged tiles go back into the bag, but not in time to be drawn as
+    /// their own replacements.
+    #[test]
+    fn exchange_cannot_redraw_the_discarded_tiles() {
+        let mut board = Board::new().unwrap();
+        // Draw order is from the end, so this deals h, g, f, e, d, c, b.
+        board.set_bag(vec!['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']);
+        let rack = board.exchange_letters("zzz", "zzz");
+
+        assert_eq!(rack.chars().count(), RACK_SIZE);
+        assert!(
+            !rack.contains('z'),
+            "drew back a just-discarded tile: {rack}"
+        );
+        assert_eq!(rack, "hgfedcb");
+        // The three z's are back in the bag, along with the undrawn 'a'.
+        let mut left = board.bag_tiles();
+        left.sort_unstable();
+        assert_eq!(left, vec!['a', 'z', 'z', 'z']);
     }
 
     /// `copy()` is a real deep copy, and `unplace_word` restores the position
