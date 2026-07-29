@@ -715,14 +715,18 @@ fn xorshift(seed: &mut u64) {
     *seed ^= *seed << 17;
 }
 
-/// Seed for `give_letters`' draw, from the current time mixed with the bag
-/// size so repeated draws (even within the same nanosecond) don't collide.
-fn draw_seed(bag_len: usize) -> u64 {
+/// Default RNG seed for an unseeded `Board`, from the current time mixed with
+/// a per-process counter so two boards built in the same nanosecond still
+/// diverge. Seeded boards (`Board::seeded`) bypass this entirely.
+fn time_seed() -> u64 {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
-    nanos ^ (bag_len as u64)
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed) as u64;
+    // Mix so consecutive counter values don't produce correlated streams.
+    (nanos ^ n.wrapping_mul(0x9E3779B97F4A7C15)) | 1
 }
 
 /// Alphabetical rank of `c` for `first_draw_winner`'s "closest to 'A'"
@@ -751,11 +755,24 @@ fn fresh_tile_bag() -> Vec<char> {
     ]
 }
 
-#[pyclass(name = "Board")]
+// `skip_from_py_object`: deriving Clone would otherwise opt `Board` into
+// by-value extraction from Python. Nothing here wants that -- every Rust-side
+// use borrows -- and a silent clone at an FFI boundary is exactly the kind of
+// thing that makes a search layer mysteriously slow.
+#[pyclass(name = "Board", skip_from_py_object)]
+#[derive(Clone)]
 struct Board {
     board: [[char; BOARD_SIZE]; BOARD_SIZE],
+    /// Which occupied squares hold a blank tile playing *as* the letter in
+    /// `board`. A blank keeps its own zero value forever, so every later
+    /// cross-word or extension through that square must score it as 0 — hence
+    /// the mask travels with the grid rather than being reconstructed.
+    blanks: [[bool; BOARD_SIZE]; BOARD_SIZE],
     tile_bag: Vec<char>,
     first: bool,
+    /// Draw RNG state. Advanced by `give_letters`, so a `Board::seeded(s)`
+    /// replays an identical bag order — the basis of the paired-seed arena.
+    rng: u64,
 }
 
 #[pymethods]
@@ -764,9 +781,34 @@ impl Board {
     fn new() -> PyResult<Self> {
         Ok(Board {
             board: [['-'; BOARD_SIZE]; BOARD_SIZE],
+            blanks: [[false; BOARD_SIZE]; BOARD_SIZE],
             tile_bag: fresh_tile_bag(),
             first: true,
+            rng: time_seed(),
         })
+    }
+
+    /// A fresh board whose bag draws deterministically from `seed`. Two boards
+    /// built with the same seed and driven through the same sequence of
+    /// draws/exchanges deal identical tiles, which is what lets the arena play
+    /// one bag twice with the seats swapped.
+    #[staticmethod]
+    fn seeded(seed: u64) -> PyResult<Self> {
+        Ok(Board {
+            board: [['-'; BOARD_SIZE]; BOARD_SIZE],
+            blanks: [[false; BOARD_SIZE]; BOARD_SIZE],
+            tile_bag: fresh_tile_bag(),
+            first: true,
+            // 0 is a fixed point of xorshift64; nudge it to keep every seed usable.
+            rng: if seed == 0 { 0x9E3779B97F4A7C15 } else { seed },
+        })
+    }
+
+    /// Deep copy, including the bag and the RNG stream position. The only way
+    /// to branch a position without the lossy `str()` -> `from_grid()` round
+    /// trip, and the basis of make/unmake search.
+    fn copy(&self) -> Board {
+        self.clone()
     }
 
     /// Construct a board pre-filled from a 15x15 grid of single-character
@@ -777,13 +819,22 @@ impl Board {
     /// their own separate tile-bag bookkeeping rather than relying on this
     /// board's.
     #[staticmethod]
-    fn from_grid(board: Vec<Vec<String>>) -> PyResult<Self> {
+    #[pyo3(signature = (board, blanks=None))]
+    fn from_grid(board: Vec<Vec<String>>, blanks: Option<Vec<Vec<bool>>>) -> PyResult<Self> {
         if board.len() != BOARD_SIZE {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "board must have exactly 15 rows",
             ));
         }
+        if let Some(mask) = &blanks {
+            if mask.len() != BOARD_SIZE || mask.iter().any(|row| row.len() != BOARD_SIZE) {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "blanks mask must be 15x15",
+                ));
+            }
+        }
         let mut result = [['-'; BOARD_SIZE]; BOARD_SIZE];
+        let mut blank_mask = [[false; BOARD_SIZE]; BOARD_SIZE];
         let mut first = true;
         let mut tile_bag = fresh_tile_bag();
         for (r, row) in board.iter().enumerate() {
@@ -805,12 +856,17 @@ impl Board {
                 result[r][c] = ch;
                 if ch != '-' {
                     first = false;
-                    if let Some(pos) = tile_bag.iter().position(|&x| x == ch) {
+                    let is_blank = blanks.as_ref().is_some_and(|m| m[r][c]);
+                    blank_mask[r][c] = is_blank;
+                    // A blank on the board consumes a '?' from the bag, not a
+                    // copy of the letter it happens to be standing in for.
+                    let consumed = if is_blank { '?' } else { ch };
+                    if let Some(pos) = tile_bag.iter().position(|&x| x == consumed) {
                         tile_bag.remove(pos);
                     } else {
                         return Err(pyo3::exceptions::PyValueError::new_err(format!(
                             "letter '{}' not available in tile bag",
-                            ch
+                            consumed
                         )));
                     }
                 }
@@ -818,8 +874,10 @@ impl Board {
         }
         Ok(Board {
             board: result,
-            tile_bag: tile_bag,
-            first: first,
+            blanks: blank_mask,
+            tile_bag,
+            first,
+            rng: time_seed(),
         })
     }
 
@@ -832,15 +890,40 @@ impl Board {
     }
 
     fn give_letters(&mut self, letters: &str) -> String {
-        let mut seed = draw_seed(self.tile_bag.len());
         let mut drawn = String::new();
-        let draw_count = (RACK_SIZE - letters.chars().count()).min(self.tile_bag.len());
+        let held = letters.chars().count();
+        // A rack over capacity (shouldn't happen, but don't underflow on it).
+        let draw_count = RACK_SIZE.saturating_sub(held).min(self.tile_bag.len());
         for _ in 0..draw_count {
-            xorshift(&mut seed);
-            let idx = (seed as usize) % self.tile_bag.len();
+            xorshift(&mut self.rng);
+            let idx = (self.rng as usize) % self.tile_bag.len();
             drawn.push(self.tile_bag.swap_remove(idx));
         }
         drawn
+    }
+
+    /// How many tiles are left in the bag. Public information in Scrabble --
+    /// unlike `bag_tiles`, this is safe to expose to a player.
+    fn bag_remaining(&self) -> usize {
+        self.tile_bag.len()
+    }
+
+    /// The bag's actual contents. Hidden information: for the arena, tests and
+    /// endgame setup, never for a player's own decision-making.
+    fn bag_tiles(&self) -> Vec<char> {
+        self.tile_bag.clone()
+    }
+
+    /// Replace the bag wholesale. Used to construct exact positions (endgame
+    /// tests, pre-endgame enumeration) without replaying a whole game.
+    fn set_bag(&mut self, tiles: Vec<char>) {
+        self.tile_bag = tiles;
+    }
+
+    /// Which occupied squares hold a blank, as a 15x15 mask. Pairs with
+    /// `from_grid(grid, blanks)` to round-trip a position losslessly.
+    fn blank_mask(&self) -> Vec<Vec<bool>> {
+        self.blanks.iter().map(|row| row.to_vec()).collect()
     }
 
     fn exchange_letters(&mut self, letters: &str, letters_to_exchange: &str) -> String {
