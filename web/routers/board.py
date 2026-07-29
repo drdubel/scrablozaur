@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from web.engine import Dawg, get_dawg
 from web.game import (GameMode, _check_game_over, _deduct_tiles, _refill_rack,
-                      computer_auto_play, compute_move_rating, get_suggestions,
-                      get_suggestions_for_letters, rack_contains, validate_rack_for_word)
+                      _tiles_used_for_word, computer_auto_play, compute_move_rating,
+                      get_suggestions, get_suggestions_for_letters, rack_contains,
+                      validate_rack_for_word)
 from web.models import (BoardStateResponse, DefinitionResponse, ExchangeTilesRequest,
                         PlaceComputerWordRequest, PlaceHumanWordRequest, PreviewScoreResponse,
                         SetComputerLettersRequest, Suggestion, SuggestionsResponse)
@@ -98,9 +99,18 @@ async def place_human_word(
     else:
         session.last_move_rating = None
 
+    # Only competitive mode has a real rack, so only there can a play involve a
+    # blank. Sandbox scores every tile at face value (see letters_for_scoring
+    # above), so it places none.
+    used = (
+        _tiles_used_for_word(pre_letters, word, pre_grid, body.row, body.col, body.horizontal)
+        if session.game_mode == GameMode.COMPETITIVE
+        else None
+    )
+
     session.push_undo()
     session.record_placement(word, body.row, body.col, body.horizontal, session.current_player_idx)
-    session.board.place_word(word, body.row, body.col, body.horizontal)
+    session.board.place_word(word, body.row, body.col, body.horizontal, used)
     session.current_player.score += score
     session.is_first_move = False
 
@@ -302,9 +312,22 @@ async def place_computer_word(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     grid = session.board_grid()
+    # Sandbox lets the rack be set arbitrarily and tolerates a play the rack
+    # can't actually cover, so only claim to know which tiles were blanks when
+    # the rack really does cover it.
+    used = (
+        _tiles_used_for_word(
+            session.current_player.letters, word, grid, body.row, body.col, body.horizontal
+        )
+        if validate_rack_for_word(
+            session.current_player.letters, word, grid, body.row, body.col, body.horizontal
+        )
+        else None
+    )
+
     session.push_undo()
     session.record_placement(word, body.row, body.col, body.horizontal, session.current_player_idx)
-    session.board.place_word(word, body.row, body.col, body.horizontal)
+    session.board.place_word(word, body.row, body.col, body.horizontal, used)
     session.current_player.score += score
     session.is_first_move = False
 

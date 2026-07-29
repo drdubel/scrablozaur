@@ -128,6 +128,11 @@ class Player:
 @dataclass
 class UndoEntry:
     board_grid: list[list[str]]
+    # Which occupied squares hold a blank. The grid alone renders a blank as
+    # the letter it stands in for, so restoring without this both over-scores
+    # every later word through that square and can make `from_grid` reject the
+    # position outright for needing more copies of a letter than exist.
+    board_blanks: list[list[bool]]
     player_scores: list[int]
     player_letters: list[str]
     current_player_idx: int
@@ -172,6 +177,7 @@ class GameSession:
         self.move_history.append(
             UndoEntry(
                 board_grid=self.board_grid(),
+                board_blanks=self.board.blank_mask(),
                 player_scores=[p.score for p in self.players],
                 player_letters=[p.letters for p in self.players],
                 current_player_idx=self.current_player_idx,
@@ -188,7 +194,7 @@ class GameSession:
         if not self.move_history:
             return False
         entry = self.move_history.pop()
-        self.board = Board.from_grid(entry.board_grid)
+        self.board = Board.from_grid(entry.board_grid, entry.board_blanks)
         for i, p in enumerate(self.players):
             p.score = entry.player_scores[i]
             p.letters = entry.player_letters[i]
@@ -314,6 +320,37 @@ def rack_contains(rack: str, letters: str) -> bool:
     return True
 
 
+def _tiles_used_for_word(
+    rack: str,
+    word: str,
+    board_grid: list[list[str]],
+    row: int,
+    col: int,
+    horizontal: bool,
+) -> list[str]:
+    """Which tiles the play takes off the rack: one entry per newly covered
+    square, in placement order, `'?'` where a blank has to stand in for a
+    letter the rack doesn't hold.
+
+    Same shape the engine's own `Board.get_best_words` returns, and what
+    `Board.place_word` needs in order to remember which squares hold blanks.
+    """
+    remaining = list(rack)
+    used: list[str] = []
+    for i, ch in enumerate(word):
+        r = row if horizontal else row + i
+        c = col + i if horizontal else col
+        if board_grid[r][c] != "-":
+            continue
+        if ch in remaining:
+            remaining.remove(ch)
+            used.append(ch)
+        else:
+            remaining.remove("?")
+            used.append("?")
+    return used
+
+
 def _leave_after_word(
     rack: str,
     word: str,
@@ -326,15 +363,8 @@ def _leave_after_word(
     mutating rack. Cells already filled on the board don't consume a rack
     tile; a letter not held literally is assumed to come from a blank."""
     remaining = list(rack)
-    for i, ch in enumerate(word):
-        r = row if horizontal else row + i
-        c = col + i if horizontal else col
-        if board_grid[r][c] != "-":
-            continue
-        if ch in remaining:
-            remaining.remove(ch)
-        else:
-            remaining.remove("?")
+    for tile in _tiles_used_for_word(rack, word, board_grid, row, col, horizontal):
+        remaining.remove(tile)
     return "".join(remaining)
 
 
@@ -491,8 +521,9 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
     word, row, col, horizontal = sug["word"], sug["row"], sug["col"], sug["horizontal"]
 
     grid = session.board_grid()
+    used = _tiles_used_for_word(session.current_player.letters, word, grid, row, col, horizontal)
     session.record_placement(word, row, col, horizontal, player_idx)
-    session.board.place_word(word, row, col, horizontal)
+    session.board.place_word(word, row, col, horizontal, used)
     session.current_player.score += sug["score"]
     session.is_first_move = False
 
