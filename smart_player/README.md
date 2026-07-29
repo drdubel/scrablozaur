@@ -26,12 +26,63 @@ generating moves differently (the existing Rust DAWG engine already finds
 every legal play and its exact score, fast), but from evaluating the
 already-enumerated candidates by more than just their immediate score.
 
+## Re-baselined: every number below this line predates two engine fixes
+
+**All win rates further down were measured on a bag that was not being
+shuffled fairly, and against a baseline that is not doing what its name
+suggests.** They are kept for continuity, but the current numbers are here.
+
+`give_letters` used to re-seed from the wall clock on every call and index the
+bag with `% bag.len()`. Over 60000 opening racks that came out at
+chi-square/dof = **9.06** against the true tile distribution (a fair draw
+gives ~1.0), systematically under-dealing the *rare, high-value* Polish
+letters -- `ź` -8.5%, `ę` -8.5%, `ó` -8.1%, `ł` -7.2%, `ć` -6.7%, each worth
+5-9 points. The bag is now shuffled once with Fisher-Yates and drawn from the
+end: chi-square/dof = 0.93. Separately, a blank played onto the board used to
+keep scoring at the face value of the letter it stood in for, for the rest of
+the game.
+
+Rebuilding the old commits and re-running `evaluate.py` at n=2000 separates
+the two (the checkpoint is identical throughout -- nothing was retrained):
+
+| Build | vs `StrategicPlayer` | Avg scores |
+|---|---|---|
+| before both fixes | 63.3% | 427.3 / 390.4 |
+| + fair draw | 66.6% | 430.7 / 387.8 |
+| + blank scoring fix | **65.7%** | 426.5 / 387.6 |
+
+So the biased bag was *understating* `SmartPlayer`'s edge -- unsurprisingly,
+since it suppressed exactly the tiles that reward leave management. Nothing
+got stronger here; the measurement got fairer. Read the plateau discussion
+below with that in mind: it was a plateau at ~62-63% *on a biased bag*.
+
+Current ladder, via `arena.py` at 1000 seeded pairs (2000 games) each:
+
+| A | B | A's match score | Elo | Mean margin |
+|---|---|---|---|---|
+| `smart` | `strategic` | 65.70% +/- 0.99pp | +113 | +39.1 +/- 2.0 |
+| `smart` | `simple` | 65.75% +/- 0.99pp | +113 | +39.1 +/- 2.0 |
+| `strategic` | `simple` | 50.00% +/- 0.00pp | +0 | **+0.1 +/- 0.1** |
+
+That last row is the one to look at. `StrategicPlayer` and `SimplePlayer`
+differ only in when they exchange (`points < 6` vs. only-when-stuck), and
+across 2000 games that difference is worth **a tenth of a point per game** --
+they are the same player to within measurement error. The README already said
+`StrategicPlayer` is "in effect, greedy"; this puts a number on it. The
+pairing cancels 24x on that row precisely *because* the two play nearly
+identical games.
+
+Which means the headline "vs `StrategicPlayer`" number has always been "vs a
+greedy player", and `smart` beating `strategic` and `simple` by the same
+65.7% is the same fact stated twice, not two independent results.
+
 ## Pipeline
 
 ```
 python smart_player/generate_data.py 200000  # self-play -> _leave_dataset.npz (~20-40 min)
 python smart_player/train.py                 # -> models/leave_value.pt
-python smart_player/evaluate.py 2000         # SmartPlayer vs StrategicPlayer win rate
+python smart_player/arena.py --a smart --b strategic --pairs 1000   # paired benchmark
+python smart_player/evaluate.py 2000         # older unpaired benchmark
 ```
 
 - **generate_data.py** plays `StrategicPlayer` vs `StrategicPlayer` games to
@@ -61,7 +112,17 @@ python smart_player/evaluate.py 2000         # SmartPlayer vs StrategicPlayer wi
   now that training is ~free, there's no reason to stay at a size picked
   back when every epoch was expensive.
 - **evaluate.py** plays `SmartPlayer` against the existing baselines and
-  reports win rate, mirroring `src/main.py`'s `benchmark()`.
+  reports win rate, mirroring `src/main.py`'s `benchmark()`. Unseeded and
+  unpaired; kept because every historical number in this file came from it.
+- **arena.py** is the replacement: it plays each seeded bag *twice* with the
+  seats swapped, and reports a per-pair match score with a paired standard
+  error (plus the Elo that implies, and the ties-dropped win rate so the two
+  stay comparable). Seeding also makes a run reproducible, which `evaluate.py`
+  never was. Two honest caveats: the pairing only cuts the margin std error
+  ~1.1x -- the seat advantage cancels exactly, but the two games diverge as
+  soon as the players choose different moves, and that is most of the variance
+  -- and a run of `strategic` vs `strategic` returns exactly 50.00% with zero
+  variance, which is a wiring check rather than a result.
 
 ## Credit assignment: bounded lookahead, not the whole game
 
@@ -326,6 +387,7 @@ proven necessary yet.
 | `player.py` | `SmartPlayer` (StrategicPlayer + learned leave evaluator + learned exchange decision) |
 | `generate_data.py` | Self-play data generation CLI (StrategicPlayer or SmartPlayer) |
 | `train.py` | Training CLI (also importable as `train()`) |
-| `evaluate.py` | Win-rate benchmark CLI: vs. baselines, or candidate vs. champion |
+| `arena.py` | Paired-seed benchmark CLI: same bag twice, seats swapped |
+| `evaluate.py` | Older unpaired win-rate benchmark: vs. baselines, or candidate vs. champion |
 | `iterate.py` | Policy-iteration orchestrator (generate -> train -> gate -> promote) |
 | `models/leave_value.pt` | Trained checkpoint (committed, like `board_reader`'s CNN weights) |
