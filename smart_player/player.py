@@ -166,7 +166,7 @@ class SmartPlayer(StrategicPlayer):
             return ""
 
         self.score += points
-        self.board.place_word(word, position[0], position[1], position[2])
+        self.board.place_word(word, position[0], position[1], position[2], used)
         self.letters = remove_used(self.letters, used)
         self.draw_letters()
         return word

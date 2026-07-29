@@ -75,7 +75,7 @@ class SimplePlayer:
 
         self.last_exchanged = False
         self.score += points
-        self.board.place_word(word, position[0], position[1], position[2])
+        self.board.place_word(word, position[0], position[1], position[2], used)
         for ch in used:
             if ch in self.letters:
                 self.letters = self.letters.replace(ch, "", 1)
@@ -209,7 +209,7 @@ class StrategicPlayer:
             return ""
 
         self.score += points
-        self.board.place_word(word, position[0], position[1], position[2])
+        self.board.place_word(word, position[0], position[1], position[2], used)
         for ch in used:
             if ch in self.letters:
                 self.letters = self.letters.replace(ch, "", 1)

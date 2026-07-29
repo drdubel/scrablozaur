@@ -1038,7 +1038,7 @@ impl Board {
                 // scored on its own (this tile's value + existing
                 // perpendicular neighbours), multiplied only by this tile's
                 // own word bonus.
-                if let Some(neighbor_points) = self.cross_neighbor_points(r, c, horizontal, ch) {
+                if let Some(neighbor_points) = self.cross_neighbor_points(r, c, horizontal) {
                     let cross_total = this_letter_value * bonus.0 as u32 + neighbor_points;
                     cross_words_total += cross_total * bonus.1 as u32;
                 }
@@ -1049,7 +1049,7 @@ impl Board {
                         self.board[r][c], ch,
                     )));
                 }
-                main_total += letter_points(ch);
+                main_total += self.tile_points(r, c);
             }
         }
 
@@ -1096,7 +1096,24 @@ impl Board {
         Ok(())
     }
 
-    fn place_word(&mut self, word: &str, row: usize, col: usize, horizontal: bool) -> PyResult<()> {
+    /// Write `word` onto the board and return the cells it actually filled, in
+    /// placement order — feed that straight back to `unplace_word` to undo.
+    ///
+    /// `used` is the move's tile list as returned by `get_best_words`: one
+    /// entry per newly covered square, `'?'` where a blank stands in. Passing
+    /// it is what lets the board remember that a square holds a blank, so the
+    /// square keeps scoring 0 for every later cross-word. Omitting it treats
+    /// every placed tile as a real one.
+    #[pyo3(signature = (word, row, col, horizontal, used=None))]
+    fn place_word(
+        &mut self,
+        word: &str,
+        row: usize,
+        col: usize,
+        horizontal: bool,
+        used: Option<Vec<char>>,
+    ) -> PyResult<Vec<(usize, usize)>> {
+        let mut filled = Vec::new();
         for (i, ch) in word.chars().enumerate() {
             let (r, c) = word_cell(row, col, horizontal, i);
             if !in_bounds(r, c) {
@@ -1104,9 +1121,42 @@ impl Board {
                     "word out of bounds",
                 ));
             }
+            if self.board[r][c] == '-' {
+                filled.push((r, c));
+            }
             self.board[r][c] = ch;
         }
+        if let Some(used) = used {
+            if used.len() != filled.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "used has {} tiles but the play covers {} empty squares",
+                    used.len(),
+                    filled.len(),
+                )));
+            }
+            for (&(r, c), &tile) in filled.iter().zip(used.iter()) {
+                self.blanks[r][c] = tile == '?';
+            }
+        }
         self.first = false;
+        Ok(filled)
+    }
+
+    /// Undo a `place_word`, given the cells it returned. `was_first` restores
+    /// the opening-move flag (a search that unwinds the first play must put it
+    /// back). Cheaper than cloning the board at every node of a search.
+    #[pyo3(signature = (cells, was_first=false))]
+    fn unplace_word(&mut self, cells: Vec<(usize, usize)>, was_first: bool) -> PyResult<()> {
+        for &(r, c) in &cells {
+            if !in_bounds(r, c) {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "cell out of bounds",
+                ));
+            }
+            self.board[r][c] = '-';
+            self.blanks[r][c] = false;
+        }
+        self.first = was_first;
         Ok(())
     }
 
@@ -1363,6 +1413,71 @@ impl Board {
 
 // Pure Rust methods — no PyO3 overhead, safe to call from rayon threads.
 impl Board {
+    /// Face value of the tile at (r, c) as it actually scores: 0 for a blank,
+    /// whatever letter it is standing in for. Every read of an *already
+    /// placed* tile's value must go through here — reading `letter_points` off
+    /// the grid character would score a played blank at face value for the
+    /// rest of the game.
+    #[inline]
+    fn tile_points(&self, r: usize, c: usize) -> u32 {
+        if self.blanks[r][c] {
+            0
+        } else {
+            letter_points(self.board[r][c])
+        }
+    }
+
+    /// Summed value of the contiguous run of tiles immediately before (r, c)
+    /// along a row (`horizontal`) or column. `None` when no run is there.
+    fn run_points_before(&self, r: usize, c: usize, horizontal: bool) -> Option<u32> {
+        let mut total = 0u32;
+        let mut any = false;
+        let mut k = 1usize;
+        loop {
+            let cell = if horizontal {
+                c.checked_sub(k).map(|cc| (r, cc))
+            } else {
+                r.checked_sub(k).map(|rr| (rr, c))
+            };
+            let (rr, cc) = match cell {
+                Some(rc) => rc,
+                None => break,
+            };
+            if self.board[rr][cc] == '-' {
+                break;
+            }
+            total += self.tile_points(rr, cc);
+            any = true;
+            k += 1;
+        }
+        if any {
+            Some(total)
+        } else {
+            None
+        }
+    }
+
+    /// Summed value of the contiguous run of tiles immediately after (r, c).
+    fn run_points_after(&self, r: usize, c: usize, horizontal: bool) -> Option<u32> {
+        let mut total = 0u32;
+        let mut any = false;
+        let mut k = 1usize;
+        loop {
+            let (rr, cc) = if horizontal { (r, c + k) } else { (r + k, c) };
+            if rr >= BOARD_SIZE || cc >= BOARD_SIZE || self.board[rr][cc] == '-' {
+                break;
+            }
+            total += self.tile_points(rr, cc);
+            any = true;
+            k += 1;
+        }
+        if any {
+            Some(total)
+        } else {
+            None
+        }
+    }
+
     /// Return the cross-word formed at `(row, col)` when placing `ch` in the
     /// direction perpendicular to `horizontal`. Returns an empty string if no
     /// neighbour tiles exist.
@@ -1406,25 +1521,21 @@ impl Board {
         word
     }
 
-    /// Sum of face point values of the cross-word formed at `(row, col)`
-    /// when placing `ch`, excluding `ch`'s own value — i.e. just the
-    /// existing perpendicular neighbours. `None` if no cross-word forms
-    /// here (no adjacent tiles). Reuses `cross_word` rather than
-    /// re-walking the neighbours, since `ch` appears in that string
-    /// exactly once.
-    fn cross_neighbor_points(
-        &self,
-        row: usize,
-        col: usize,
-        horizontal: bool,
-        ch: char,
-    ) -> Option<u32> {
-        let cross = self.cross_word(row, col, horizontal, ch);
-        if cross.is_empty() {
-            return None;
+    /// Value of the existing perpendicular neighbours at `(row, col)` — the
+    /// part of a cross-word's score that does not depend on which tile is
+    /// about to be placed there. `None` if no cross-word forms (no adjacent
+    /// tiles). Blanks among the neighbours contribute 0, which is why this
+    /// walks the board rather than summing `letter_points` over `cross_word`'s
+    /// string: that string has already lost the blank/real distinction.
+    fn cross_neighbor_points(&self, row: usize, col: usize, horizontal: bool) -> Option<u32> {
+        // The main word runs along `horizontal`, so its cross-words run along
+        // the other axis.
+        let before = self.run_points_before(row, col, !horizontal);
+        let after = self.run_points_after(row, col, !horizontal);
+        match (before, after) {
+            (None, None) => None,
+            (b, a) => Some(b.unwrap_or(0) + a.unwrap_or(0)),
         }
-        let total: u32 = cross.chars().map(letter_points).sum();
-        Some(total - letter_points(ch))
     }
 
     fn check_word_placement_inner(
@@ -1795,7 +1906,7 @@ impl<'a> GenCtx<'a> {
                     cross_total += (v * lm + self.cross_score[r][c]) * wm;
                 }
             } else {
-                main_total += letter_points(ch);
+                main_total += self.board.tile_points(r, c);
             }
         }
         main_total * main_word_mul + cross_total + if tiles_from_hand == RACK_SIZE { 50 } else { 0 }
@@ -1892,11 +2003,11 @@ impl Board {
                     continue;
                 }
                 has[r][c] = true;
-                scores[r][c] = prefix
-                    .iter()
-                    .chain(suffix.iter())
-                    .map(|&ch| letter_points(ch))
-                    .sum();
+                // Value walked off the board (blank-aware), not summed over
+                // `prefix`/`suffix` — those are letters, and a blank standing
+                // in for one still scores 0.
+                scores[r][c] = self.run_points_before(r, c, !horizontal).unwrap_or(0)
+                    + self.run_points_after(r, c, !horizontal).unwrap_or(0);
                 checks[r][c] = cross_bits(dawg, &prefix, &suffix);
             }
         }
@@ -2340,7 +2451,7 @@ fn selfplay_step(board: &mut Board, dpy: &DawgPy, rack: &mut String) -> bool {
     if word.is_empty() {
         return false;
     }
-    let _ = board.place_word(&word, r, c, horizontal);
+    let _ = board.place_word(&word, r, c, horizontal, Some(used.clone()));
     for ch in used {
         if let Some(pos) = rack.char_indices().find(|&(_, x)| x == ch).map(|(i, _)| i) {
             rack.remove(pos);
@@ -2442,7 +2553,7 @@ fn cmd_gen_verify(dawg_path: &str, gaddag_path: &str, games: usize) -> io::Resul
             if word.is_empty() {
                 break;
             }
-            let _ = board.place_word(&word, r, c, h);
+            let _ = board.place_word(&word, r, c, h, Some(used.clone()));
             for ch in used {
                 if let Some(p) = rack.char_indices().find(|&(_, x)| x == ch).map(|(i, _)| i) {
                     rack.remove(p);
@@ -2657,7 +2768,7 @@ mod gaddag_tests {
         let dawg = compile(&["kot", "koty", "ty", "oto"]);
         let gaddag = compile_gaddag(&["kot", "koty", "ty", "oto"]);
         let mut board = Board::new().unwrap();
-        board.place_word("kot", 7, 7, true).unwrap();
+        board.place_word("kot", 7, 7, true, None).unwrap();
         board.first = false;
 
         // With a 'y' in hand, "koty" (hooking 'y' after "kot") must be found.
@@ -2675,5 +2786,56 @@ mod gaddag_tests {
             "expected 'koty' via blank, got {:?}",
             moves_blank.iter().map(|m| &m.0).collect::<Vec<_>>()
         );
+    }
+
+    /// A blank keeps its zero value for the rest of the game: every later word
+    /// that runs through or extends its square must score it as 0, not as the
+    /// letter it stands in for.
+    #[test]
+    fn played_blank_keeps_scoring_zero() {
+        let dawg = compile(&["kot", "koty", "ty", "oto"]);
+        let gaddag = compile_gaddag(&["kot", "koty", "ty", "oto"]);
+
+        // "kot" at (7,7) horizontally, with the 't' played as a blank. (7,7) is
+        // the centre double-word square; k=2, o=1, t=2 at face value.
+        let mut board = Board::new().unwrap();
+        board
+            .place_word("kot", 7, 7, true, Some(vec!['k', 'o', '?']))
+            .unwrap();
+        assert!(board.blanks[7][9], "the 't' square should be flagged blank");
+
+        // Extending to "koty" re-scores the whole main word. k(2) + o(1) +
+        // blank t(0) + y(2) = 5. Without blank tracking this comes out 7.
+        assert_eq!(board.calculate_word_points("koty", 7, 7, true, "y").unwrap(), 5);
+
+        // The same must hold through the fast generator path used in search.
+        let moves = board.gaddag_best_words(&dawg, &gaddag, "y", 5, false);
+        let koty = moves.iter().find(|(w, ..)| w == "koty").expect("koty");
+        assert_eq!(koty.1, 5, "generator disagreed with calculate_word_points");
+
+        // And through a cross-word: "ty" played vertically off the blank 't'
+        // scores blank t(0) + y(2) = 2.
+        assert_eq!(board.calculate_word_points("ty", 7, 9, false, "y").unwrap(), 2);
+    }
+
+    /// `copy()` is a real deep copy, and `unplace_word` restores the position
+    /// exactly -- both are load-bearing for make/unmake search.
+    #[test]
+    fn copy_and_unplace_restore_the_position() {
+        let mut board = Board::new().unwrap();
+        let before = board.__str__();
+        let cells = board
+            .place_word("kot", 7, 7, true, Some(vec!['k', 'o', '?']))
+            .unwrap();
+
+        let branch = board.copy();
+        board.unplace_word(cells, true).unwrap();
+        assert_eq!(board.__str__(), before, "unplace did not restore the grid");
+        assert!(board.first, "unplace did not restore the opening flag");
+        assert!(!board.blanks[7][9], "unplace left a stale blank flag");
+
+        // The copy is unaffected by the mutation of its source.
+        assert!(branch.blanks[7][9]);
+        assert_eq!(branch.board[7][7], 'k');
     }
 }
