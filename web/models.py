@@ -4,19 +4,26 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from web.difficulty import DEFAULT_LEVEL, MAX_LEVEL, MIN_LEVEL
+
+# Custom difficulty is a single integer dial rather than a set of named tiers
+# (see web/difficulty.py). Declared once so every request/response that carries
+# a level validates it the same way.
+DifficultyLevelField = Field(DEFAULT_LEVEL, ge=MIN_LEVEL, le=MAX_LEVEL)
+
 # ── Requests ─────────────────────────────────────────────────────────────────
 
 
 class NewPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     is_computer: bool = False
-    difficulty: Literal["easy", "medium", "hard", "impossible", "smart", "sim"] = "hard"
+    difficulty: int = DifficultyLevelField
 
 
 class NewGameRequest(BaseModel):
     players: list[NewPlayerConfig] = Field(..., min_length=1, max_length=4)
     game_mode: Literal["sandbox", "sandbox_auto", "competitive"] = "sandbox"
-    difficulty: Literal["easy", "medium", "hard", "impossible", "smart", "sim"] = "hard"
+    difficulty: int = DifficultyLevelField
 
 
 class PlaceHumanWordRequest(BaseModel):
@@ -58,7 +65,7 @@ class PlaceComputerWordRequest(BaseModel):
 
 class BenchmarkPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
-    difficulty: Literal["easy", "medium", "hard", "impossible", "smart", "sim"] = "hard"
+    difficulty: int = DifficultyLevelField
 
 
 class BenchmarkRequest(BaseModel):
@@ -74,7 +81,31 @@ class PlayerState(BaseModel):
     is_computer: bool
     score: int
     letters: str
-    difficulty: str = "hard"
+    difficulty: int = DEFAULT_LEVEL
+
+
+class DifficultyLevelInfo(BaseModel):
+    """One notch of the difficulty slider, described well enough that a player
+    can tell what they are choosing before the game starts. Served by
+    `GET /api/game/difficulty-levels` so the UI text is derived from the real
+    rank windows instead of a hand-maintained copy in JS."""
+
+    level: int
+    name: str
+    emoji: str
+    summary: str
+    expect: str
+    engine: Literal["ranked", "smart", "sim"]
+    rank_best: int | None = None
+    rank_worst: int | None = None
+    slow: bool = False
+
+
+class DifficultyLevelsResponse(BaseModel):
+    min_level: int
+    max_level: int
+    default_level: int
+    levels: list[DifficultyLevelInfo]
 
 
 class LastComputerMove(BaseModel):
@@ -187,7 +218,7 @@ class BenchmarkMoveRecord(BaseModel):
 
 class BenchmarkPlayerStats(BaseModel):
     name: str
-    difficulty: str
+    difficulty: int
     games_played: int
     wins: int
     ties: int

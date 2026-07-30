@@ -17,14 +17,6 @@
       <option value="sandbox">sandbox</option>
       <option value="competitive" selected>competitive</option>
     </select>
-    <select id="setup-difficulty" hidden>
-      <option value="easy">easy</option>
-      <option value="medium">medium</option>
-      <option value="hard" selected>hard</option>
-      <option value="impossible">impossible</option>
-      <option value="smart">smart</option>
-      <option value="sim">sim</option>
-    </select>
 
     <!-- Mode picker cards -->
     <p class="setup-section-label">Tryb gry</p>
@@ -83,32 +75,10 @@
       </label>
 
       <p class="setup-section-label">Poziom trudności</p>
-      <div class="setup-difficulty-cards">
-        <button type="button" class="diff-card" data-diff="easy">
-          <span class="diff-card-icon">🌱</span>
-          <span class="diff-card-name">Łatwy</span>
-        </button>
-        <button type="button" class="diff-card" data-diff="medium">
-          <span class="diff-card-icon">🎯</span>
-          <span class="diff-card-name">Średni</span>
-        </button>
-        <button type="button" class="diff-card diff-card--active" data-diff="hard">
-          <span class="diff-card-icon">🔥</span>
-          <span class="diff-card-name">Trudny</span>
-        </button>
-        <button type="button" class="diff-card" data-diff="impossible">
-          <span class="diff-card-icon">💀</span>
-          <span class="diff-card-name">Niemożliwy</span>
-        </button>
-        <button type="button" class="diff-card" data-diff="smart">
-          <span class="diff-card-icon">🧠</span>
-          <span class="diff-card-name">Sprytny</span>
-        </button>
-        <button type="button" class="diff-card" data-diff="sim">
-          <span class="diff-card-icon">🔮</span>
-          <span class="diff-card-name">Wizjoner</span>
-        </button>
-      </div>
+      <!-- One custom-difficulty dial instead of fixed tiers; the slider and
+           its feedback text are built by js/difficulty.js from the level
+           table the server serves. -->
+      <div id="setup-difficulty-slot" class="setup-difficulty-slot"></div>
     </div>
 
     <p id="setup-error" class="error" hidden></p>
@@ -451,6 +421,7 @@
 
   <script src="/static/js/ui.js"></script>
   <script src="/static/js/api.js"></script>
+  <script src="/static/js/difficulty.js"></script>
   <script src="/static/js/board.js"></script>
   <script src="/static/js/game.js"></script>
   <script src="/static/js/scan.js"></script>

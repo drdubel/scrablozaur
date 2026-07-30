@@ -278,7 +278,7 @@ game by the same rules (`src/rules.py`):
 |---|---|---|
 | `SimplePlayer` | `src/strategy.py` | highest score |
 | `StrategicPlayer` | `src/strategy.py` | highest score (its leave term is constant, so it is greedy in practice) |
-| `RankedPlayer` | `src/strategy.py` | a rank window below the best, for the beatable difficulty tiers |
+| `RankedPlayer` | `src/strategy.py` | a rank window below the best — `strategy.rank_window(level)`, the custom difficulty dial |
 | `SmartPlayer` | `smart_player/player.py` | score plus a learned value for the rack it leaves behind |
 | `SimPlayer` | `smart_player/sim_player.py` | Monte-Carlo simulation of what each candidate concedes |
 
@@ -457,6 +457,28 @@ backed by `src/strategy.py` and [`smart_player/`](smart_player/README.md) — th
 web bot calls the same decision functions the CLI players do, and
 `tests/test_web_agrees_with_cli.py` asserts the two never diverge.
 
+### Difficulty
+
+There are no named tiers. Difficulty is one custom level, an integer `1..10`,
+set with a slider in the setup dialog (and per bot in automatic sandbox):
+
+| Level | How the move is chosen |
+|:---|:---|
+| 1–8 | `strategy.rank_window(level)` — pick uniformly from that window of the best-first candidate list; the window shrinks geometrically from `(20, 40)` to `(1, 1)` |
+| 9 | `smart_player.player.choose_move` — score plus the learned value of the rack left behind |
+| 10 | `smart_player.sim_player.choose_move_sim` — Monte-Carlo rollouts (~110 ms/move) |
+
+`src/strategy.py` owns the level → rank-window maths so `RankedPlayer`, the web
+bot and the benchmark all weaken identically; `web/difficulty.py` owns the level
+→ engine mapping plus the descriptions served by
+`GET /api/game/difficulty-levels`, which is what the slider shows as feedback
+(what the bot will do, and what to expect from it) — so the text can't drift
+from the windows the bot actually plays by.
+
+An 8-game 4-bot benchmark (`/api/benchmark`) at levels 1/3/6/8 averaged
+82 / 128 / 197 / 229 points: the dial is monotone in real play, not just on
+paper.
+
 ```bash
 uv sync
 uv run maturin develop --release
@@ -477,6 +499,7 @@ scrablozaur/
 ├── web/                 # FastAPI web app (game UI + board scanner + benchmark UI)
 │   ├── main.py          # app entry point (`uvicorn web.main:app`)
 │   ├── game.py, scan.py, engine.py, models.py
+│   ├── difficulty.py    # custom difficulty level 1-10: engine per level + UI descriptions
 │   ├── routers/         # game/board/scan/benchmark API routes (mounted under /api)
 │   └── static/          # HTML/CSS/vanilla-JS frontend
 ├── board_reader/        # photo -> board-state CV pipeline (see its own README)

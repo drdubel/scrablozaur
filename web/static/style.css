@@ -260,47 +260,109 @@ dialog h2 {
   padding: 0.55rem 0.75rem;
 }
 
-/* Difficulty cards */
-.setup-difficulty-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
-  gap: 0.45rem;
+/* Custom difficulty slider (built by js/difficulty.js) */
+.setup-difficulty-slot {
   margin-bottom: 1.5rem;
 }
 
-.diff-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25rem;
-  min-width: 0;
-  padding: 0.65rem 0.4rem;
+.difficulty-slider--full {
+  padding: 0.85rem 0.9rem 0.75rem;
   border: 2px solid var(--color-border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--color-bg);
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
 }
 
-.diff-card:hover {
-  border-color: var(--color-primary);
+.difficulty-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
 }
 
-.diff-card--active {
-  border-color: var(--color-primary);
-  background: var(--gradient-accent-soft);
-}
-
-.diff-card-icon {
-  font-size: 1.4rem;
+.difficulty-emoji {
+  font-size: 1.35rem;
   line-height: 1;
 }
 
-.diff-card-name {
-  font-size: 0.72rem;
+.difficulty-name {
+  font-size: 1rem;
   font-weight: 700;
   color: var(--color-text);
-  text-align: center;
+}
+
+.difficulty-level {
+  margin-left: auto;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--color-muted);
+}
+
+.difficulty-range {
+  width: 100%;
+  margin: 0.6rem 0 0.2rem;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+.difficulty-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--color-muted);
+}
+
+.difficulty-feedback {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--color-border);
+  /* Descriptions differ in length between levels; a fixed floor stops the
+     dialog jumping around while the slider is being dragged. */
+  min-height: 3.6rem;
+}
+
+.difficulty-summary,
+.difficulty-expect,
+.difficulty-slow {
+  margin: 0 0 0.3rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.difficulty-summary {
+  color: var(--color-text);
+}
+
+.difficulty-expect {
+  color: var(--color-muted);
+}
+
+.difficulty-slow {
+  color: var(--color-muted);
+  font-style: italic;
+}
+
+/* Compact variant: one per computer row in automatic sandbox. */
+.difficulty-slider--compact {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.difficulty-slider--compact .difficulty-range {
+  width: 7.5rem;
+  margin: 0;
+}
+
+.difficulty-compact-label {
+  min-width: 2.6rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--color-text);
+  white-space: nowrap;
 }
 
 /* Start button row */
@@ -359,36 +421,6 @@ dialog h2 {
 
 .setup-player-row input[type="radio"] {
   accent-color: var(--color-primary);
-}
-
-.player-diff-buttons {
-  display: flex;
-  gap: 0.3rem;
-  flex-shrink: 0;
-}
-
-.player-diff-btn {
-  width: 2.15rem;
-  height: 2.15rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1rem;
-  line-height: 1;
-  border: 2px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-bg);
-  cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.player-diff-btn:hover {
-  border-color: var(--color-primary);
-}
-
-.player-diff-btn--active {
-  border-color: var(--color-primary);
-  background: var(--gradient-accent-soft);
 }
 
 /* Sandbox manual/automatic sub-toggle */

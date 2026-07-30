@@ -1,7 +1,7 @@
 'use strict';
 
-const DIFFICULTY_EMOJI = { easy: '🌱', medium: '🎯', hard: '🔥', impossible: '💀', smart: '🧠', sim: '🔮' };
-const DIFFICULTY_LABEL = { easy: 'Łatwy', medium: 'Średni', hard: 'Trudny', impossible: 'Niemożliwy', smart: 'Sprytny', sim: 'Wizjoner' };
+// Difficulty names/emoji/descriptions all come from the server-backed level
+// table in js/difficulty.js -- see there for why they aren't hardcoded here.
 
 class GameController {
   constructor(api, board) {
@@ -27,13 +27,17 @@ class GameController {
     ];
 
     // "Automatyczny" sandbox sub-mode: 2-4 computer players, each with its
-    // own difficulty, no human -- a distinct row shape from manual sandbox's
-    // name+radio rows, remembered separately across dialog reopens.
+    // own difficulty level, no human -- a distinct row shape from manual
+    // sandbox's name+radio rows, remembered separately across dialog reopens.
     this._sandboxSubMode  = 'manual';
     this._autoPlayerConfig = [
-      { name: 'Gracz 1', difficulty: 'easy' },
-      { name: 'Gracz 2', difficulty: 'hard' },
+      { name: 'Gracz 1', difficulty: 2 },
+      { name: 'Gracz 2', difficulty: 8 },
     ];
+
+    // Competitive opponent's level, remembered across dialog reopens. The
+    // slider itself is built in _bindElements (it needs the level table).
+    this._competitiveLevel = Difficulty.default;
 
     // Live sandbox_auto play: move log + autoplay loop state.
     this._autoMoveLog    = [];
@@ -116,7 +120,8 @@ class GameController {
     this._setupCount        = document.getElementById('setup-count');
     this._setupPlayers      = document.getElementById('setup-players');
     this._inPlayerName      = document.getElementById('setup-player-name');
-    this._selDifficulty     = document.getElementById('setup-difficulty');
+    this._elDifficultySlot  = document.getElementById('setup-difficulty-slot');
+    this._buildDifficultySlider();
     this._btnStartGame      = document.getElementById('btn-start-game');
     this._elSetupError      = document.getElementById('setup-error');
 
@@ -125,6 +130,33 @@ class GameController {
   }
 
   // ── Setup dialog ──────────────────────────────────────────────────────────
+
+  _buildDifficultySlider() {
+    this._elDifficultySlot.innerHTML = '';
+    this._diffSlider = Difficulty.createSlider({
+      value: this._competitiveLevel,
+      onChange: level => { this._competitiveLevel = level; },
+    });
+    this._elDifficultySlot.appendChild(this._diffSlider.el);
+  }
+
+  /** The level table is fetched asynchronously (main.js) but the setup
+   * controls are built in the constructor, so anything showing a level's name
+   * or description has to be rebuilt once it lands. That way a slow
+   * /difficulty-levels response degrades to plain "Poziom N" labels for a
+   * moment instead of breaking the dialog. */
+  onDifficultyLevelsLoaded() {
+    this._competitiveLevel = Difficulty.clamp(this._competitiveLevel);
+    this._buildDifficultySlider();
+    this._buildSetupRows(parseInt(this._setupCount.value, 10));
+    if (this._lastState) {
+      this._renderScoreboard(this._lastState);
+      if (this._lastState.game_mode === 'sandbox_auto') {
+        this._renderAutoPanel(this._lastState);
+        this._renderAutoMoveLog();
+      }
+    }
+  }
 
   _buildSetupRows(count) {
     if (this._sandboxSubMode === 'auto') this._buildAutoSetupRows(count);
@@ -161,41 +193,30 @@ class GameController {
   }
 
   /** Automatyczny sandbox: every row is a computer with its own difficulty
-   * (no radio -- there's no human to designate). Difficulty is a small
-   * button group (matching the competitive mode's diff-cards) rather than
-   * a dropdown -- the chosen value lives on the row's own dataset since
-   * there's no single underlying <select> to read it back from. */
+   * level (no radio -- there's no human to designate). Each row carries a
+   * compact copy of the same slider the competitive setup uses, with the
+   * feedback text moved into the control's tooltip; the chosen level lives on
+   * the row's own dataset since there's no single underlying input to read it
+   * back from. */
   _buildAutoSetupRows(count) {
     this._setupPlayers.innerHTML = '';
     const defaults = this._autoPlayerConfig;
     for (let i = 0; i < count; i++) {
-      const def = defaults[i] ?? { name: `Gracz ${i + 1}`, difficulty: 'hard' };
+      const def = defaults[i] ?? { name: `Gracz ${i + 1}`, difficulty: Difficulty.default };
       const row = document.createElement('div');
       row.className = 'setup-player-row';
-      row.dataset.difficulty = def.difficulty;
+      row.dataset.difficulty = String(Difficulty.clamp(def.difficulty));
       const num = document.createElement('span');
       num.className = 'player-num'; num.textContent = `${i + 1}.`;
       const inp = document.createElement('input');
       inp.type = 'text'; inp.maxLength = 20; inp.value = def.name;
       inp.placeholder = `Gracz ${i + 1}`;
-      const diffGroup = document.createElement('div');
-      diffGroup.className = 'player-diff-buttons';
-      for (const diff of ['easy', 'medium', 'hard', 'impossible', 'smart', 'sim']) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'player-diff-btn' + (diff === def.difficulty ? ' player-diff-btn--active' : '');
-        btn.dataset.diff = diff;
-        btn.title = DIFFICULTY_LABEL[diff];
-        btn.textContent = DIFFICULTY_EMOJI[diff];
-        btn.addEventListener('click', () => {
-          row.dataset.difficulty = diff;
-          diffGroup.querySelectorAll('.player-diff-btn').forEach(b =>
-            b.classList.toggle('player-diff-btn--active', b === btn)
-          );
-        });
-        diffGroup.appendChild(btn);
-      }
-      row.appendChild(num); row.appendChild(inp); row.appendChild(diffGroup);
+      const slider = Difficulty.createSlider({
+        value: def.difficulty,
+        variant: 'compact',
+        onChange: level => { row.dataset.difficulty = String(level); },
+      });
+      row.appendChild(num); row.appendChild(inp); row.appendChild(slider.el);
       this._setupPlayers.appendChild(row);
     }
   }
@@ -236,7 +257,7 @@ class GameController {
     const mode = this._setupMode.value;
     if (mode === 'competitive') {
       const name = this._inPlayerName.value.trim() || 'Gracz';
-      const difficulty = this._selDifficulty.value;
+      const difficulty = this._diffSlider.getLevel();
       return { players: [{ name, is_computer: false }], game_mode: 'competitive', difficulty };
     }
     const rows = [...this._setupPlayers.querySelectorAll('.setup-player-row')];
@@ -245,7 +266,7 @@ class GameController {
         players: rows.map((row, i) => ({
           name: row.querySelector('input[type="text"]').value.trim() || `Gracz ${i + 1}`,
           is_computer: true,
-          difficulty: row.dataset.difficulty,
+          difficulty: Number(row.dataset.difficulty),
         })),
         game_mode: 'sandbox_auto',
       };
@@ -289,15 +310,6 @@ class GameController {
       });
     });
 
-    // Difficulty card clicks
-    this._dialog.querySelectorAll('.diff-card').forEach(btn => {
-      btn.addEventListener('click', () => {
-        this._selDifficulty.value = btn.dataset.diff;
-        this._dialog.querySelectorAll('.diff-card').forEach(b =>
-          b.classList.toggle('diff-card--active', b === btn)
-        );
-      });
-    });
     this._btnStartGame.addEventListener('click', () => this._startGame());
 
     this._btnPlaceHuman.addEventListener('click', () => this._submitHumanWord());
@@ -572,7 +584,7 @@ class GameController {
       lbl.className = 'score-label';
       const dot = document.createElement('span');
       dot.className = `player-dot player-dot-${i}`;
-      const diffBadge = state.game_mode === 'sandbox_auto' ? ` ${DIFFICULTY_EMOJI[p.difficulty] ?? ''}` : '';
+      const diffBadge = state.game_mode === 'sandbox_auto' ? ` ${Difficulty.emoji(p.difficulty)}` : '';
       lbl.appendChild(dot);
       lbl.appendChild(document.createTextNode(`${p.name}${p.is_computer ? ' 🤖' : ''}${diffBadge}`));
       const val = document.createElement('span');
@@ -731,10 +743,8 @@ class GameController {
   // ── Sandbox auto-play (SANDBOX_AUTO: every player is a computer) ─────────
 
   _renderAutoPanel(state) {
-    const current  = state.players[state.current_player_idx];
-    const diffEmoji = DIFFICULTY_EMOJI[current.difficulty] ?? '';
-    const diffLabel = DIFFICULTY_LABEL[current.difficulty] ?? current.difficulty;
-    this._elAutoCurrent.textContent = `Na ruchu: ${current.name} (${diffEmoji} ${diffLabel})`;
+    const current = state.players[state.current_player_idx];
+    this._elAutoCurrent.textContent = `Na ruchu: ${current.name} (${Difficulty.label(current.difficulty)})`;
   }
 
   /** Append the move that was just made to the log. Reads the mover off
@@ -763,8 +773,9 @@ class GameController {
     for (const entry of this._autoMoveLog) {
       const li = document.createElement('li');
       li.className = 'auto-move-log-item';
-      const diffEmoji = DIFFICULTY_EMOJI[entry.difficulty] ?? '';
-      const playerLabel = `<span class="aml-player">${escapeHtml(entry.playerName)} ${diffEmoji}</span>`;
+      const playerLabel =
+        `<span class="aml-player" title="${escapeHtml(Difficulty.label(entry.difficulty))}">` +
+        `${escapeHtml(entry.playerName)} ${Difficulty.emoji(entry.difficulty)}</span>`;
       li.innerHTML = entry.passed
         ? `${playerLabel}<span class="aml-passed">spasował</span>`
         : `${playerLabel}` +

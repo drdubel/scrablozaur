@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 
 from scrablozaur import Board, Dawg
+from web.difficulty import DEFAULT_LEVEL, EngineMode, clamp_level, engine_mode
 from web.engine import DAWG_PATH, GADDAG_PATH
 
 # smart_player is a standalone script-style package (like board_reader, see
@@ -30,7 +31,7 @@ from rules import (  # noqa: E402
     apply_end_of_game_scoring,
     went_out,
 )
-from strategy import RANK_WINDOWS, pick_by_rank  # noqa: E402
+from strategy import pick_by_rank, rank_window  # noqa: E402
 
 # Rollouts per candidate when a human asks for `sim`-sorted suggestions. Lower
 # than the bot's own 200 because someone is waiting on the response: at 100 the
@@ -49,16 +50,6 @@ class GameMode(str, Enum):
     SANDBOX_AUTO = "sandbox_auto"
     COMPETITIVE = "competitive"
 
-
-class Difficulty(str, Enum):
-    EASY = "easy"
-    MEDIUM = "medium"
-    HARD = "hard"
-    IMPOSSIBLE = "impossible"
-    SMART = "smart"
-    # Monte-Carlo simulation: the strongest tier, and the only one that spends
-    # real time thinking (~110 ms/move), hence the threadpool hop in the routers.
-    SIM = "sim"
 
 
 # Polish Scrabble tile distribution: letter → count (100 tiles total)
@@ -141,7 +132,10 @@ class Player:
     is_computer: bool
     score: int = 0
     letters: str = ""
-    difficulty: Difficulty = Difficulty.HARD
+    # Custom difficulty level (see web/difficulty.py): 1 = weakest, 10 = the
+    # Monte-Carlo player, and every step in between actually exists -- this
+    # used to be a four-value enum with unadjustable gaps.
+    difficulty: int = DEFAULT_LEVEL
 
 
 @dataclass
@@ -285,7 +279,10 @@ class SessionStore:
         players: list[Player] | None = None,
         game_mode: GameMode = GameMode.SANDBOX,
     ) -> GameSession:
-        player_list = [Player(p.name, p.is_computer, difficulty=p.difficulty) for p in (players or _DEFAULT_PLAYERS)]
+        player_list = [
+            Player(p.name, p.is_computer, difficulty=clamp_level(p.difficulty))
+            for p in (players or _DEFAULT_PLAYERS)
+        ]
         session = _deal_new_game(player_list, game_mode)
         cls._sessions[session.session_id] = session
         return session
@@ -429,8 +426,8 @@ def _check_game_over(session: GameSession, just_played_idx: int) -> None:
         session.game_over = True
 
 
-def _pick_engine_move(session: GameSession, dawg: Dawg, difficulty: Difficulty) -> dict | None:
-    """The strong tiers' move choice, delegated to `smart_player`.
+def _pick_engine_move(session: GameSession, dawg: Dawg, mode: EngineMode) -> dict | None:
+    """The top levels' move choice, delegated to `smart_player`.
 
     SMART and SIM do not pick from the suggestion list at all -- they run the
     same decision the CLI players run, so there is exactly one implementation
@@ -446,7 +443,7 @@ def _pick_engine_move(session: GameSession, dawg: Dawg, difficulty: Difficulty) 
     rack = session.current_player.letters
     bag_remaining = session.tile_bag.remaining() if session.tile_bag else 0
 
-    if difficulty == Difficulty.SIM:
+    if mode is EngineMode.SIM:
         choice = choose_move_sim(
             session.board, dawg, rack, bag_remaining, endgame_max_nodes=WEB_ENDGAME_NODES
         )
@@ -470,22 +467,23 @@ def _pick_engine_move(session: GameSession, dawg: Dawg, difficulty: Difficulty) 
 
 
 def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
-    """Play a move for the computer weighted by its own difficulty, then advance the turn."""
+    """Play a move for the computer at its own difficulty level, then advance the turn."""
     player_idx = session.current_player_idx
-    difficulty = session.current_player.difficulty
+    level = session.current_player.difficulty
+    mode = engine_mode(level)
 
-    if difficulty in (Difficulty.SMART, Difficulty.SIM):
-        # These tiers make the full decision themselves rather than sampling a
-        # shortlist -- they weigh the leave, and search the endgame outright.
-        sug = _pick_engine_move(session, dawg, difficulty)
+    if mode is not EngineMode.RANKED:
+        # The top levels make the full decision themselves rather than sampling
+        # a shortlist -- they weigh the leave, and search the endgame outright.
+        sug = _pick_engine_move(session, dawg, mode)
     else:
-        # The beatable tiers rank candidates exactly as StrategicPlayer does
-        # and then reach further down the list, so a weaker bot plays a *worse
+        # Every other level ranks candidates exactly as StrategicPlayer does
+        # and then reaches further down the list, so a weaker bot plays a *worse
         # move* rather than a differently-chosen one. `pick_by_rank` is shared
-        # with `RankedPlayer`, so a tier can actually be benchmarked.
-        _, worst_rank = RANK_WINDOWS[difficulty.value]
+        # with `RankedPlayer`, so a level can actually be benchmarked.
+        _, worst_rank = rank_window(level)
         suggestions = get_suggestions(session, dawg, n=max(worst_rank, 1))
-        sug = pick_by_rank(suggestions, difficulty.value) if suggestions else None
+        sug = pick_by_rank(suggestions, level) if suggestions else None
 
     if sug is None:
         session.streaks.record(TurnResult.NO_ACTION)
@@ -524,7 +522,7 @@ def _engine_suggestions(board: Board, dawg: Dawg, letters: str, n: int) -> list[
     only the *best word per span* before ranking, so it systematically missed
     plays -- measured against the engine over 1167 real positions, it returned a
     lower top score in 5.1% of them, losing 35 points on average when it did, or
-    about 1.8 points per move overall. That handicapped every difficulty tier
+    about 1.8 points per move overall. That handicapped every difficulty level
     and both human-facing hint endpoints.
 
     `Board.get_best_words` enumerates every legal play and returns the true top
@@ -672,7 +670,7 @@ class BenchmarkMoveRecord:
 @dataclass
 class BenchmarkPlayerStats:
     name: str
-    difficulty: str
+    difficulty: int
     games_played: int = 0
     wins: int = 0
     ties: int = 0
@@ -732,9 +730,9 @@ def _init_worker(dawg_path: str, gaddag_path: str) -> None:
     _worker_dawg = Dawg(dawg_path, gaddag_path)
 
 
-def _simulate_game(player_specs: list[tuple[str, Difficulty]]) -> _SimulatedGame:
+def _simulate_game(player_specs: list[tuple[str, int]]) -> _SimulatedGame:
     assert _worker_dawg is not None, "worker executor initializer did not run"
-    players = [Player(name=name, is_computer=True, difficulty=difficulty) for name, difficulty in player_specs]
+    players = [Player(name=name, is_computer=True, difficulty=level) for name, level in player_specs]
     session = _deal_new_game(players, GameMode.SANDBOX_AUTO)
 
     moves: list[BenchmarkMoveRecord] = []
@@ -780,19 +778,19 @@ def _get_executor() -> ProcessPoolExecutor:
 
 
 def run_benchmark(
-    player_specs: list[tuple[str, Difficulty]],
+    player_specs: list[tuple[str, int]],
     games: int,
     on_game_done: Callable[[int], None] | None = None,
 ) -> BenchmarkResult:
     """Simulate *games* full SANDBOX_AUTO games with the given (name,
-    difficulty) players end-to-end using the same engine primitives as a
+    level) players end-to-end using the same engine primitives as a
     live game (_deal_new_game + computer_auto_play), never touching
     SessionStore. Games are independent, so they're farmed out across a
     process pool (see _get_executor) instead of run one at a time. Returns
     aggregate per-player stats plus the full move-by-move detail of whichever
     single game had the highest final score for any one player."""
     start = time.perf_counter()
-    stats = [BenchmarkPlayerStats(name=name, difficulty=difficulty.value) for name, difficulty in player_specs]
+    stats = [BenchmarkPlayerStats(name=name, difficulty=level) for name, level in player_specs]
     best_game: BenchmarkBestGame | None = None
     best_score = -1
     total_moves = 0

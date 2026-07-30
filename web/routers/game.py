@@ -4,10 +4,11 @@ from starlette.concurrency import run_in_threadpool
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from web.difficulty import DEFAULT_LEVEL, MAX_LEVEL, MIN_LEVEL, all_levels
 from web.engine import Dawg, get_dawg
-from web.game import Difficulty, GameMode, GameSession, Player, SessionStore, computer_auto_play
-from web.models import (BoardStateResponse, LastComputerMove, NewGameRequest,
-                        PlayerState)
+from web.game import GameMode, GameSession, Player, SessionStore, computer_auto_play
+from web.models import (BoardStateResponse, DifficultyLevelInfo, DifficultyLevelsResponse,
+                        LastComputerMove, NewGameRequest, PlayerState)
 
 router = APIRouter(prefix="/game")
 
@@ -27,7 +28,7 @@ def _state_response(session: GameSession) -> BoardStateResponse:
                     if session.game_mode == GameMode.COMPETITIVE and p.is_computer
                     else p.letters
                 ),
-                difficulty=p.difficulty.value,
+                difficulty=p.difficulty,
             )
             for p in session.players
         ],
@@ -81,7 +82,7 @@ def _players_from_request(body: NewGameRequest) -> list[Player]:
             )
         return [
             Player(name=non_computer[0].name, is_computer=False),
-            Player(name="Komputer", is_computer=True, difficulty=Difficulty(body.difficulty)),
+            Player(name="Komputer", is_computer=True, difficulty=body.difficulty),
         ]
     if body.game_mode == "sandbox_auto":
         if len(body.players) < 2:
@@ -90,14 +91,14 @@ def _players_from_request(body: NewGameRequest) -> list[Player]:
                 detail="Tryb automatyczny wymaga co najmniej dwóch graczy-komputerów.",
             )
         return [
-            Player(name=p.name, is_computer=True, difficulty=Difficulty(p.difficulty))
+            Player(name=p.name, is_computer=True, difficulty=p.difficulty)
             for p in body.players
         ]
     computer_count = sum(1 for p in body.players if p.is_computer)
     if computer_count != 1:
         raise HTTPException(status_code=400, detail="Exactly one player must be the computer.")
     return [
-        Player(name=p.name, is_computer=p.is_computer, difficulty=Difficulty(p.difficulty))
+        Player(name=p.name, is_computer=p.is_computer, difficulty=p.difficulty)
         for p in body.players
     ]
 
@@ -118,6 +119,32 @@ async def new_game(body: NewGameRequest, response: Response, dawg: Dawg = Depend
     await _play_opening_computer_move(session, dawg)
     _set_session_cookie(response, session.session_id)
     return _state_response(session)
+
+
+@router.get("/difficulty-levels", response_model=DifficultyLevelsResponse)
+async def difficulty_levels() -> DifficultyLevelsResponse:
+    """Every notch of the custom-difficulty slider, with the feedback text the
+    setup dialog shows. Server-side so the descriptions stay tied to the rank
+    windows the bot actually plays by."""
+    return DifficultyLevelsResponse(
+        min_level=MIN_LEVEL,
+        max_level=MAX_LEVEL,
+        default_level=DEFAULT_LEVEL,
+        levels=[
+            DifficultyLevelInfo(
+                level=info.level,
+                name=info.name,
+                emoji=info.emoji,
+                summary=info.summary,
+                expect=info.expect,
+                engine=info.engine.value,
+                rank_best=info.rank_best,
+                rank_worst=info.rank_worst,
+                slow=info.slow,
+            )
+            for info in all_levels()
+        ],
+    )
 
 
 @router.get("/state", response_model=BoardStateResponse)

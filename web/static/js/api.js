@@ -4,8 +4,8 @@
  *
  * Our own handlers raise HTTPException with a plain string, but FastAPI's
  * request validation returns `detail` as an array of error objects. Those
- * stringify to "[object Object]", which is how a difficulty the server did not
- * recognise showed up as an unreadable error instead of naming the field.
+ * stringify to "[object Object]", which is how a difficulty level the server
+ * rejected showed up as an unreadable error instead of naming the field.
  */
 function formatDetail(detail) {
   if (detail == null) return '';
@@ -55,6 +55,9 @@ class ApiClient {
   resetGame(body) { return this._request('POST', '/game/reset', body); }
   getState()        { return this._request('GET',  '/game/state'); }
 
+  /** The custom-difficulty slider's notches + their descriptions. */
+  getDifficultyLevels() { return this._request('GET', '/game/difficulty-levels'); }
+
   placeHumanWord(word, row, col, horizontal) {
     return this._request('POST', '/board/human-move', { word, row, col, horizontal });
   }
@@ -103,7 +106,7 @@ class ApiClient {
     return this._request('POST', '/board/next-move');
   }
 
-  /** @param {{name:string,difficulty:string}[]} players */
+  /** @param {{name:string,difficulty:number}[]} players */
   startBenchmark(players, games) {
     return this._request('POST', '/benchmark/start', { players, games });
   }
