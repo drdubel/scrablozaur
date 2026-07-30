@@ -39,23 +39,25 @@ def remove_used(letters: str, used: list[str]) -> str:
 
 # How heavily the learned leave value counts against a move's own score.
 #
-# This was implicitly 1.0, which looked suspicious: over ~30k leaves from real
-# self-play positions the model's predictions have a spread of 12.33 points
-# against a candidate-score spread of 12.8, so the leave term was weighted as
-# heavily as the actual points on the board -- an artefact of regressing a
-# 4-turn score-differential return (std 47.5) rather than a considered choice.
+# **Retune this whenever the checkpoint changes.** The optimum is a property of
+# the model, not a constant: it measures how far the estimate deserves to be
+# trusted, and a better-trained net earns a higher weight. Measured at 1500
+# seeded pairs per point, against the previous champion (`models/leave_v1.pt`):
 #
-# Measured, at 2500 seeded pairs (5000 games) per point, against w = 1.0:
+#   w                      0.80    0.90    1.00    1.10    1.25    1.50
+#   leave_v2 (2M games)    +0.7    +3.8    +5.4    +4.9    +1.2   -13.6
+#   leave_k4 (200k games)    --    -2.0    -1.1     --     -3.1     --
 #
-#   w    0.1     0.25    0.5     0.75    0.8     1.25    1.5     2.0
-#   pts  -25.0   -14.2   -2.1    +2.0    +2.5    -5.5    -32.1   -153.8
+# Same architecture, same lookahead, same target -- only the data volume
+# differs, and the peaks land in different places. `leave_v1` peaked at 0.8
+# because its predictions were noisy enough that leaning harder on them cost
+# points; the current checkpoint (2M games) peaks at 1.0 and is worth
+# +4.8 +/- 1.7 points/game over it once both play at their own optimum.
 #
-# So the implicit 1.0 was very nearly right, and the suspicion was wrong: the
-# term's *magnitude* is fine, and a 600-pair sweep that showed +7.7 at w=0.75
-# was noise -- at 2500 pairs 0.75 and 0.8 are a dead tie (-0.1 +/- 0.7). What
-# is left is a genuine but small +2.5 +/- 1.1 points/game, and the real problem
-# is the target's accuracy, not its scale (see README's "Simulation" section).
-DEFAULT_LEAVE_WEIGHT = 0.8
+# The failure mode this guards against: benchmarking a new checkpoint at the
+# incumbent's weight. Doing exactly that scored `leave_v2` at +0.7 +/- 1.5 -- a
+# tie -- and nearly discarded a real five-point improvement.
+DEFAULT_LEAVE_WEIGHT = 1.0
 
 
 class SmartPlayer(StrategicPlayer):

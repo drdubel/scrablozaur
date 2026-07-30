@@ -60,7 +60,8 @@ Current ladder, via `arena.py`:
 
 | A | B | Pairs | A's match score | Elo | Mean margin |
 |---|---|---|---|---|---|
-| `smart` | `strategic` | 2000 | 66.07% +/- 0.68pp | +116 | +41.2 +/- 1.4 |
+| `sim` | `strategic` | 250 | 71.10% +/- 2.05pp | +156 | +52.7 +/- 3.8 |
+| `smart` | `strategic` | 2000 | 66.86% +/- 0.70pp | +122 | +44.0 +/- 1.4 |
 | `strategic` | `simple` | 1000 | 50.00% +/- 0.00pp | +0 | **+0.1 +/- 0.1** |
 
 What each piece contributes, measured against the same player without it:
@@ -68,8 +69,17 @@ What each piece contributes, measured against the same player without it:
 | Change | Pairs | Match score | Mean margin | Elo |
 |---|---|---|---|---|
 | simulation (`sim` vs `smart`) | 150 | 53.33% +/- 2.74pp | +10.7 +/- 4.8 | +23 |
+| 2M-game checkpoint at its own weight | 1200 | 51.67% +/- 0.94pp | +4.8 +/- 1.7 | +12 |
 | endgame search (`smart` vs `smart!noeg`) | 1200 | 51.08% +/- 0.24pp | +2.7 +/- 0.2 | +8 |
-| leave weight 0.8 (vs 1.0) | 2500 | 50.81% +/- 0.57pp | +2.5 +/- 1.1 | +6 |
+
+The checkpoint upgrade shows up cleanly in the static player: `smart` vs
+`strategic` moved from 66.07% (+41.2 pts) to 66.86% (+44.0 pts). It does *not*
+show up in `sim` vs `strategic` — 71.10% +/- 2.05 against 72.00% +/- 1.95
+before, with the margin up from +51.2 to +52.7. Those are the same number at
+250 pairs, so simulation neither gained nor lost from the better evaluator as
+far as this sample can tell; resolving a 5-point effect there needs roughly
+1200 pairs, which at ~9 minutes per 250 is a much longer run than it is worth
+right now.
 
 The `strategic` vs `simple` row in the first table is the one to read carefully.
 The two differ only in when they exchange, and across 2000 games that difference
@@ -297,34 +307,94 @@ Fine for real games; a benchmark needs `set_num_threads(1)` in each worker, whic
 `arena.py` does — without it, one worker process per core each spinning up the
 engine's 8-thread pool turns a one-minute run into ten minutes of thrashing.
 
-## The leave weight, and what it ruled out
+## Checkpoints, and the weight that goes with them
+
+`models/leave_value.pt` is the champion. The rest are the named sources behind
+the results below, kept because they are the controls any future comparison
+needs.
+
+| File | Games | Lookahead | Best weight | Margin vs `leave_v1` |
+|---|---|---|---|---|
+| **`leave_value.pt`** (= `leave_v2.pt`) | **2M** | **4** | **1.0** | **+5.4 +/- 1.6** |
+| `leave_v1.pt` (previous champion) | ? | ~8, see below | 0.8 | — |
+| `leave_k2.pt` | 200k | 2 | ~1.0 | −0.3 +/- 1.5 |
+| `leave_k4.pt` | 200k | 4 | ~1.0 | −1.1 +/- 1.6 |
+| `leave_k6.pt` | 200k | 6 | ~0.83 | −1.4 +/- 1.5 |
+| `leave_k8.pt` | 200k | 8 | ~0.82 | +1.1 +/- 1.5 |
+
+Measured at 1500 seeded pairs each, endgame search off on both sides — it is
+checkpoint-independent, so it only added cost (9 minutes a run instead of one).
+
+**The lookahead horizon does not matter.** All four 200k checkpoints land within
+±2 points of the old champion. That closes the question this file previously
+left open — and it was only answerable with the weight swept, because the
+horizon mechanically sets the model's output *scale*: prediction mean runs
+−3.83 at k2 to −13.43 at k8, std 8.53 to 12.02. Comparing at one fixed weight
+measures scale, not horizon.
+
+**Data volume is not saturated after all.** An earlier entry in this file, and
+an earlier round of this work, concluded it was. Both were wrong for the same
+reason: the comparison ran the new checkpoint at the incumbent's weight. With
+each at its own optimum, the clean 10x ablation (`leave_v2` 2M vs `leave_k4`
+200k, same lookahead) is **+3.0 +/- 1.5**, and in the deployable configuration
+`leave_v2` beats `leave_v1` by **+4.8 +/- 1.7 points/game**. The two models'
+predictions still correlate +0.977 — 10x the data barely changes the *function*,
+it changes how far the function can be trusted.
+
+**Which is the practical lesson: always sweep the leave weight per checkpoint.**
+
+| weight | `leave_v2` (2M) | `leave_k4` (200k) |
+|---|---|---|
+| 0.80 | +0.7 +/- 1.5 | — |
+| ~0.90 | +3.8 +/- 1.5 | −2.0 +/- 1.5 |
+| **1.00** | **+5.4 +/- 1.6** | −1.1 +/- 1.6 |
+| 1.10 | +4.9 +/- 1.6 | — |
+| 1.25 | +1.2 +/- 1.7 | −3.1 +/- 1.6 |
+| 1.50 | −13.6 +/- 1.8 | — |
+
+Same architecture, same target, same horizon — only the data differs, and the
+peaks land in different places. Scored at the incumbent's 0.8, `leave_v2` reads
++0.7 +/- 1.5: a tie, and a real five-point improvement nearly discarded. The
+optimum is a better quality signal than validation MSE, which cannot compare two
+models whose targets sit on different scales.
+
+**`leave_v1` was probably not the lookahead-4 model this file used to claim.**
+Its predictions correlate +0.966 with `leave_k8` and only +0.830 with
+`leave_k4`; correlation is scale-invariant, so that is about ranking behaviour,
+not magnitude. Its output scale also matches k8's (mean −13.66/std 12.37 against
+k8's −13.43/12.02) rather than k4's (−6.94/10.94). Treat the older
+"lookahead 4 vs 8" numbers here as unreliable. The current champion genuinely is
+lookahead 4, on 2M games, generated after the engine fixes.
+
+## How the weight got tuned (against `leave_v1`)
+
+Kept because it is where the parameter came from, and because reading it next to
+the section above shows how a per-model constant gets mistaken for a universal
+one.
 
 `points + leave_value` weighted the model as heavily as the points themselves:
-over ~30k leaves from real self-play positions the predictions have a spread of
-**12.33** against a candidate-score spread of **12.8**. That looked like a scale
-artefact — the net regresses a 4-turn score-differential return (std 47.5), so
-it inherits that scale, and its mean output is −13.3 where a leave *equity*
-should sit near zero. So the weight became a parameter (`~w` in an arena spec)
-and was measured, at 2500 pairs — 5000 games — per point:
+over ~30k leaves from real self-play positions, `leave_v1`'s predictions have a
+spread of **12.33** against a candidate-score spread of **12.8**. That looked
+like a scale artefact — the net regresses a 4-turn score-differential return
+(std 47.5), so it inherits that scale. So the weight became a parameter (`~w` in
+an arena spec) and was swept at 2500 pairs — 5000 games — per point:
 
 | w | 0.1 | 0.25 | 0.5 | 0.75 | **0.8** | 1.25 | 1.5 | 2.0 |
 |---|---|---|---|---|---|---|---|---|
 | pts vs w=1.0 | −25.0 | −14.2 | −2.1 | +2.0 | **+2.5** | −5.5 | −32.1 | −153.8 |
 
-**The suspicion was wrong.** The implicit 1.0 was very nearly optimal. The term
-is load-bearing — w=2.0 collapses to an 18% match score, w=0.1 to 38.7% — and
-already about the right size. A 600-pair sweep showing +7.7 at w=0.75 was noise;
-at 2500 pairs 0.75 and 0.8 are a dead tie (−0.1 ± 0.7). What survives is a real
-but small **+2.5 ± 1.1 points/game**, now the default for `SmartPlayer`.
+The term is clearly load-bearing — w=2.0 collapses to an 18% match score, w=0.1
+to 38.7% — and 0.8 was worth a real but small **+2.5 ± 1.1 points/game** over
+1.0. A 600-pair sweep that had shown +7.7 at w=0.75 was noise; at 2500 pairs
+0.75 and 0.8 are a dead tie (−0.1 ± 0.7).
 
-`SimPlayer` deliberately stays at 1.0: the same weight measured −5.9 ± 5.8
-inside the simulator, which is coherent, since the sim's leaf already contains a
-realised score differential and the leave term is correcting a different
-quantity there.
-
-The useful result is the negative one. **The leave model's problem is its
-accuracy, not its scale**, so tuning is exhausted and the target is what has to
-change — see "What to try next".
+**The mistake was concluding 0.8 was a property of the *player*.** It is a
+property of the *checkpoint*: `leave_v1` peaked at 0.8 because its predictions
+were noisy enough that leaning harder on them cost points. The 2M-game
+checkpoint peaks at 1.0. Adopting 0.8 as a default then briefly scored its
+replacement at +0.7 ± 1.5 — a tie — and nearly threw away five points. The
+weight is now retuned with every checkpoint, and `DEFAULT_LEAVE_WEIGHT`'s
+comment says so.
 
 ## Endgame search
 
@@ -366,23 +436,39 @@ each for the same underlying reason: **everything downstream is limited by how
 good the leave evaluator is, and it can explain at most 6.75% of its target's
 variance.** Tuning around it is finished.
 
-What that implies, in order:
+Step 1 below is now **done** — regenerating on the fixed engine at 2M games is
+what produced the current champion, worth +4.8 ± 1.7 points/game. Note that this
+partly contradicts the paragraph above: "change the target, not the volume" was
+too strong, and volume did buy something. What survives is that it bought less
+than the label quality would, and that the 6.75% ceiling still binds.
 
-1. **Regenerate the training data.** Every existing sample was produced on a bag
-   that under-dealt ź/ę/ó/ł/ć by 7-8.5% and with blanks scoring at face value
-   forever. `_leave_dataset.npz` is also still the 34-dim-era file, so
-   `train.py` currently `KeyError`s on it. This is hygiene, not an experiment.
-2. **Change the target, not the volume.** Subtract a position-only baseline
-   (fit on the board features and unseen count) so the net learns leave equity
-   rather than game phase; the baseline is constant across a decision's
-   candidates, so dropping it at inference changes no argmax. Add the 33-dim
-   unseen *composition* — `get_letters_left()` already computes the multiset and
-   throws it away with `len()`. Report R², not raw MSE, which would have made
-   the 6% ceiling obvious from the first run.
+What is left, in order:
+
+1. ~~**Regenerate the training data.**~~ Done — see the checkpoint table at the
+   top. The old data came off a bag that under-dealt ź/ę/ó/ł/ć by 7-8.5% and
+   scored blanks at face value forever.
+2. **Change the target.** Subtract a position-only baseline (fit on the board
+   features and unseen count) so the net learns leave equity rather than game
+   phase; the baseline is constant across a decision's candidates, so dropping
+   it at inference changes no argmax. Measured on fresh data, position alone
+   explains only **1.58%** of target variance, so expect this to fix the output
+   *scale* (and with it the need to retune the weight every time) rather than to
+   move Elo much. Report R², not raw MSE, which would have made the 6% ceiling
+   obvious from the first run.
 3. **Distil the simulation.** A sim equity has a standard error of ~1-1.5
    points; the n-step return has a standard deviation of 47.5. Per sample a sim
-   label carries roughly 30x less noise, which is the direct fix for a 6.75%
-   ceiling in a way more n-step samples provably are not.
+   label carries roughly 25-30x less noise, which is the direct fix for a 6.75%
+   ceiling in a way more n-step samples are not. `distill.py` does not exist
+   yet.
+
+**Two process rules earned the hard way**, both of which nearly cost a real
+result:
+
+- **Sweep the leave weight for every new checkpoint.** The optimum is a property
+  of the model, not the player.
+- **Benchmark checkpoints with the endgame search off.** It is
+  checkpoint-independent, so it contributes nothing to the comparison and turns
+  a one-minute run into nine.
 
 ## Board-aware features
 

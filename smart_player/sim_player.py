@@ -33,12 +33,11 @@ from player import SmartPlayer  # noqa: E402
 
 DEFAULT_ITERATIONS = 200
 DEFAULT_CANDIDATES = 20
-# Deliberately *not* SmartPlayer's 0.8. Down-weighting the leave is a small win
-# for the static player, but measured inside the simulator it is neutral to
-# slightly negative (-5.9 +/- 5.8 pts over 80 pairs at w=0.8), which makes
-# sense: the sim's leaf already contains a realised score differential, so the
-# leave term is correcting a different quantity there. Left at 1.0 until a
-# bigger sim run says otherwise.
+# Kept separate from `DEFAULT_LEAVE_WEIGHT` because the two are not the same
+# quantity: the sim's leaf already contains a *realised* score differential, so
+# its leave term corrects a different thing than the static player's does. They
+# happen to agree at 1.0 for the current checkpoint. Retune independently if
+# either the checkpoint or the rollout depth changes.
 SIM_LEAVE_WEIGHT = 1.0
 # One opponent reply, so both sides have played the same number of moves when
 # the position is scored. Measured against the alternatives (see
