@@ -428,6 +428,47 @@ the two players play identically until the bag empties, so the pairs cancel and
 the margin std error drops **9.91x**. A 2.7-point effect is not resolvable
 otherwise.
 
+## Measured: the model cannot be given the simulator's judgement
+
+The distillation result above said the model was being asked to predict
+something its inputs could not distinguish. That suggested an obvious fix --
+give it per-candidate inputs -- so it was gated before building, and **the gate
+failed twice.**
+
+The setup: ~123,000 sim-labelled candidates across 10,338 decisions, the same
+small MLP fitted twice, scored on the **within-decision centred** target, which
+is the only part that can reorder anything. Bar set in advance at +10
+percentage points of R².
+
+| features added | R² | gain |
+|---|---|---|
+| baseline: leave + unseen + pre-move board | 0.271 | — |
+| \+ whole-board aggregates after the move | 0.276 | +0.9 pp |
+| \+ placement-local features | 0.313 | **+4.2 pp** |
+
+The first attempt was a bad experiment, not a bad idea: whole-board aggregates
+(reachable premiums, anchor totals, board fill) have a within-decision standard
+deviation of ~0.03 against the leave's 0.176 — one word barely moves a
+225-square average, so they were per-candidate in name only. The retest used
+features measured relative to the squares the move covered (premium value newly
+opened, biggest hook conceded, new anchors adjacent to the placement, how far
+from the edge), which vary as much as the leave does (0.15-0.35). They tripled
+the gain and still came in at less than half the bar.
+
+**What that rules out.** Within-decision label noise accounts for only ~8% of
+the variance, so roughly 60% of the ranking-relevant signal is real and remains
+unexplained by leave, position and placement together. Hand-designed static
+features do not reach it. Whatever decides between two candidates lives in the
+specific interaction between the resulting board and the racks the opponent
+might hold — which is what generating the opponent's replies *is*. You cannot
+approximate the simulator with features; if you want its judgement, you have to
+run it.
+
+Which makes rollout throughput, not model capacity, the thing worth working on:
+a simulation costs ~2175 move generations (263 ms against 0.12 ms), and every
+one of them rebuilds both 15x15 cross-check tables from scratch even though a
+rollout only disturbs the squares near its last placement.
+
 ## What to try next
 
 Three rounds of measurement now point the same way. Simulation (+25 Elo), the
