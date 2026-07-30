@@ -1448,6 +1448,66 @@ impl Board {
         self.board_features()
     }
 
+    /// Best play with the bag empty, searched rather than sampled.
+    ///
+    /// Returns `(word, score, (row, col, horizontal), used, differential,
+    /// nodes, exact)`. `differential` is the final score margin this play leads
+    /// to, in points, counting the end-of-game rack adjustment; `exact` is true
+    /// when the search proved it -- false means the node cap or the per-ply
+    /// branching limit bit, and the move is good rather than provably optimal.
+    /// An empty word means passing beats every play, which does happen when
+    /// every legal move opens something worse than it scores.
+    ///
+    /// `opp_rack` must be the opponent's actual tiles. With the bag empty that
+    /// is exactly `unseen_tile_counts(my_rack)`, which is legitimate
+    /// information: it follows from the board, your own rack, and the tile
+    /// distribution.
+    #[allow(clippy::type_complexity)]
+    #[pyo3(signature = (dawg, my_rack, opp_rack, max_nodes=300000))]
+    fn solve_endgame(
+        &self,
+        py: Python<'_>,
+        dawg: &DawgPy,
+        my_rack: &str,
+        opp_rack: &str,
+        max_nodes: usize,
+    ) -> PyResult<(String, u32, (usize, usize, bool), Vec<char>, i32, usize, bool)> {
+        let Some(gaddag) = &dawg.gaddag else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "solve_endgame needs a GADDAG; this Dawg was loaded without one",
+            ));
+        };
+        let mut board = self.clone();
+        let (best, value, stats) = py.detach(|| {
+            board.solve_endgame_inner(
+                &dawg.inner, gaddag, my_rack, opp_rack, max_nodes, &EG_BRANCH, EG_MAX_DEPTH,
+            )
+        });
+        Ok(match best {
+            Some((r, c, horizontal, word, score)) => {
+                let used = self.hand_tiles_for_word(&word, r, c, horizontal, my_rack);
+                (
+                    word,
+                    score,
+                    (r, c, horizontal),
+                    used,
+                    value,
+                    stats.nodes,
+                    !stats.capped && !stats.truncated,
+                )
+            }
+            None => (
+                String::new(),
+                0,
+                (0, 0, true),
+                Vec::new(),
+                value,
+                stats.nodes,
+                !stats.capped && !stats.truncated,
+            ),
+        })
+    }
+
     /// Counts of the tiles neither on the board nor in `rack` -- the bag plus
     /// every opponent's rack -- indexed by `LeaveNet.alphabet()`.
     ///
@@ -2667,20 +2727,43 @@ impl Board {
         counts
     }
 
-    /// Apply a generated move, recording which squares took a blank. The
-    /// Rust-side counterpart of the `place_word` pymethod.
-    fn apply_move(&mut self, word: &str, row: usize, col: usize, horizontal: bool, used: &[char]) {
-        let mut k = 0usize;
+    /// Apply a generated move, recording which squares took a blank, and
+    /// return the cells it filled. The Rust-side counterpart of the
+    /// `place_word` pymethod; pair it with `undo_move` for make/unmake search.
+    fn apply_move(
+        &mut self,
+        word: &str,
+        row: usize,
+        col: usize,
+        horizontal: bool,
+        used: &[char],
+    ) -> Vec<(usize, usize)> {
+        let mut filled = Vec::new();
         for (i, ch) in word.chars().enumerate() {
             let (r, c) = word_cell(row, col, horizontal, i);
             if self.board[r][c] == '-' {
-                self.blanks[r][c] = used.get(k) == Some(&'?');
-                k += 1;
+                self.blanks[r][c] = used.get(filled.len()) == Some(&'?');
+                filled.push((r, c));
             }
             self.board[r][c] = ch;
         }
         self.first = false;
+        filled
     }
+
+    /// Take a move back off the board, given the cells `apply_move` filled.
+    fn undo_move(&mut self, filled: &[(usize, usize)], was_first: bool) {
+        for &(r, c) in filled {
+            self.board[r][c] = '-';
+            self.blanks[r][c] = false;
+        }
+        self.first = was_first;
+    }
+}
+
+/// Face value of a rack, as the end-of-game adjustment counts it (blanks 0).
+fn rack_points(rack: &str) -> i32 {
+    rack.chars().map(|c| letter_points(c) as i32).sum()
 }
 
 /// Remove a move's tiles from a rack, blanks included.
@@ -3068,6 +3151,234 @@ impl LeaveNetPy {
     #[staticmethod]
     fn alphabet() -> Vec<char> {
         EVAL_ALPHABET.chars().collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Endgame: search once the bag is empty
+// ---------------------------------------------------------------------------
+//
+// With an empty bag the game stops being a game of chance. Nobody draws again,
+// so the opponent's rack is exactly `unseen - my rack` — computable only
+// because the board now remembers which of its squares hold blanks. What is
+// left is a small, deterministic, perfect-information, zero-sum game, and the
+// right tool is search, not sampling: simulation is at its least useful here
+// because there is nothing left to sample.
+//
+// This matters out of proportion to the number of turns involved. Endgames are
+// where close games are decided, and close games are exactly the ones that
+// convert score margin into win rate.
+
+/// How many moves to consider at each depth. Endgames are shallow — at most
+/// seven tiles a side — but an open board can still offer hundreds of plays at
+/// the first ply, and the raw tree is far too wide to enumerate. Alpha-beta
+/// with out-plays-first ordering does most of the work; this bounds the rest.
+const EG_BRANCH: [usize; 8] = [20, 14, 10, 8, 6, 5, 4, 4];
+/// Plies to search before falling back to the both-players-stop value. Racks
+/// hold at most seven tiles, so this reaches the natural end of most endgames;
+/// bounding by depth rather than by a node budget matters because a node cap
+/// bites part-way through the tree, leaving whichever branches happened to be
+/// searched first with a deeper look than the rest.
+const EG_MAX_DEPTH: usize = 8;
+/// Branching past the end of `EG_BRANCH`, where racks are nearly spent.
+const EG_BRANCH_TAIL: usize = 5;
+
+/// Per-depth branching limits. Passing a slice of huge values makes the search
+/// exhaustive, which is how the tests prove alpha-beta agrees with brute force.
+fn eg_branch_at(limits: &[usize], depth: usize) -> usize {
+    *limits.get(depth).unwrap_or(&EG_BRANCH_TAIL)
+}
+
+/// Whether a search finished inside its limits, and what it cost.
+struct EndgameStats {
+    nodes: usize,
+    /// The node backstop bit -- the tree was cut unevenly and the value is not
+    /// trustworthy. Should be rare; if it fires, the limits are too loose.
+    capped: bool,
+    /// The depth horizon or a branching limit bit. Normal on a wide endgame:
+    /// the answer is a strong move rather than a proven one.
+    truncated: bool,
+}
+
+impl Board {
+    /// Negamax value of the position for the side to move: the score
+    /// differential (mover minus opponent) achievable from here on, assuming
+    /// both sides play well.
+    ///
+    /// `passes` counts consecutive no-plays; two in a row ends the game with
+    /// each side deducting its own rack.
+    #[allow(clippy::too_many_arguments)]
+    fn endgame_value(
+        &mut self,
+        dawg: &Dawg,
+        gaddag: &Dawg,
+        me: &str,
+        them: &str,
+        passes: u32,
+        mut alpha: i32,
+        beta: i32,
+        depth: usize,
+        stats: &mut EndgameStats,
+        max_nodes: usize,
+        limits: &[usize],
+        max_depth: usize,
+    ) -> i32 {
+        // Both sides gave up: each deducts its own rack.
+        if passes >= 2 {
+            return rack_points(them) - rack_points(me);
+        }
+        // Horizon, or the emergency node backstop. Both fall back to the value
+        // of nobody playing again -- pessimistic, but a real outcome rather
+        // than a guess, and applied to both sides alike.
+        if depth >= max_depth {
+            stats.truncated = true;
+            return rack_points(them) - rack_points(me);
+        }
+        stats.nodes += 1;
+        if stats.nodes > max_nodes {
+            stats.capped = true;
+            return rack_points(them) - rack_points(me);
+        }
+
+        // Passing is always legal, and occasionally right — declining to open
+        // a lane can be worth more than the points on offer.
+        let mut best = -self.endgame_value(
+            dawg, gaddag, them, me, passes + 1, -beta, -alpha, depth + 1, stats, max_nodes,
+            limits, max_depth,
+        );
+        alpha = alpha.max(best);
+        if alpha >= beta {
+            return best;
+        }
+
+        let mut moves = self.gaddag_generate(dawg, gaddag, me, false, true);
+        if moves.is_empty() {
+            return best;
+        }
+        // Order by score, but float plays that go out to the front: ending the
+        // game collects the opponent's whole rack, so they are both the most
+        // likely best move and the best source of cutoffs.
+        let me_len = me.chars().count();
+        let out_len = |m: &GenMove| -> bool {
+            self.hand_tiles_for_word(&m.3, m.0, m.1, m.2, me).len() == me_len
+        };
+        moves.sort_by_key(|m| (std::cmp::Reverse(out_len(m)), std::cmp::Reverse(m.4)));
+
+        let limit = eg_branch_at(limits, depth);
+        if moves.len() > limit {
+            stats.truncated = true;
+            moves.truncate(limit);
+        }
+
+        let was_first = self.first;
+        for m in moves {
+            let (r, c, horizontal, ref word, score) = m;
+            let used = self.hand_tiles_for_word(word, r, c, horizontal, me);
+            let left = rack_after(me, &used);
+            let filled = self.apply_move(word, r, c, horizontal, &used);
+
+            let value = if left.is_empty() {
+                // Going out ends the game and collects the opponent's rack.
+                score as i32 + rack_points(them)
+            } else {
+                score as i32
+                    - self.endgame_value(
+                        dawg, gaddag, them, &left, 0, -beta, -alpha, depth + 1, stats, max_nodes,
+                        limits, max_depth,
+                    )
+            };
+
+            self.undo_move(&filled, was_first);
+
+            if value > best {
+                best = value;
+            }
+            alpha = alpha.max(best);
+            if alpha >= beta {
+                break;
+            }
+        }
+        best
+    }
+
+    /// Best play for `me` with the bag empty, as
+    /// `(move, differential, stats)`. An empty word means passing is best.
+    fn solve_endgame_inner(
+        &mut self,
+        dawg: &Dawg,
+        gaddag: &Dawg,
+        me: &str,
+        them: &str,
+        max_nodes: usize,
+        limits: &[usize],
+        max_depth: usize,
+    ) -> (Option<GenMove>, i32, EndgameStats) {
+        let mut stats = EndgameStats { nodes: 0, capped: false, truncated: false };
+        // Passing is the baseline every play has to beat. Usually trivially
+        // beaten, but not always: declining to open the board can be worth
+        // more than the points on offer.
+        let mut best_value = -self.endgame_value(
+            dawg,
+            gaddag,
+            them,
+            me,
+            1,
+            i32::MIN + 1,
+            i32::MAX - 1,
+            1,
+            &mut stats,
+            max_nodes,
+            limits,
+            max_depth,
+        );
+        let mut best_move: Option<GenMove> = None;
+
+        let mut moves = self.gaddag_generate(dawg, gaddag, me, false, true);
+        let me_len = me.chars().count();
+        let out_len = |m: &GenMove| -> bool {
+            self.hand_tiles_for_word(&m.3, m.0, m.1, m.2, me).len() == me_len
+        };
+        moves.sort_by_key(|m| (std::cmp::Reverse(out_len(m)), std::cmp::Reverse(m.4)));
+        let limit = eg_branch_at(limits, 0);
+        if moves.len() > limit {
+            stats.truncated = true;
+            moves.truncate(limit);
+        }
+
+        let was_first = self.first;
+        for m in moves {
+            let (r, c, horizontal, ref word, score) = m;
+            let used = self.hand_tiles_for_word(word, r, c, horizontal, me);
+            let left = rack_after(me, &used);
+            let filled = self.apply_move(word, r, c, horizontal, &used);
+
+            let value = if left.is_empty() {
+                score as i32 + rack_points(them)
+            } else {
+                score as i32
+                    - self.endgame_value(
+                        dawg,
+                        gaddag,
+                        them,
+                        &left,
+                        0,
+                        i32::MIN + 1,
+                        i32::MAX - 1,
+                        1,
+                        &mut stats,
+                        max_nodes,
+                        limits,
+                        max_depth,
+                    )
+            };
+            self.undo_move(&filled, was_first);
+
+            if value > best_value {
+                best_value = value;
+                best_move = Some(m);
+            }
+        }
+        (best_move, best_value, stats)
     }
 }
 
@@ -3651,6 +3962,91 @@ mod gaddag_tests {
         let mut left = board.bag_tiles();
         left.sort_unstable();
         assert_eq!(left, vec!['a', 'z', 'z', 'z']);
+    }
+
+    /// Brute-force endgame value with no pruning and no branching limit, for
+    /// the alpha-beta search to be checked against.
+    fn brute_endgame(
+        board: &mut Board,
+        dawg: &Dawg,
+        gaddag: &Dawg,
+        me: &str,
+        them: &str,
+        passes: u32,
+    ) -> i32 {
+        if passes >= 2 {
+            return rack_points(them) - rack_points(me);
+        }
+        let mut best = -brute_endgame(board, dawg, gaddag, them, me, passes + 1);
+        let was_first = board.first;
+        for m in board.gaddag_generate(dawg, gaddag, me, false, true) {
+            let (r, c, horizontal, ref word, score) = m;
+            let used = board.hand_tiles_for_word(word, r, c, horizontal, me);
+            let left = rack_after(me, &used);
+            let filled = board.apply_move(word, r, c, horizontal, &used);
+            let v = if left.is_empty() {
+                score as i32 + rack_points(them)
+            } else {
+                score as i32 - brute_endgame(board, dawg, gaddag, them, &left, 0)
+            };
+            board.undo_move(&filled, was_first);
+            best = best.max(v);
+        }
+        best
+    }
+
+    /// The endgame search must return the true optimal differential whenever it
+    /// reports `exact`. Checked against unpruned brute force on small racks.
+    #[test]
+    fn endgame_search_matches_brute_force() {
+        let words = ["kot", "koty", "ty", "oto", "to", "ot", "y", "tok", "kto"];
+        let dawg = compile(&words);
+        let gaddag = compile_gaddag(&words);
+
+        for (me, them) in [("y", "o"), ("ty", "o"), ("to", "yk"), ("oty", "k")] {
+            let mut board = Board::new().unwrap();
+            board.place_word("kot", 7, 7, true, None).unwrap();
+            board.set_bag(Vec::new());
+
+            let mut brute_board = board.clone();
+            let expected = brute_endgame(&mut brute_board, &dawg, &gaddag, me, them, 0);
+            assert_eq!(
+                brute_board.__str__(),
+                board.__str__(),
+                "brute force left the board dirty"
+            );
+
+            let (_mv, value, stats) =
+                board.solve_endgame_inner(
+                &dawg, &gaddag, me, them, 10_000_000, &[usize::MAX; 16], 64,
+            );
+            assert!(
+                !stats.capped && !stats.truncated,
+                "search hit a limit on a tiny position"
+            );
+            assert_eq!(
+                value, expected,
+                "alpha-beta disagreed with brute force for me={me} them={them}"
+            );
+        }
+    }
+
+    /// Make/unmake must leave the position byte-identical, or a search reads a
+    /// corrupted board a few plies later.
+    #[test]
+    fn endgame_search_restores_the_board() {
+        let words = ["kot", "koty", "ty", "oto", "to", "ot", "tok", "kto"];
+        let dawg = compile(&words);
+        let gaddag = compile_gaddag(&words);
+        let mut board = Board::new().unwrap();
+        board.place_word("kot", 7, 7, true, Some(vec!['k', 'o', '?'])).unwrap();
+        board.set_bag(Vec::new());
+
+        let before = board.__str__();
+        let blanks_before = board.blanks;
+        board.solve_endgame_inner(&dawg, &gaddag, "oty", "k", 100_000, &EG_BRANCH, EG_MAX_DEPTH);
+        assert_eq!(board.__str__(), before, "search left tiles on the board");
+        assert_eq!(board.blanks, blanks_before, "search left a stale blank flag");
     }
 
     /// `copy()` is a real deep copy, and `unplace_word` restores the position

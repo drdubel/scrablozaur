@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import StrategicPlayer  # noqa: E402
 
 from board_features import encode_board  # noqa: E402
-from model import DEFAULT_WEIGHTS_PATH, encode_leave, encode_leaves, get_model  # noqa: E402
+from model import ALPHABET, DEFAULT_WEIGHTS_PATH, encode_leave, encode_leaves, get_model  # noqa: E402
 
 
 def remove_used(letters: str, used: list[str]) -> str:
@@ -69,22 +69,63 @@ class SmartPlayer(StrategicPlayer):
         board: Board,
         model_path: str = DEFAULT_WEIGHTS_PATH,
         leave_weight: float = DEFAULT_LEAVE_WEIGHT,
+        use_endgame: bool = True,
     ) -> None:
         super().__init__(board)
         self.model_path = model_path
         self.leave_weight = leave_weight
+        # Off only for A/B measurement -- there is no reason to estimate a
+        # position that can be searched exactly.
+        self.use_endgame = use_endgame
+        self.last_endgame_diff: int | None = None
+        self.last_endgame_exact: bool | None = None
+
+    def _cache_turn_context(self) -> None:
+        """Board features and unseen-tile count for this decision.
+
+        Neither changes across the candidates being compared -- only each
+        candidate's hypothetical placement does -- so they are computed once and
+        reused by every leave valuation this turn, including `play_word`'s
+        play-vs-exchange comparison.
+        """
+        self._board_features = encode_board(self.board)
+        self._unseen_tiles = len(self.get_letters_left())
+
+    def _endgame_move(self, dawg: Dawg) -> tuple[str, int, tuple[int, int, bool], list[str]] | None:
+        """Searched best play once the bag is empty, or `None` while it isn't.
+
+        With no tiles left to draw the game stops being a game of chance: the
+        opponent holds exactly the tiles that are neither on the board nor in
+        our own rack, so the position is fully known and worth searching
+        instead of guessing at. Estimating is at its weakest here and the
+        margins are at their most decisive.
+        """
+        if not self.use_endgame or self.board.bag_remaining() > 0:
+            return None
+        counts = self.board.unseen_tile_counts(self.letters)
+        opponent_rack = "".join(ALPHABET[i] * n for i, n in enumerate(counts))
+        if not opponent_rack:
+            # Opponent is already out; there is no game left to search.
+            return None
+        word, score, position, used, diff, _nodes, exact = self.board.solve_endgame(
+            dawg, self.letters, opponent_rack
+        )
+        self.last_endgame_diff, self.last_endgame_exact = diff, exact
+        # An empty word means the search preferred to pass, which the game loop
+        # reads as a no-play -- exactly what a pass is, and the search already
+        # accounted for the fact that two in a row end the game.
+        return (word, score, position, used)
 
     def get_best_word(
         self, dawg: Dawg, parallel: bool
     ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
-        # The real board/rack don't change across the ~50 candidates being
-        # compared in one decision -- only each candidate's hypothetical
-        # placement does. Compute the shared board features and unseen-tile
-        # count once per turn here, then score every candidate's leave in a
-        # *single* batched forward pass, rather than one batch-size-1 forward
-        # (and its per-call dispatch overhead) per candidate.
-        self._board_features = encode_board(self.board)
-        self._unseen_tiles = len(self.get_letters_left())
+        self._cache_turn_context()
+        endgame = self._endgame_move(dawg)
+        if endgame is not None:
+            return endgame
+        # Score every candidate's leave in a *single* batched forward pass,
+        # rather than one batch-size-1 forward (and its per-call dispatch
+        # overhead) per candidate.
         words = self.get_best_words(dawg, self.letters, parallel)
         if not words:
             return ("", 0, (0, 0, True), [])

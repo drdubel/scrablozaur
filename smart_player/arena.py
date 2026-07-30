@@ -82,23 +82,28 @@ def make_player(spec: str, board: Board, seed: int = 0) -> GamePlayer:
     """Build a player from a spec string.
 
         simple | strategic
-        smart[:checkpoint.pt][~leave_weight]
-        sim[:checkpoint.pt][~leave_weight][@iterations[/candidates[/plies]]]
+        smart[:checkpoint.pt][~leave_weight][!noeg]
+        sim[:checkpoint.pt][~leave_weight][!noeg][@iterations[/candidates[/plies]]]
 
-    e.g. `smart`, `smart~0.5`, `sim@500`, `sim~0.4@200/30/1`,
+    e.g. `smart`, `smart~0.5`, `smart!noeg`, `sim@500`, `sim~0.4@200/30/1`,
     `sim:models/cand.pt@200`.
+
+    `!noeg` turns the endgame search off. It exists to measure what the search
+    is worth, not because anyone should play without it.
     """
     head, _, tuning = spec.partition("@")
+    head, _, flags = head.partition("!")
     head, _, weight = head.partition("~")
     name, _, path = head.partition(":")
     leave_weight = float(weight) if weight else DEFAULT_LEAVE_WEIGHT
+    use_endgame = "noeg" not in flags
 
     if name == "simple":
         return SimplePlayer(board)
     if name == "strategic":
         return StrategicPlayer(board)
     if name == "smart":
-        return SmartPlayer(board, path or DEFAULT_WEIGHTS_PATH, leave_weight)
+        return SmartPlayer(board, path or DEFAULT_WEIGHTS_PATH, leave_weight, use_endgame)
     if name == "sim":
         parts = [p for p in tuning.split("/") if p]
         iterations = int(parts[0]) if len(parts) > 0 else DEFAULT_ITERATIONS
@@ -111,6 +116,7 @@ def make_player(spec: str, board: Board, seed: int = 0) -> GamePlayer:
             candidates=candidates,
             plies=plies,
             leave_weight=leave_weight,
+            use_endgame=use_endgame,
             seed=seed,
         )
     raise ValueError(f"unknown player spec {spec!r} (expected simple, strategic, smart, or sim)")

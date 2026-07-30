@@ -27,7 +27,6 @@ from scrablozaur import Board, Dawg, LeaveNet
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from board_features import encode_board  # noqa: E402
 from export_weights import DEFAULT_BIN_PATH, export  # noqa: E402
 from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
 from player import SmartPlayer  # noqa: E402
@@ -87,9 +86,10 @@ class SimPlayer(SmartPlayer):
         candidates: int = DEFAULT_CANDIDATES,
         plies: int = DEFAULT_PLIES,
         leave_weight: float = SIM_LEAVE_WEIGHT,
+        use_endgame: bool = True,
         seed: int = 0,
     ) -> None:
-        super().__init__(board, model_path, leave_weight)
+        super().__init__(board, model_path, leave_weight, use_endgame)
         self.net = get_net(model_path)
         self.iterations = iterations
         self.candidates = candidates
@@ -105,8 +105,14 @@ class SimPlayer(SmartPlayer):
         # SmartPlayer.play_word reads these back when it compares playing
         # against exchanging, so they have to be set even though the simulation
         # computes its own copies engine-side.
-        self._board_features = encode_board(self.board)
-        self._unseen_tiles = len(self.get_letters_left())
+        self._cache_turn_context()
+
+        # Once the bag is empty there is nothing left to sample: the position is
+        # fully known, so search it exactly rather than rolling out guesses.
+        endgame = self._endgame_move(dawg)
+        if endgame is not None:
+            self.last_equity = self.last_stderr = None
+            return endgame
 
         self._decision += 1
         results = self.board.simulate(
