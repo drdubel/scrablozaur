@@ -57,8 +57,12 @@ from simulate import play_game  # noqa: E402
 _words_dir = os.path.join(os.path.dirname(__file__), "..", "words")
 _dawg = Dawg(os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
 
-# (leave, unseen, board_features, target)
-_Sample = tuple[str, int, tuple[float, ...], float]
+# (leave, unseen, board_features, target, decision_id)
+_Sample = tuple[str, int, tuple[float, ...], float, int]
+
+# Namespace stride for per-seat decision ids. A game never reaches this many
+# turns for one player; the cap on moves per game is far below it.
+_MAX_DECISIONS_PER_PLAYER = 1000
 
 
 class _LabellingPlayer(StrategicPlayer):
@@ -103,7 +107,11 @@ class _LabellingPlayer(StrategicPlayer):
             if n == 0:
                 continue  # never actually simulated (single-candidate decision)
             leave = remove_used(self.letters, used)
-            self.samples.append((leave, unseen, board_features, equity - score))
+            # `self._decision` groups the candidates that were competing against
+            # each other. Only differences *within* a group can change which
+            # move gets picked, so training needs to be able to isolate them --
+            # see train.py's --center-by-decision.
+            self.samples.append((leave, unseen, board_features, equity - score, self._decision))
 
         word, score, pos, used, _eq, _se, _n = results[0]
         return (word, score, pos, used)
@@ -117,7 +125,14 @@ def _play_one_game(args: tuple[str, int, int, int, int]) -> list[_Sample]:
         for i in range(2)
     ]
     play_game(players, _dawg, parallel=False)
-    return [s for p in players for s in p.samples]
+    # Both players number their decisions from 1, so tag with the seat before
+    # merging or the two would collide and two unrelated candidate sets would
+    # be treated as one decision.
+    return [
+        (leave, unseen, feats, target, seat * _MAX_DECISIONS_PER_PLAYER + local)
+        for seat, p in enumerate(players)
+        for (leave, unseen, feats, target, local) in p.samples
+    ]
 
 
 def _init_worker() -> None:
@@ -142,6 +157,8 @@ def generate(
     unseen: list[int] = []
     feats: list[tuple[float, ...]] = []
     targets: list[float] = []
+    decisions: list[int] = []
+    next_decision = 0
     t0 = time.perf_counter()
 
     with ProcessPoolExecutor(max_workers=n_workers, initializer=_init_worker) as executor:
@@ -150,11 +167,18 @@ def generate(
         ]
         futures = [executor.submit(_play_one_game, j) for j in jobs]
         for future in tqdm(as_completed(futures), total=n_games, desc="Sim-labelled games", disable=quiet):
-            for leave, u, f, target in future.result():
+            # Decision ids are per-player-per-game, so offset them into a global
+            # namespace as each game's results arrive.
+            local_to_global: dict[int, int] = {}
+            for leave, u, f, target, local_id in future.result():
+                if local_id not in local_to_global:
+                    local_to_global[local_id] = next_decision
+                    next_decision += 1
                 leaves.append(leave)
                 unseen.append(u)
                 feats.append(f)
                 targets.append(target)
+                decisions.append(local_to_global[local_id])
 
     elapsed = time.perf_counter() - t0
     if not quiet:
@@ -178,6 +202,7 @@ def generate(
         tl_open=board_arr[:, 2],
         dl_open=board_arr[:, 3],
         board_fill=board_arr[:, 4],
+        decision=np.array(decisions, dtype=np.int32),
     )
     if not quiet:
         print(f"Saved to {out_path}")

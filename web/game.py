@@ -24,6 +24,12 @@ if str(SMART_PLAYER_SRC) not in sys.path:
 from board_features import encode_board  # noqa: E402
 from player import DEFAULT_LEAVE_WEIGHT, choose_move, leave_values, remove_used  # noqa: E402
 from sim_player import choose_move_sim, get_net  # noqa: E402
+from rules import (  # noqa: E402
+    Streaks,
+    TurnResult,
+    apply_end_of_game_scoring,
+    went_out,
+)
 from strategy import RANK_WINDOWS, pick_by_rank  # noqa: E402
 
 # Rollouts per candidate when a human asks for `sim`-sorted suggestions. Lower
@@ -140,12 +146,12 @@ class Player:
 
 @dataclass
 class UndoEntry:
-    board_grid: list[list[str]]
-    # Which occupied squares hold a blank. The grid alone renders a blank as
-    # the letter it stands in for, so restoring without this both over-scores
-    # every later word through that square and can make `from_grid` reject the
-    # position outright for needing more copies of a letter than exist.
-    board_blanks: list[list[bool]]
+    # A real deep copy of the position, not a grid to rebuild from. The
+    # `str()` -> `from_grid()` round trip this used to do loses the engine's
+    # own bag, has to be told about blanks separately, and rejects positions
+    # outright when a played blank makes a letter appear more often than the
+    # distribution allows.
+    board: Board
     player_scores: list[int]
     player_letters: list[str]
     current_player_idx: int
@@ -154,7 +160,7 @@ class UndoEntry:
     tile_bag_tiles: list[str] | None
     last_computer_move: ComputerMoveInfo | None
     tile_owners: list[list[int | None]]
-    consecutive_no_play: int
+    streaks: tuple[int, int]
 
 
 @dataclass
@@ -171,7 +177,7 @@ class GameSession:
     last_computer_move: ComputerMoveInfo | None = None
     tile_owners: list[list[int | None]] = field(default_factory=lambda: [[None] * 15 for _ in range(15)])
     game_over: bool = False
-    consecutive_no_play: int = 0
+    streaks: Streaks = field(default_factory=Streaks)
     passed_players: set[int] = field(default_factory=set)
     last_move_rating: int | None = None
 
@@ -189,8 +195,7 @@ class GameSession:
     def push_undo(self) -> None:
         self.move_history.append(
             UndoEntry(
-                board_grid=self.board_grid(),
-                board_blanks=self.board.blank_mask(),
+                board=self.board.copy(),
                 player_scores=[p.score for p in self.players],
                 player_letters=[p.letters for p in self.players],
                 current_player_idx=self.current_player_idx,
@@ -199,7 +204,7 @@ class GameSession:
                 tile_bag_tiles=list(self.tile_bag.tiles) if self.tile_bag else None,
                 last_computer_move=self.last_computer_move,
                 tile_owners=[row[:] for row in self.tile_owners],
-                consecutive_no_play=self.consecutive_no_play,
+                streaks=(self.streaks.no_play, self.streaks.no_score),
             )
         )
 
@@ -207,7 +212,7 @@ class GameSession:
         if not self.move_history:
             return False
         entry = self.move_history.pop()
-        self.board = Board.from_grid(entry.board_grid, entry.board_blanks)
+        self.board = entry.board
         for i, p in enumerate(self.players):
             p.score = entry.player_scores[i]
             p.letters = entry.player_letters[i]
@@ -218,7 +223,7 @@ class GameSession:
             self.tile_bag.tiles = entry.tile_bag_tiles
         self.last_computer_move = entry.last_computer_move
         self.tile_owners = [row[:] for row in entry.tile_owners]
-        self.consecutive_no_play = entry.consecutive_no_play
+        self.streaks = Streaks(*entry.streaks)
         self.game_over = False
         return True
 
@@ -404,42 +409,23 @@ def _refill_rack(session: GameSession, player: Player) -> None:
 
 # Standard rule: the game ends once nobody has played a word for this many
 # consecutive turns in a row. Only a genuine no-action turn (skip, or a
-# computer finding nothing to play) counts -- exchanging tiles is a real,
-# repeatable action a player can take as many times as they want and never
-# counts toward this on its own (see board.py's exchange_tiles).
-CONSECUTIVE_NO_PLAY_LIMIT = 2
-
-
-def _apply_end_of_game_scoring(session: GameSession, went_out_idx: int | None) -> None:
-    """Standard end-of-game score adjustment. If `went_out_idx` is given,
-    that player gains the summed rack value of every other player and is
-    the only one who doesn't lose their own (they have none left); with no
-    `went_out_idx` (game ended by mutual no-play), every player loses their
-    own remaining rack value instead."""
-    if went_out_idx is not None:
-        others_value = sum(Board.rack_value(p.letters) for i, p in enumerate(session.players) if i != went_out_idx)
-        session.players[went_out_idx].score += others_value
-        for i, p in enumerate(session.players):
-            if i != went_out_idx:
-                p.score -= Board.rack_value(p.letters)
-    else:
-        for p in session.players:
-            p.score -= Board.rack_value(p.letters)
-
-
 def _check_game_over(session: GameSession, just_played_idx: int) -> None:
     """Call after every real turn (move/pass/exchange) in COMPETITIVE mode.
-    Ends the game immediately if the player who just moved emptied their
-    rack with an empty bag (going out), or if enough consecutive turns have
-    passed with no one playing a word."""
+
+    The rules themselves -- when a streak ends a game, and how the final rack
+    adjustment works -- come from `src/rules.py`, so an interactive game ends on
+    exactly the same conditions as one played through `arena.py`. This file used
+    to carry its own copy with no scoreless-turn cap at all, which meant two
+    players exchanging at each other could keep a game alive indefinitely.
+    """
     if session.game_over or session.tile_bag is None:
         return
     player = session.players[just_played_idx]
-    if not player.letters and session.tile_bag.remaining() == 0:
-        _apply_end_of_game_scoring(session, went_out_idx=just_played_idx)
+    if went_out(player, session.tile_bag.remaining()):
+        apply_end_of_game_scoring(session.players, went_out_idx=just_played_idx)
         session.game_over = True
-    elif session.consecutive_no_play >= CONSECUTIVE_NO_PLAY_LIMIT:
-        _apply_end_of_game_scoring(session, went_out_idx=None)
+    elif session.streaks.exhausted:
+        apply_end_of_game_scoring(session.players, went_out_idx=None)
         session.game_over = True
 
 
@@ -502,7 +488,7 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
         sug = pick_by_rank(suggestions, difficulty.value) if suggestions else None
 
     if sug is None:
-        session.consecutive_no_play += 1
+        session.streaks.record(TurnResult.NO_ACTION)
         _check_game_over(session, player_idx)
         if not session.game_over:
             session.advance_turn()
@@ -519,7 +505,7 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
 
     _deduct_tiles(session.current_player, word, grid, row, col, horizontal)
     _refill_rack(session, session.current_player)
-    session.consecutive_no_play = 0
+    session.streaks.record(TurnResult.PLAYED)
     _check_game_over(session, player_idx)
     if not session.game_over:
         session.advance_turn()
@@ -662,7 +648,7 @@ def compute_move_rating(session: GameSession, dawg: Dawg, letters: str, actual_s
 
 # ── Benchmark simulation (SANDBOX_AUTO, no human ever involved) ──────────────
 
-# Defensive cap on moves per simulated game -- CONSECUTIVE_NO_PLAY_LIMIT and
+# Defensive cap on moves per simulated game -- the no-play/scoreless limits and
 # going-out-with-an-empty-bag always end a real game long before this, it
 # only guards against an unforeseen non-terminating edge case.
 MAX_BENCHMARK_GAME_MOVES = 200

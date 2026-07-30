@@ -47,6 +47,7 @@ def train(
     device: str | None = None,
     quiet: bool = False,
     warm_start: str | None = None,
+    center_by_decision: bool = False,
 ) -> float:
     """Train a LeaveValueNet on `data_path`, saving the best-val-MSE checkpoint
     to `out_path`. Returns that best val MSE. Used both by this file's CLI and
@@ -63,7 +64,35 @@ def train(
     raw = np.load(data_path)
     board_features = np.stack([raw["tw_open"], raw["dw_open"], raw["tl_open"], raw["dl_open"], raw["board_fill"]], axis=1)
     X = encode_leaves(raw["leaves"], raw["unseen"], board_features).to(device)
-    y = torch.from_numpy(raw["margins"].astype(np.float32)).to(device)
+    targets = raw["margins"].astype(np.float32)
+
+    if center_by_decision:
+        # Only differences *within* a decision can change which move gets
+        # picked: every candidate in one decision shares the same board and the
+        # same unseen pool, so anything the position explains is a constant
+        # offset that cannot reorder them.
+        #
+        # This matters because a high global R^2 is not evidence of a better
+        # ranker. The first distilled checkpoint reached R^2 = 0.665 against
+        # 0.068 for the n-step target and still lost by 8 points a game -- it
+        # was predicting how good the *position* was, which is exactly the part
+        # that cancels. Centring here makes the loss measure the part that does
+        # not cancel.
+        if "decision" not in raw:
+            raise ValueError(
+                f"{data_path} has no `decision` column; regenerate it with distill.py "
+                "(generate_data.py output cannot be centred this way -- it has one "
+                "sample per decision, so there is nothing to centre against)"
+            )
+        groups = raw["decision"].astype(np.int64)
+        sums = np.bincount(groups, weights=targets.astype(np.float64))
+        counts = np.bincount(groups)
+        targets = (targets - (sums / np.maximum(counts, 1))[groups]).astype(np.float32)
+        if not quiet:
+            print(f"centred within {counts.size} decisions; target std "
+                  f"{raw['margins'].std():.2f} -> {targets.std():.2f}")
+
+    y = torch.from_numpy(targets).to(device)
     n = len(X)
     if not quiet:
         print(
@@ -160,6 +189,12 @@ if __name__ == "__main__":
     ap.add_argument("--hidden2", type=int, default=64, help="Second hidden layer width (default: 64)")
     ap.add_argument("--device", default=None, help="cuda/mps/cpu (default: auto-detect, preferring cuda then mps)")
     ap.add_argument(
+        "--center-by-decision",
+        action="store_true",
+        help="Subtract each decision's mean target before training, so the loss measures only "
+        "what can actually reorder candidates. Requires distill.py's `decision` column.",
+    )
+    ap.add_argument(
         "--warm-start",
         default=None,
         help="Initialise from this checkpoint instead of from random, so a round of policy "
@@ -177,4 +212,5 @@ if __name__ == "__main__":
         args.hidden2,
         args.device,
         warm_start=args.warm_start,
+        center_by_decision=args.center_by_decision,
     )

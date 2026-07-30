@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from web.engine import Dawg, get_dawg
+from rules import TurnResult
 from web.game import (SORT_MODES, GameMode, _check_game_over, _deduct_tiles, _refill_rack,
                       _tiles_used_for_word, computer_auto_play, compute_move_rating,
                       get_suggestions, get_suggestions_for_letters, rack_contains,
@@ -126,7 +127,7 @@ async def place_human_word(
     if session.game_mode == GameMode.COMPETITIVE:
         _deduct_tiles(session.current_player, word, pre_grid, body.row, body.col, body.horizontal)
         _refill_rack(session, session.current_player)
-        session.consecutive_no_play = 0
+        session.streaks.record(TurnResult.PLAYED)
         _check_game_over(session, session.current_player_idx)
 
     if not session.game_over:
@@ -145,14 +146,14 @@ async def skip_turn(
 ) -> BoardStateResponse:
     """Current player skips their turn (plays no word) -- the standard
     Scrabble "pass". The game only ends once nobody has played a word for
-    CONSECUTIVE_NO_PLAY_LIMIT turns in a row, not after a single skip."""
+    the no-play limit in src/rules.py, not after a single skip."""
     session = _require_session(request)
     if session.game_over:
         raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
     session.push_undo()
 
     if session.game_mode == GameMode.COMPETITIVE:
-        session.consecutive_no_play += 1
+        session.streaks.record(TurnResult.NO_ACTION)
         _check_game_over(session, session.current_player_idx)
 
     if not session.game_over:
@@ -191,9 +192,10 @@ async def exchange_tiles(
     """Return the given tiles to the bag and draw the same number of new
     ones instead of playing a word — only legal in COMPETITIVE mode while
     at least 7 tiles remain in the bag (the standard exchange rule). A real,
-    repeatable action: unlike /board/skip, it doesn't count toward
-    CONSECUTIVE_NO_PLAY_LIMIT, so a player can exchange as many turns in a
-    row as they want without that alone ending the game."""
+    repeatable action: unlike /board/skip it never counts toward the no-play
+    streak, so a player can exchange as many turns in a row as they want
+    without that alone ending the game. It is still scoreless, so the separate
+    scoreless cap in src/rules.py does eventually bound it."""
     session = _require_session(request)
     if session.game_over:
         raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
@@ -217,6 +219,10 @@ async def exchange_tiles(
     for ch in letters:
         rack_chars.remove(ch)
     player.letters = "".join(rack_chars) + "".join(session.tile_bag.exchange(list(letters)))
+    # A real, repeatable action, so it never counts toward the no-play streak --
+    # but it scores nothing, and the scoreless cap is what stops two players
+    # exchanging at each other forever.
+    session.streaks.record(TurnResult.EXCHANGED)
     _check_game_over(session, session.current_player_idx)
 
     if not session.game_over:

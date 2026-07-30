@@ -290,6 +290,36 @@ class Board:
         engine's own bonus layout rather than a transcription of it.
         """
 
+    def solve_endgame(
+        self,
+        dawg: Dawg,
+        my_rack: str,
+        opp_rack: str,
+        max_nodes: int = 300000,
+    ) -> tuple[str, int, tuple[int, int, bool], list[str], int, int, bool]:
+        """Best play with the bag empty, searched rather than sampled.
+
+        Returns `(word, score, (row, col, horizontal), used, differential,
+        nodes, exact)`. `differential` is the final score margin this play leads
+        to, counting the end-of-game rack adjustment. `exact` is true only when
+        neither the node budget nor the per-ply branching limit bit -- false
+        means the move is good rather than proven, which is the normal case on a
+        wide endgame.
+
+        An empty word means passing beat every play; that does happen, when
+        every legal move opens something worse than it scores.
+
+        `opp_rack` must be the opponent's actual tiles. With the bag empty that
+        is exactly what `unseen_tile_counts(my_rack)` reports, which is
+        legitimate information -- it follows from the board, your own rack and
+        the tile distribution. Passing a rack far larger than seven means the
+        caller's bag count disagrees with the board; the search will not fail on
+        that, it will simply not return, so callers should check first (see
+        `smart_player.player.choose_move`).
+
+        Requires a GADDAG.
+        """
+
     def unseen_tile_counts(self, rack: str) -> list[int]:
         """Counts of the tiles neither on the board nor in `rack` -- the bag
         plus every opponent's rack -- indexed by `LeaveNet.alphabet()`.
