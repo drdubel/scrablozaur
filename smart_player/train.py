@@ -46,10 +46,18 @@ def train(
     hidden2: int = 64,
     device: str | None = None,
     quiet: bool = False,
+    warm_start: str | None = None,
 ) -> float:
-    """Train a fresh LeaveValueNet on `data_path`, saving the best-val-MSE
-    checkpoint to `out_path`. Returns that best val MSE. Used both by this
-    file's CLI and directly by iterate.py (one call per round)."""
+    """Train a LeaveValueNet on `data_path`, saving the best-val-MSE checkpoint
+    to `out_path`. Returns that best val MSE. Used both by this file's CLI and
+    directly by iterate.py (one call per round).
+
+    `warm_start` initialises from an existing checkpoint instead of from random.
+    Without it a policy-iteration round is "retrain an equally-powerful model on
+    similarly-distributed data", which is exactly what iterate.py measured: 0/5
+    rounds promoted, every candidate landing in a 48.8-50.8% band. Nothing
+    carried over between rounds, so nothing compounded.
+    """
     device = device or _pick_device()
 
     raw = np.load(data_path)
@@ -69,8 +77,21 @@ def train(
     X_train, y_train = X[train_idx], y[train_idx]
     X_val, y_val = X[val_idx], y[val_idx]
     n_train = len(X_train)
+    # Denominator for R^2: the MSE a model that only ever predicts the mean
+    # would score. Computed on the validation split so it matches val_mse.
+    val_var = max(float(y_val.var(unbiased=False).item()), 1e-9)
 
     model = LeaveValueNet(hidden1, hidden2).to(device)
+    if warm_start:
+        ckpt = torch.load(warm_start, map_location="cpu", weights_only=True)
+        if (ckpt.get("hidden1"), ckpt.get("hidden2")) != (hidden1, hidden2):
+            raise ValueError(
+                f"{warm_start} is {ckpt.get('hidden1')}/{ckpt.get('hidden2')} but training at "
+                f"{hidden1}/{hidden2}; pass matching --hidden1/--hidden2 to warm-start from it"
+            )
+        model.load_state_dict(ckpt["state_dict"])
+        if not quiet:
+            print(f"warm-started from {warm_start}")
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, epochs)
     loss_fn = nn.MSELoss()
@@ -100,9 +121,15 @@ def train(
                 val_loss += loss_fn(model(xb), yb).item() * len(xb)
         val_mse = val_loss / len(X_val)
         if not quiet:
+            # R^2 against predicting the mean. Raw MSE is unreadable on its own:
+            # ~2100 sounds catastrophic but the target's own variance is ~2223,
+            # so it is really "explains 5% of the target". Printing the ratio
+            # would have made the noise ceiling obvious on the very first run
+            # instead of after several rounds of ablation.
             print(
                 f"epoch {epoch + 1:2d}/{epochs}  train mse {loss_sum / n_train:.3f}  "
-                f"val mse {val_mse:.3f}  ({time.time() - t0:.1f}s)"
+                f"val mse {val_mse:.3f}  val R^2 {1.0 - val_mse / val_var:.4f}  "
+                f"({time.time() - t0:.1f}s)"
             )
         if val_mse <= best_val:
             best_val = val_mse
@@ -118,7 +145,7 @@ def train(
                 out_path,
             )
     if not quiet:
-        print(f"best val mse {best_val:.3f} -> {out_path}")
+        print(f"best val mse {best_val:.3f}  (R^2 {1.0 - best_val / val_var:.4f}) -> {out_path}")
     return best_val
 
 
@@ -132,6 +159,22 @@ if __name__ == "__main__":
     ap.add_argument("--hidden1", type=int, default=128, help="First hidden layer width (default: 128)")
     ap.add_argument("--hidden2", type=int, default=64, help="Second hidden layer width (default: 64)")
     ap.add_argument("--device", default=None, help="cuda/mps/cpu (default: auto-detect, preferring cuda then mps)")
+    ap.add_argument(
+        "--warm-start",
+        default=None,
+        help="Initialise from this checkpoint instead of from random, so a round of policy "
+        "iteration refines the champion rather than re-rolling an equally-good model.",
+    )
     args = ap.parse_args()
 
-    train(args.data, args.out, args.epochs, args.batch, args.lr, args.hidden1, args.hidden2, args.device)
+    train(
+        args.data,
+        args.out,
+        args.epochs,
+        args.batch,
+        args.lr,
+        args.hidden1,
+        args.hidden2,
+        args.device,
+        warm_start=args.warm_start,
+    )

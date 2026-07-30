@@ -3087,7 +3087,13 @@ impl Board {
             // Sequential pruning: drop anything whose interval has fallen clear
             // of the leader's. Sort by mean first so the "keep at least two"
             // floor keeps the two *best* rather than the first two encountered.
-            if cands.len() > 2 {
+            //
+            // Skipped once there are no iterations left to save: pruning after
+            // the final batch discards measurements already paid for without
+            // avoiding any work. Callers that want every candidate scored --
+            // `smart_player/distill.py` harvests them all as training labels --
+            // get that by setting `batch` to `iterations`.
+            if done < opts.iterations && cands.len() > 2 {
                 cands.sort_by(|a, b| b.mean().partial_cmp(&a.mean()).unwrap());
                 let (lm, lse) = (cands[0].mean(), cands[0].stderr());
                 if lse.is_finite() {

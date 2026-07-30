@@ -16,6 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from scrablozaur import Board, Dawg
 from smart_player.player import SmartPlayer
 from smart_player.sim_player import SimPlayer
+from smart_player.simulate import play_game
+from rules import TurnResult
 from strategy import SimplePlayer, StrategicPlayer
 
 d = Dawg("words/dawg.bin", "words/gaddag.bin")
@@ -107,87 +109,46 @@ def graj(
         if debug:
             print(line)
 
-    def play(player: SimplePlayer | StrategicPlayer | SmartPlayer) -> str | None:
-        nonlocal move_time_total, move_count
-        move_start = time.perf_counter()
-        word = player.play_word(d, parallel=parallel)
-        move_time_total += time.perf_counter() - move_start
-        move_count += 1
-        if word:
-            words_played[word] += 1
-        return word
-
     b = Board()
 
-    match p1_type:
-        case "1":
-            p1 = SimplePlayer(b)
-        case "2":
-            p1 = StrategicPlayer(b)
-        case "3":
-            p1 = SmartPlayer(b)
-        case "4":
-            p1 = SimPlayer(b)
-        case _:
-            raise ValueError(f"Unknown player type: {p1_type}")
+    def make(kind: str) -> SimplePlayer | StrategicPlayer | SmartPlayer | SimPlayer:
+        match kind:
+            case "1":
+                return SimplePlayer(b)
+            case "2":
+                return StrategicPlayer(b)
+            case "3":
+                return SmartPlayer(b)
+            case "4":
+                return SimPlayer(b)
+            case _:
+                raise ValueError(f"Unknown player type: {kind}")
 
-    match p2_type:
-        case "1":
-            p2 = SimplePlayer(b)
-        case "2":
-            p2 = StrategicPlayer(b)
-        case "3":
-            p2 = SmartPlayer(b)
-        case "4":
-            p2 = SimPlayer(b)
-        case _:
-            raise ValueError(f"Unknown player type: {p2_type}")
-
+    p1, p2 = make(p1_type), make(p2_type)
     opener = p1 if random() < 0.5 else p2
     second = p2 if opener is p1 else p1
     players = [opener, second]
 
-    # Only a genuine no-action turn (no legal word AND can't exchange --
-    # play_word() returns "" for this, vs None for an exchange) counts
-    # toward ending the game. Exchanging is a real, repeatable action a
-    # player can take as many times as they want (see strategy.py) and
-    # never signals a stuck/deadlocked game on its own.
-    no_play_streak = 0
-    went_out_idx: int | None = None
-    turn = 0
-
-    while True:
-        idx = turn % 2
-        player = players[idx]
+    def on_turn(idx: int, player: object, word: str | None, result: TurnResult, elapsed: float) -> None:
+        nonlocal move_time_total, move_count
+        move_time_total += elapsed
+        move_count += 1
         name = "Player 1" if player is p1 else "Player 2"
-        w = play(player)
-        if w:
-            no_play_streak = 0
-            emit(f"{name} plays: {w}")
-            emit(b)
-            if not player.letters:
-                went_out_idx = idx
-                break
-        elif w is None:
+        if result is TurnResult.PLAYED and word:
+            words_played[word] += 1
+            emit(f"{name} plays: {word}")
+        elif result is TurnResult.EXCHANGED:
             emit(f"{name} exchanged letters")
-            emit(b)
         else:
-            no_play_streak += 1
             emit(f"{name} cannot play.")
-            emit(b)
-            if no_play_streak >= 4:
-                break
-        turn += 1
+        emit(b)
 
-    if went_out_idx is not None:
-        others_value = sum(Board.rack_value(pl.letters) for i, pl in enumerate(players) if i != went_out_idx)
-        players[went_out_idx].score += others_value
-        for i, pl in enumerate(players):
-            if i != went_out_idx:
-                pl.score -= Board.rack_value(pl.letters)
-    else:
-        for pl in players:
-            pl.score -= Board.rack_value(pl.letters)
+    # The loop, the end conditions and the final rack adjustment all come from
+    # smart_player/simulate.py + src/rules.py. This file used to carry its own
+    # copy that ended a game after *four* consecutive no-plays where every other
+    # harness used two, and had no scoreless-turn cap at all -- so a `graj()`
+    # benchmark was not measuring the same game as `arena.py` or `evaluate.py`.
+    play_game(players, d, parallel=parallel, on_turn=on_turn)
 
     emit(f"Final Scores: Player 1: {p1.score}, Player 2: {p2.score}")
     emit(b)

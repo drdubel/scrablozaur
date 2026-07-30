@@ -1,33 +1,25 @@
-"""Shared self-play game loop: plays two players against each other to
-completion, applying the standard end-of-game rack-value adjustment (see
-Board.rack_value). Used by both generate_data.py (to harvest leave-value
-training samples) and evaluate.py (to benchmark win rate) so the two share
-one definition of what "a finished game" means, ported from web/game.py's
-`_check_game_over`/`_apply_end_of_game_scoring` (the fullest, most correct
-implementation of these rules already in the repo).
+"""Shared self-play game loop.
+
+Plays players against each other to completion and applies the standard
+end-of-game adjustment. The rules themselves live in `src/rules.py` -- this is
+only the turn order -- so that batch self-play, the CLI benchmark and the
+interactive web session all end games the same way rather than each carrying
+their own slightly different copy.
+
+Used by `generate_data.py` and `distill.py` (to harvest training samples),
+`evaluate.py` and `arena.py` (to benchmark), and `src/main.py`.
 """
 
+import os
+import sys
+import time
+from collections.abc import Callable
 from typing import Protocol
 
-from scrablozaur import Board, Dawg
+from scrablozaur import Dawg
 
-# Standard rule: the game ends once nobody has taken a genuine no-action
-# turn (no legal word and can't exchange -- play_word() returns "" for
-# this) for this many consecutive turns in a row. Exchanging (play_word()
-# returns None) is a real, repeatable action a player can take as many
-# times as they want and never counts toward this on its own.
-_NO_PLAY_LIMIT = 2
-
-# Exchanging never counts toward _NO_PLAY_LIMIT (it's a legal, repeatable
-# action), which leaves a hole: StrategicPlayer exchanges whenever its best
-# move is worth < 6 points, so two of them can reach a state -- blocked/closed
-# board, or a rack pool that keeps producing junk while the bag still holds a
-# full rack -- where both sides exchange forever and play_game never returns.
-# Measured rate in self-play: ~2 games in 700_000, which is exactly the kind of
-# thing that silently wedges one worker (and therefore the whole batch) during
-# a multi-million-game generate_data.py run. The standard tournament rule caps
-# *scoreless* turns instead, and exchanges are scoreless, so mirror that here.
-_NO_SCORE_LIMIT = 6
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from rules import Streaks, TurnResult, apply_end_of_game_scoring, classify_turn  # noqa: E402
 
 
 class GamePlayer(Protocol):
@@ -37,45 +29,45 @@ class GamePlayer(Protocol):
     def play_word(self, dawg: Dawg, parallel: bool = ...) -> str | None: ...
 
 
-def play_game(players: list[GamePlayer], dawg: Dawg, parallel: bool = False) -> None:
+def play_game(
+    players: list[GamePlayer],
+    dawg: Dawg,
+    parallel: bool = False,
+    on_turn: Callable[[int, GamePlayer, str | None, TurnResult, float], None] | None = None,
+) -> None:
     """Play `players` (already dealt onto a shared board) to completion,
     mutating their `.score`/`.letters` in place. Turn order is simply
-    `players[0], players[1], players[0], ...`."""
+    `players[0], players[1], players[0], ...`.
+
+    `on_turn(idx, player, word, result, elapsed)` fires after each turn. It
+    exists so callers that need a running commentary -- `src/main.py` builds a
+    transcript and per-move timings -- can have one without keeping a second
+    copy of the loop, which is how that file drifted to a different end
+    condition in the first place.
+    """
     turn = 0
-    no_play_streak = 0
-    no_score_streak = 0
+    streaks = Streaks()
     went_out_idx: int | None = None
     n = len(players)
 
     while True:
         idx = turn % n
         player = players[idx]
+        started = time.perf_counter()
         word = player.play_word(dawg, parallel=parallel)
-        if word:
-            no_play_streak = 0
-            no_score_streak = 0
-            if not player.letters:
-                went_out_idx = idx
-                break
-        elif word is None:
-            # Exchanged -- a real action, so it doesn't count toward the
-            # no-play streak, but it is scoreless and so must be bounded.
-            no_score_streak += 1
-            if no_score_streak >= _NO_SCORE_LIMIT:
-                break
-        else:
-            no_play_streak += 1
-            no_score_streak += 1
-            if no_play_streak >= _NO_PLAY_LIMIT or no_score_streak >= _NO_SCORE_LIMIT:
-                break
+        elapsed = time.perf_counter() - started
+        result = classify_turn(word)
+        streaks.record(result)
+        if on_turn is not None:
+            on_turn(idx, player, word, result, elapsed)
+
+        # An empty rack after a play means the bag was empty too: `draw_letters`
+        # always tops back up to seven while anything remains.
+        if result is TurnResult.PLAYED and not player.letters:
+            went_out_idx = idx
+            break
+        if streaks.exhausted:
+            break
         turn += 1
 
-    if went_out_idx is not None:
-        others_value = sum(Board.rack_value(p.letters) for i, p in enumerate(players) if i != went_out_idx)
-        players[went_out_idx].score += others_value
-        for i, p in enumerate(players):
-            if i != went_out_idx:
-                p.score -= Board.rack_value(p.letters)
-    else:
-        for p in players:
-            p.score -= Board.rack_value(p.letters)
+    apply_end_of_game_scoring(players, went_out_idx)
