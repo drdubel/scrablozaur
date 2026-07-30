@@ -37,19 +37,32 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from tqdm import tqdm  # type: ignore
 
-from scrablozaur import Board, Dawg
+from scrablozaur import Board, Dawg, set_num_threads
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import SimplePlayer, StrategicPlayer  # noqa: E402
 
 from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
 from player import SmartPlayer  # noqa: E402
+from sim_player import DEFAULT_CANDIDATES, DEFAULT_ITERATIONS, DEFAULT_PLIES, SimPlayer  # noqa: E402
 from simulate import GamePlayer, play_game  # noqa: E402
 
 _words_dir = os.path.join(os.path.dirname(__file__), "..", "words")
 _dawg = Dawg(os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
 
 _MASK64 = (1 << 64) - 1
+
+
+def _init_worker() -> None:
+    """Pin the engine to one thread inside each worker process.
+
+    `Board.simulate` fans its iterations out over the engine's own pool (8
+    threads by default). Combined with one worker process per core that is an
+    8x oversubscription, and it does not merely fail to help -- a sim benchmark
+    that should take a minute spends ten thrashing instead. The arena already
+    parallelises at the process level, so the engine should stay serial here.
+    """
+    set_num_threads(1)
 
 
 def _splitmix64(x: int) -> int:
@@ -65,17 +78,37 @@ def _splitmix64(x: int) -> int:
     return x ^ (x >> 31)
 
 
-def make_player(spec: str, board: Board) -> GamePlayer:
-    """Build a player from a spec string: `simple`, `strategic`, `smart`, or
-    `smart:<path-to-checkpoint.pt>`."""
-    name, _, arg = spec.partition(":")
+def make_player(spec: str, board: Board, seed: int = 0) -> GamePlayer:
+    """Build a player from a spec string.
+
+        simple | strategic
+        smart[:checkpoint.pt]
+        sim[:checkpoint.pt][@iterations[/candidates[/plies]]]
+
+    e.g. `sim`, `sim@500`, `sim@200/30/2`, `sim:models/cand.pt@200`.
+    """
+    head, _, tuning = spec.partition("@")
+    name, _, path = head.partition(":")
     if name == "simple":
         return SimplePlayer(board)
     if name == "strategic":
         return StrategicPlayer(board)
     if name == "smart":
-        return SmartPlayer(board, arg or DEFAULT_WEIGHTS_PATH)
-    raise ValueError(f"unknown player spec {spec!r} (expected simple, strategic, smart[:path])")
+        return SmartPlayer(board, path or DEFAULT_WEIGHTS_PATH)
+    if name == "sim":
+        parts = [p for p in tuning.split("/") if p]
+        iterations = int(parts[0]) if len(parts) > 0 else DEFAULT_ITERATIONS
+        candidates = int(parts[1]) if len(parts) > 1 else DEFAULT_CANDIDATES
+        plies = int(parts[2]) if len(parts) > 2 else DEFAULT_PLIES
+        return SimPlayer(
+            board,
+            path or DEFAULT_WEIGHTS_PATH,
+            iterations=iterations,
+            candidates=candidates,
+            plies=plies,
+            seed=seed,
+        )
+    raise ValueError(f"unknown player spec {spec!r} (expected simple, strategic, smart, or sim)")
 
 
 def play_pair(spec_a: str, spec_b: str, seed: int) -> tuple[int, int]:
@@ -90,13 +123,15 @@ def play_pair(spec_a: str, spec_b: str, seed: int) -> tuple[int, int]:
     margins = []
     for a_first in (True, False):
         board = Board.seeded(seed)
+        # Same simulation seed in both games of the pair, so a simulating
+        # player samples the same tile orders on each side of the deal.
         if a_first:
-            a = make_player(spec_a, board)
-            b = make_player(spec_b, board)
+            a = make_player(spec_a, board, seed)
+            b = make_player(spec_b, board, seed)
             players = [a, b]
         else:
-            b = make_player(spec_b, board)
-            a = make_player(spec_a, board)
+            b = make_player(spec_b, board, seed)
+            a = make_player(spec_a, board, seed)
             players = [b, a]
         play_game(players, _dawg, parallel=False)
         margins.append(a.score - b.score)
@@ -181,7 +216,7 @@ def run(
     futures = []
 
     try:
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        with ProcessPoolExecutor(max_workers=n_workers, initializer=_init_worker) as executor:
             futures = [
                 executor.submit(play_pair, spec_a, spec_b, _splitmix64(seed0 + i)) for i in range(pairs)
             ]

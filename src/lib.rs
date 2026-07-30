@@ -1359,26 +1359,7 @@ impl Board {
     /// Best-scoring first moves: the centre square must be covered, so
     /// every word/offset combination that does so is a candidate.
     fn best_opening_words(&self, dawg: &DawgPy, letters: &str, n: usize) -> Vec<BestWord> {
-        let mut candidates: Vec<BestWord> = Vec::new();
-        for word in dawg.search("*", letters) {
-            for offset in 0..CENTER {
-                if offset >= word.len() {
-                    break;
-                }
-                let col = CENTER - offset;
-                let score = self
-                    .calculate_word_points(&word, CENTER, col, true, letters)
-                    .unwrap_or(0);
-                if score == 0 {
-                    continue;
-                }
-                let used = self.hand_tiles_for_word(&word, CENTER, col, true, letters);
-                candidates.push((word.clone(), score, (CENTER, col, true), used));
-            }
-        }
-        candidates.sort_by_key(|&(_, score, ..)| std::cmp::Reverse(score));
-        candidates.truncate(n);
-        candidates
+        self.best_opening_words_inner(&dawg.inner, letters, n)
     }
 
     /// Best-scoring moves across every valid placement pattern already on
@@ -1457,6 +1438,88 @@ impl Board {
                 (word, score, (r, c, horizontal), used)
             })
             .collect())
+    }
+
+    /// `(tw_open, dw_open, tl_open, dl_open, board_fill)` for this board --
+    /// the same five scalars `smart_player/board_features.encode_board`
+    /// computes, straight from the engine's own bonus layout instead of a
+    /// transcription of it.
+    fn board_feature_scalars(&self) -> [f32; N_BOARD_FEATURES] {
+        self.board_features()
+    }
+
+    /// Counts of the tiles neither on the board nor in `rack` -- the bag plus
+    /// every opponent's rack -- indexed by `LeaveNet.alphabet()`.
+    ///
+    /// Legitimate information: a player can see the board and their own rack.
+    /// It is only *correct* because the board remembers which squares hold
+    /// blanks.
+    fn unseen_tile_counts(&self, rack: &str) -> Vec<u8> {
+        self.unseen_counts(rack).to_vec()
+    }
+
+    /// Rank this rack's plays by Monte-Carlo simulation.
+    ///
+    /// Returns `(word, score, (row, col, horizontal), used, equity, stderr,
+    /// iterations)` per surviving candidate, best equity first. `equity` is the
+    /// simulated score differential over the rollout window plus the difference
+    /// in what each side is left holding, so it is on the same points scale as
+    /// a move's score -- but unlike `score` it accounts for what the move hands
+    /// the opponent.
+    ///
+    /// Candidates are seeded from the *whole* legal move list ranked by static
+    /// equity, not the top-n by score. Every candidate in one iteration is
+    /// rolled out against the same sampled tiles, and candidates whose interval
+    /// falls clear of the leader's stop being sampled.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (dawg, net, letters, candidates=20, iterations=200, plies=1, batch=25, root_eval_cap=150, seed=0))]
+    fn simulate(
+        &self,
+        py: Python<'_>,
+        dawg: &DawgPy,
+        net: &LeaveNetPy,
+        letters: &str,
+        candidates: usize,
+        iterations: usize,
+        plies: usize,
+        batch: usize,
+        root_eval_cap: usize,
+        seed: u64,
+    ) -> PyResult<Vec<(String, u32, (usize, usize, bool), Vec<char>, f64, f64, usize)>> {
+        let Some(gaddag) = &dawg.gaddag else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "simulate needs a GADDAG; this Dawg was loaded without one",
+            ));
+        };
+        let opts = SimOpts {
+            candidates,
+            iterations,
+            batch,
+            plies,
+            root_eval_cap,
+            // A fixed default seed would make every position in every game
+            // sample the same tile orders; mix in the position so it doesn't.
+            seed: if seed == 0 { time_seed() } else { seed },
+        };
+        // Nothing below touches Python, and a simulation is long enough that
+        // holding the GIL through it would stall every other thread.
+        let out = py.detach(|| {
+            self.simulate_inner(&dawg.inner, gaddag, &net.inner, letters, opts)
+                .into_iter()
+                .map(|c| {
+                    (
+                        c.word.clone(),
+                        c.score,
+                        c.pos,
+                        c.used.clone(),
+                        c.mean(),
+                        c.stderr(),
+                        c.n,
+                    )
+                })
+                .collect()
+        });
+        Ok(out)
     }
 }
 
@@ -1657,6 +1720,31 @@ impl Board {
                 }
             })
             .collect()
+    }
+
+    /// `best_opening_words` against a raw `Dawg`, so the simulator can call it
+    /// without a `DawgPy` wrapper to hand.
+    fn best_opening_words_inner(&self, dawg: &Dawg, letters: &str, n: usize) -> Vec<BestWord> {
+        let mut candidates: Vec<BestWord> = Vec::new();
+        for word in dawg.search_inner("*", letters) {
+            for offset in 0..CENTER {
+                if offset >= word.chars().count() {
+                    break;
+                }
+                let col = CENTER - offset;
+                let score = self
+                    .calculate_word_points(&word, CENTER, col, true, letters)
+                    .unwrap_or(0);
+                if score == 0 {
+                    continue;
+                }
+                let used = self.hand_tiles_for_word(&word, CENTER, col, true, letters);
+                candidates.push((word.clone(), score, (CENTER, col, true), used));
+            }
+        }
+        candidates.sort_by_key(|&(_, score, ..)| std::cmp::Reverse(score));
+        candidates.truncate(n);
+        candidates
     }
 
     fn best_word_from_pattern_inner(
@@ -2346,6 +2434,638 @@ fn serialize(arena: &Arena, root: u32) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Leaf evaluation: the leave-value net, run natively
+// ---------------------------------------------------------------------------
+//
+// Simulation evaluates a leave at every rollout ply — hundreds of thousands of
+// times per move. Calling back into PyTorch for a 13k-parameter MLP would cost
+// far more in FFI and GIL traffic than the ~10k multiply-adds it is asking
+// for, so the engine runs the net itself. `smart_player/export_weights.py`
+// writes the checkpoint into the format loaded here; the `.pt` stays the
+// source of truth.
+
+/// Tile symbols in the order `smart_player/model.py` derives them
+/// (`sorted(set(Board.fresh_tile_bag()))`, i.e. by codepoint: `'?'`, the ASCII
+/// letters, then the Polish diacritics with `'ó'` before `'ą'`). The feature
+/// vector's first 33 slots are counts in this order, so it must match exactly
+/// or every prediction is silently garbage — `leave_net_alphabet()` exposes it
+/// so a test can assert the two agree.
+const EVAL_ALPHABET: &str = "?abcdefghijklmnoprstuwyzóąćęłńśźż";
+const EVAL_ALPHABET_SIZE: usize = 33;
+const N_BOARD_FEATURES: usize = 5;
+const EVAL_INPUT_DIM: usize = EVAL_ALPHABET_SIZE + 1 + N_BOARD_FEATURES;
+/// Premium squares of each type on a standard board, in `board_features`
+/// order. Matches `_TOTALS` in `smart_player/board_features.py`; asserted
+/// against `BONUS_TABLE` in the tests rather than trusted.
+const PREMIUM_TOTALS: [f32; 4] = [8.0, 17.0, 12.0, 24.0];
+/// Widest hidden layer `LeaveNet::forward` will run without allocating.
+const EVAL_MAX_WIDTH: usize = 1024;
+
+static EVAL_INDEX: OnceLock<[i8; FREQ_SIZE]> = OnceLock::new();
+
+/// Feature-vector slot for a tile symbol, or `None` for anything not in the
+/// distribution.
+#[inline]
+fn eval_index(c: char) -> Option<usize> {
+    let table = EVAL_INDEX.get_or_init(|| {
+        let mut t = [-1i8; FREQ_SIZE];
+        for (i, ch) in EVAL_ALPHABET.chars().enumerate() {
+            t[ch as usize] = i as i8;
+        }
+        t
+    });
+    let i = c as usize;
+    if i < FREQ_SIZE && table[i] >= 0 {
+        Some(table[i] as usize)
+    } else {
+        None
+    }
+}
+
+struct DenseLayer {
+    in_dim: usize,
+    out_dim: usize,
+    /// Row-major, `out_dim` rows of `in_dim` weights.
+    w: Vec<f32>,
+    b: Vec<f32>,
+}
+
+/// The exported leave-value MLP. ReLU between layers, none on the output,
+/// matching `LeaveValueNet.forward`.
+pub struct LeaveNet {
+    input_dim: usize,
+    layers: Vec<DenseLayer>,
+}
+
+impl LeaveNet {
+    fn load(path: &str) -> io::Result<Self> {
+        let data = fs::read(path)?;
+        let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
+        if data.len() < 16 || &data[..8] != b"SCRBNET1" {
+            return Err(bad("not a SCRBNET1 file (re-run export_weights.py)"));
+        }
+        let u32_at = |off: usize| -> u32 {
+            u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+        };
+        let input_dim = u32_at(8) as usize;
+        let n_layers = u32_at(12) as usize;
+        if input_dim != EVAL_INPUT_DIM {
+            return Err(bad(&format!(
+                "net takes {input_dim} inputs, engine encodes {EVAL_INPUT_DIM}"
+            )));
+        }
+        let mut dims = Vec::with_capacity(n_layers);
+        let mut off = 16;
+        for _ in 0..n_layers {
+            if off + 8 > data.len() {
+                return Err(bad("truncated layer table"));
+            }
+            dims.push((u32_at(off) as usize, u32_at(off + 4) as usize));
+            off += 8;
+        }
+        let mut layers = Vec::with_capacity(n_layers);
+        for &(in_dim, out_dim) in &dims {
+            if out_dim > EVAL_MAX_WIDTH {
+                return Err(bad(&format!("layer wider than {EVAL_MAX_WIDTH}")));
+            }
+            let n_w = in_dim * out_dim;
+            let need = (n_w + out_dim) * 4;
+            if off + need > data.len() {
+                return Err(bad("truncated weights"));
+            }
+            let mut read_f32s = |count: usize| -> Vec<f32> {
+                let v = (0..count)
+                    .map(|i| {
+                        let p = off + i * 4;
+                        f32::from_le_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]])
+                    })
+                    .collect();
+                off += count * 4;
+                v
+            };
+            let w = read_f32s(n_w);
+            let b = read_f32s(out_dim);
+            layers.push(DenseLayer { in_dim, out_dim, w, b });
+        }
+        if layers.last().map(|l| l.out_dim) != Some(1) {
+            return Err(bad("net must end in a scalar head"));
+        }
+        Ok(LeaveNet { input_dim, layers })
+    }
+
+    /// Predicted leave value for one already-encoded feature vector.
+    fn forward(&self, x: &[f32]) -> f32 {
+        debug_assert_eq!(x.len(), self.input_dim);
+        let mut cur = [0f32; EVAL_MAX_WIDTH];
+        let mut next = [0f32; EVAL_MAX_WIDTH];
+        cur[..x.len()].copy_from_slice(x);
+        let last = self.layers.len() - 1;
+        for (li, layer) in self.layers.iter().enumerate() {
+            for o in 0..layer.out_dim {
+                let row = &layer.w[o * layer.in_dim..(o + 1) * layer.in_dim];
+                let mut acc = layer.b[o];
+                for (i, &wi) in row.iter().enumerate() {
+                    acc += wi * cur[i];
+                }
+                next[o] = if li == last { acc } else { acc.max(0.0) };
+            }
+            cur[..layer.out_dim].copy_from_slice(&next[..layer.out_dim]);
+        }
+        cur[0]
+    }
+}
+
+/// Feature vector for a leave: per-tile counts, the unseen-tile count scaled
+/// by 100, then the board scalars. Mirrors `model.encode_leave`.
+fn encode_leave_features(
+    leave: &str,
+    unseen_total: usize,
+    feats: &[f32; N_BOARD_FEATURES],
+) -> [f32; EVAL_INPUT_DIM] {
+    let mut x = [0f32; EVAL_INPUT_DIM];
+    for ch in leave.chars() {
+        if let Some(i) = eval_index(ch) {
+            x[i] += 1.0;
+        }
+    }
+    x[EVAL_ALPHABET_SIZE] = unseen_total as f32 / 100.0;
+    x[EVAL_ALPHABET_SIZE + 1..].copy_from_slice(feats);
+    x
+}
+
+impl Board {
+    /// `(tw_open, dw_open, tl_open, dl_open, board_fill)` — the fraction of
+    /// each premium-square type still unclaimed, and how full the board is.
+    /// Mirrors `board_features.encode_board`.
+    fn board_features(&self) -> [f32; N_BOARD_FEATURES] {
+        let mut open = [0u32; 4];
+        let mut filled = 0u32;
+        for r in 0..BOARD_SIZE {
+            for c in 0..BOARD_SIZE {
+                if self.board[r][c] != '-' {
+                    filled += 1;
+                    continue;
+                }
+                let (lm, wm) = quadrant_bonus(r, c);
+                // Word multipliers outrank letter multipliers, same order as
+                // board_features.py's `_classify`.
+                if wm == 3 {
+                    open[0] += 1;
+                } else if wm == 2 {
+                    open[1] += 1;
+                } else if lm == 3 {
+                    open[2] += 1;
+                } else if lm == 2 {
+                    open[3] += 1;
+                }
+            }
+        }
+        [
+            open[0] as f32 / PREMIUM_TOTALS[0],
+            open[1] as f32 / PREMIUM_TOTALS[1],
+            open[2] as f32 / PREMIUM_TOTALS[2],
+            open[3] as f32 / PREMIUM_TOTALS[3],
+            filled as f32 / (BOARD_SIZE * BOARD_SIZE) as f32,
+        ]
+    }
+
+    /// Tiles neither on the board nor in `rack`: the bag plus every opponent's
+    /// rack. This is exactly what a player may legitimately deduce, and it is
+    /// only correct because the board remembers which squares hold blanks — a
+    /// blank counts against the `'?'` supply, not against the letter it is
+    /// standing in for.
+    fn unseen_counts(&self, rack: &str) -> [u8; EVAL_ALPHABET_SIZE] {
+        let mut counts = [0u8; EVAL_ALPHABET_SIZE];
+        for ch in fresh_tile_bag() {
+            if let Some(i) = eval_index(ch) {
+                counts[i] += 1;
+            }
+        }
+        let take = |ch: char, counts: &mut [u8; EVAL_ALPHABET_SIZE]| {
+            if let Some(i) = eval_index(ch) {
+                counts[i] = counts[i].saturating_sub(1);
+            }
+        };
+        for r in 0..BOARD_SIZE {
+            for c in 0..BOARD_SIZE {
+                if self.board[r][c] == '-' {
+                    continue;
+                }
+                let ch = if self.blanks[r][c] {
+                    '?'
+                } else {
+                    self.board[r][c]
+                };
+                take(ch, &mut counts);
+            }
+        }
+        for ch in rack.chars() {
+            take(ch, &mut counts);
+        }
+        counts
+    }
+
+    /// Apply a generated move, recording which squares took a blank. The
+    /// Rust-side counterpart of the `place_word` pymethod.
+    fn apply_move(&mut self, word: &str, row: usize, col: usize, horizontal: bool, used: &[char]) {
+        let mut k = 0usize;
+        for (i, ch) in word.chars().enumerate() {
+            let (r, c) = word_cell(row, col, horizontal, i);
+            if self.board[r][c] == '-' {
+                self.blanks[r][c] = used.get(k) == Some(&'?');
+                k += 1;
+            }
+            self.board[r][c] = ch;
+        }
+        self.first = false;
+    }
+}
+
+/// Remove a move's tiles from a rack, blanks included.
+fn rack_after(rack: &str, used: &[char]) -> String {
+    let mut left: Vec<char> = rack.chars().collect();
+    for &ch in used {
+        if let Some(p) = left.iter().position(|&x| x == ch) {
+            left.remove(p);
+        } else if let Some(p) = left.iter().position(|&x| x == '?') {
+            left.remove(p);
+        }
+    }
+    left.into_iter().collect()
+}
+
+// ---------------------------------------------------------------------------
+// Monte-Carlo simulation
+// ---------------------------------------------------------------------------
+//
+// Static evaluation ranks a move by what it scores plus what it leaves behind.
+// It cannot see what the move *gives the opponent*. Simulation answers that
+// directly: play each leading candidate, deal the opponent a plausible rack
+// from the unseen pool, let both sides reply with the static player, and score
+// the resulting position. The candidate that survives contact wins.
+//
+// Two things make this affordable. Common random numbers: every candidate in
+// one decision is rolled out against the *same* sampled tile sequences, so the
+// comparison isolates the candidate instead of the luck. And sequential
+// pruning: candidates whose confidence interval has fallen clear of the
+// leader's stop being sampled.
+
+/// How many of a rollout ply's moves get evaluated by the net. The rollout
+/// policy does not need to be the strongest possible player, and evaluating
+/// every generated move here would cost more than generating them.
+const ROLLOUT_EVAL_CAP: usize = 10;
+
+#[derive(Clone, Copy)]
+struct SimOpts {
+    /// Candidates carried into simulation, by static equity.
+    candidates: usize,
+    iterations: usize,
+    /// Iterations between pruning passes.
+    batch: usize,
+    /// Half-moves simulated after the candidate, alternating opponent-first.
+    ///
+    /// Parity matters more than depth. Odd values leave both sides having
+    /// played the same number of moves (1 = their reply; 3 = reply, our
+    /// follow-up, their reply), so the differential compares like with like.
+    /// An even value gives us one more scoring turn than the opponent, which
+    /// biases the equity toward whatever sets up our own next move rather than
+    /// toward what the candidate concedes.
+    plies: usize,
+    /// Root moves the net scores, by raw score. Bounds the once-per-decision
+    /// cost of ranking a full move list.
+    root_eval_cap: usize,
+    seed: u64,
+}
+
+/// A candidate and what simulation learned about it.
+struct SimCandidate {
+    word: String,
+    score: u32,
+    pos: (usize, usize, bool),
+    used: Vec<char>,
+    leave: String,
+    static_equity: f64,
+    n: usize,
+    sum: f64,
+    sum_sq: f64,
+}
+
+impl SimCandidate {
+    fn mean(&self) -> f64 {
+        if self.n == 0 {
+            self.static_equity
+        } else {
+            self.sum / self.n as f64
+        }
+    }
+
+    /// Standard error of the mean. `NaN` until there are two samples.
+    fn stderr(&self) -> f64 {
+        if self.n < 2 {
+            return f64::NAN;
+        }
+        let n = self.n as f64;
+        let var = (self.sum_sq - self.sum * self.sum / n) / (n - 1.0);
+        (var.max(0.0) / n).sqrt()
+    }
+}
+
+impl Board {
+    /// Best move for `rack` by static equity (score + leave value), or `None`
+    /// if there is no legal play. Used as the rollout policy, so it evaluates
+    /// only the top `eval_cap` moves by raw score.
+    fn best_static_move(
+        &self,
+        dawg: &Dawg,
+        gaddag: &Dawg,
+        net: &LeaveNet,
+        rack: &str,
+        eval_cap: usize,
+    ) -> Option<GenMove> {
+        let mut moves = self.gaddag_generate(dawg, gaddag, rack, false, true);
+        if moves.is_empty() {
+            return None;
+        }
+        if moves.len() > eval_cap {
+            moves.sort_unstable_by_key(|m| std::cmp::Reverse(m.4));
+            moves.truncate(eval_cap);
+        }
+        let feats = self.board_features();
+        let unseen_total: usize = self
+            .unseen_counts(rack)
+            .iter()
+            .map(|&c| c as usize)
+            .sum();
+        let mut best_i = 0usize;
+        let mut best_v = f64::NEG_INFINITY;
+        for (i, m) in moves.iter().enumerate() {
+            let used = self.hand_tiles_for_word(&m.3, m.0, m.1, m.2, rack);
+            let leave = rack_after(rack, &used);
+            let x = encode_leave_features(&leave, unseen_total, &feats);
+            let v = m.4 as f64 + net.forward(&x) as f64;
+            if v > best_v {
+                best_v = v;
+                best_i = i;
+            }
+        }
+        Some(moves.swap_remove(best_i))
+    }
+
+    /// One rollout of one candidate against one sampled tile sequence.
+    ///
+    /// `pool` is the unseen tiles already shuffled: the first `RACK_SIZE` are
+    /// the opponent's rack, the rest are the bag both sides draw from. Sharing
+    /// one shuffle across every candidate in an iteration is the common-random-
+    /// numbers trick that makes the comparison between them meaningful at a
+    /// few hundred iterations rather than a few thousand.
+    fn rollout(
+        &self,
+        dawg: &Dawg,
+        gaddag: &Dawg,
+        net: &LeaveNet,
+        cand: &SimCandidate,
+        pool: &[char],
+        plies: usize,
+    ) -> f64 {
+        let mut board = self.clone();
+        board.apply_move(&cand.word, cand.pos.0, cand.pos.1, cand.pos.2, &cand.used);
+
+        let split = RACK_SIZE.min(pool.len());
+        let mut opp_rack: String = pool[..split].iter().collect();
+        let mut cursor = split;
+        let draw = |rack: &mut String, cursor: &mut usize| {
+            while rack.chars().count() < RACK_SIZE && *cursor < pool.len() {
+                rack.push(pool[*cursor]);
+                *cursor += 1;
+            }
+        };
+
+        let mut my_rack = cand.leave.clone();
+        draw(&mut my_rack, &mut cursor);
+
+        let mut my_gain = cand.score as i64;
+        let mut opp_gain = 0i64;
+        let mut opponents_turn = true;
+
+        for _ in 0..plies {
+            let rack = if opponents_turn {
+                opp_rack.clone()
+            } else {
+                my_rack.clone()
+            };
+            if let Some(m) = board.best_static_move(dawg, gaddag, net, &rack, ROLLOUT_EVAL_CAP) {
+                let used = board.hand_tiles_for_word(&m.3, m.0, m.1, m.2, &rack);
+                let left = rack_after(&rack, &used);
+                board.apply_move(&m.3, m.0, m.1, m.2, &used);
+                if opponents_turn {
+                    opp_gain += m.4 as i64;
+                    opp_rack = left;
+                    draw(&mut opp_rack, &mut cursor);
+                } else {
+                    my_gain += m.4 as i64;
+                    my_rack = left;
+                    draw(&mut my_rack, &mut cursor);
+                }
+            }
+            opponents_turn = !opponents_turn;
+        }
+
+        // Score differential over the simulated window, plus the difference in
+        // what each side is left holding. Both leaves are valued on the final
+        // board with the tiles still unaccounted for.
+        let feats = board.board_features();
+        let unseen_left = pool.len().saturating_sub(cursor);
+        let my_leave_v = net.forward(&encode_leave_features(&my_rack, unseen_left, &feats)) as f64;
+        let opp_leave_v = net.forward(&encode_leave_features(&opp_rack, unseen_left, &feats)) as f64;
+        (my_gain - opp_gain) as f64 + my_leave_v - opp_leave_v
+    }
+
+    /// Rank `rack`'s plays by simulation. Returns the surviving candidates,
+    /// best first, each with its simulated equity and standard error.
+    fn simulate_inner(
+        &self,
+        dawg: &Dawg,
+        gaddag: &Dawg,
+        net: &LeaveNet,
+        rack: &str,
+        opts: SimOpts,
+    ) -> Vec<SimCandidate> {
+        // Rank the *whole* legal move list statically, not the top-50 by score:
+        // a tile dump or a blocking play can be worth more than it scores.
+        let mut moves = if self.first {
+            Vec::new()
+        } else {
+            self.gaddag_generate(dawg, gaddag, rack, true, true)
+        };
+        if self.first {
+            // The opening has no anchors to generate from; reuse the dedicated
+            // centre-covering path and convert to the same shape.
+            for (word, score, (r, c, h), _used) in
+                self.best_opening_words_inner(dawg, rack, usize::MAX)
+            {
+                moves.push((r, c, h, word, score));
+            }
+        }
+        if moves.is_empty() {
+            return Vec::new();
+        }
+        if moves.len() > opts.root_eval_cap {
+            moves.sort_unstable_by_key(|m| std::cmp::Reverse(m.4));
+            moves.truncate(opts.root_eval_cap);
+        }
+
+        let feats = self.board_features();
+        let unseen = self.unseen_counts(rack);
+        let unseen_total: usize = unseen.iter().map(|&c| c as usize).sum();
+
+        let mut cands: Vec<SimCandidate> = moves
+            .into_iter()
+            .map(|(r, c, h, word, score)| {
+                let used = self.hand_tiles_for_word(&word, r, c, h, rack);
+                let leave = rack_after(rack, &used);
+                let x = encode_leave_features(&leave, unseen_total, &feats);
+                let static_equity = score as f64 + net.forward(&x) as f64;
+                SimCandidate {
+                    word,
+                    score,
+                    pos: (r, c, h),
+                    used,
+                    leave,
+                    static_equity,
+                    n: 0,
+                    sum: 0.0,
+                    sum_sq: 0.0,
+                }
+            })
+            .collect();
+        cands.sort_by(|a, b| b.static_equity.partial_cmp(&a.static_equity).unwrap());
+        cands.truncate(opts.candidates.max(1));
+
+        if cands.len() == 1 || opts.iterations == 0 || opts.plies == 0 {
+            return cands;
+        }
+
+        // The pool a rollout deals from: every tile neither on the board nor in
+        // our own rack.
+        let mut pool: Vec<char> = Vec::with_capacity(unseen_total);
+        for (i, &count) in unseen.iter().enumerate() {
+            let ch = EVAL_ALPHABET.chars().nth(i).unwrap();
+            for _ in 0..count {
+                pool.push(ch);
+            }
+        }
+        if pool.is_empty() {
+            return cands;
+        }
+
+        let mut done = 0usize;
+        while done < opts.iterations && cands.len() > 1 {
+            let batch = opts.batch.max(1).min(opts.iterations - done);
+            // Each iteration gets its own shuffle, shared by every candidate in
+            // it, and derived from the seed so a run is reproducible.
+            let results: Vec<Vec<f64>> = gen_pool().install(|| {
+                (done..done + batch)
+                    .into_par_iter()
+                    .map(|iter| {
+                        let mut rng = splitmix64(opts.seed ^ (iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                        let mut shuffled = pool.clone();
+                        shuffle(&mut shuffled, &mut rng);
+                        cands
+                            .iter()
+                            .map(|c| self.rollout(dawg, gaddag, net, c, &shuffled, opts.plies))
+                            .collect()
+                    })
+                    .collect()
+            });
+            for row in results {
+                for (c, v) in cands.iter_mut().zip(row) {
+                    c.n += 1;
+                    c.sum += v;
+                    c.sum_sq += v * v;
+                }
+            }
+            done += batch;
+
+            // Sequential pruning: drop anything whose interval has fallen clear
+            // of the leader's. Sort by mean first so the "keep at least two"
+            // floor keeps the two *best* rather than the first two encountered.
+            if cands.len() > 2 {
+                cands.sort_by(|a, b| b.mean().partial_cmp(&a.mean()).unwrap());
+                let (lm, lse) = (cands[0].mean(), cands[0].stderr());
+                if lse.is_finite() {
+                    let floor = lm - 2.0 * lse;
+                    let mut kept: Vec<SimCandidate> = Vec::new();
+                    for c in cands.into_iter() {
+                        let se = c.stderr();
+                        if kept.len() < 2 || !se.is_finite() || c.mean() + 2.0 * se >= floor {
+                            kept.push(c);
+                        }
+                    }
+                    cands = kept;
+                }
+            }
+        }
+
+        cands.sort_by(|a, b| b.mean().partial_cmp(&a.mean()).unwrap());
+        cands
+    }
+}
+
+/// The leave-value net, loaded from `export_weights.py`'s output.
+#[pyclass(name = "LeaveNet")]
+struct LeaveNetPy {
+    inner: LeaveNet,
+}
+
+#[pymethods]
+impl LeaveNetPy {
+    #[new]
+    fn new(path: &str) -> PyResult<Self> {
+        LeaveNet::load(path)
+            .map(|inner| LeaveNetPy { inner })
+            .map_err(|e| PyIOError::new_err(format!("{path}: {e}")))
+    }
+
+    /// Forward pass on an already-encoded feature vector. Exists so a test can
+    /// check the engine's arithmetic against PyTorch's on identical input.
+    fn raw(&self, x: Vec<f32>) -> PyResult<f32> {
+        if x.len() != self.inner.input_dim {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "expected {} features, got {}",
+                self.inner.input_dim,
+                x.len()
+            )));
+        }
+        Ok(self.inner.forward(&x))
+    }
+
+    /// Predicted value of holding `leave`, in `board`'s context, for a player
+    /// whose full rack is `rack` (which fixes the unseen-tile count).
+    fn value(&self, board: &Board, leave: &str, rack: &str) -> f32 {
+        let feats = board.board_features();
+        let unseen: usize = board.unseen_counts(rack).iter().map(|&c| c as usize).sum();
+        self.inner
+            .forward(&encode_leave_features(leave, unseen, &feats))
+    }
+
+    /// The tile-symbol order the feature vector's first 33 slots use, so a test
+    /// can assert it matches `model.ALPHABET`.
+    #[staticmethod]
+    fn alphabet() -> Vec<char> {
+        EVAL_ALPHABET.chars().collect()
+    }
+}
+
+/// Scatter a counter into unrelated 64-bit values (SplitMix64's finalizer).
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+// ---------------------------------------------------------------------------
 // CLI entry points
 // ---------------------------------------------------------------------------
 
@@ -2740,6 +3460,7 @@ fn num_threads() -> usize {
 fn scrablozaur(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DawgPy>()?;
     m.add_class::<Board>()?;
+    m.add_class::<LeaveNetPy>()?;
     m.add_function(pyo3::wrap_pyfunction!(set_num_threads, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(num_threads, m)?)?;
     Ok(())

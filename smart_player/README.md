@@ -56,13 +56,15 @@ since it suppressed exactly the tiles that reward leave management. Nothing
 got stronger here; the measurement got fairer. Read the plateau discussion
 below with that in mind: it was a plateau at ~62-63% *on a biased bag*.
 
-Current ladder, via `arena.py` at 1000 seeded pairs (2000 games) each:
+Current ladder, via `arena.py`:
 
-| A | B | A's match score | Elo | Mean margin |
-|---|---|---|---|---|
-| `smart` | `strategic` | 65.70% +/- 0.99pp | +113 | +39.1 +/- 2.0 |
-| `smart` | `simple` | 65.75% +/- 0.99pp | +113 | +39.1 +/- 2.0 |
-| `strategic` | `simple` | 50.00% +/- 0.00pp | +0 | **+0.1 +/- 0.1** |
+| A | B | Pairs | A's match score | Elo | Mean margin |
+|---|---|---|---|---|---|
+| `sim` | `strategic` | 200 | **70.12% +/- 2.34pp** | +148 | +46.7 +/- 4.4 |
+| `smart` | `strategic` | 1000 | 65.70% +/- 0.99pp | +113 | +39.1 +/- 2.0 |
+| `smart` | `simple` | 1000 | 65.75% +/- 0.99pp | +113 | +39.1 +/- 2.0 |
+| `sim` | `smart` | 150 | 53.33% +/- 2.74pp | +23 | +10.7 +/- 4.8 |
+| `strategic` | `simple` | 1000 | 50.00% +/- 0.00pp | +0 | **+0.1 +/- 0.1** |
 
 That last row is the one to look at. `StrategicPlayer` and `SimplePlayer`
 differ only in when they exchange (`points < 6` vs. only-when-stuck), and
@@ -216,6 +218,70 @@ positions. Untried fixes that would more plausibly produce real compounding
 gains: warm-starting each round from the champion's weights (so training
 actually refines rather than re-rolls), or a bigger lever entirely (richer
 features, `--lookahead` sweep, a bigger dataset per round).
+
+## Simulation (`sim_player.py`)
+
+Every plateau above shares one cause: `SmartPlayer` ranks a move by
+`score + leave_value`, and no function of (my score, my leave) can express what
+the move *hands the opponent*. A play that scores four more points while opening
+the triple-word lane is a bad play, and static evaluation cannot say so.
+
+`SimPlayer` asks directly. For each leading candidate it plays the move, deals
+the opponent a rack from the tiles neither on the board nor in its own rack,
+lets both sides reply with the static player, and scores the resulting position.
+`Board.simulate` (`src/lib.rs`) does the whole rollout natively; two things make
+it affordable:
+
+- **Common random numbers.** Every candidate in one iteration is rolled out
+  against the *same* shuffled tile sequence, so the comparison isolates the
+  candidate instead of the luck.
+- **Sequential pruning.** Candidates whose interval falls clear of the leader's
+  stop being sampled. In practice 20 candidates collapse to 3 within a couple of
+  hundred iterations, so the nominal cost is rarely paid.
+
+The leave net runs *in Rust* (`export_weights.py` -> `models/leave_value.bin`,
+`LeaveNet` in `src/lib.rs`). At hundreds of thousands of evaluations per move,
+calling back into PyTorch for a 13k-parameter MLP would cost far more in FFI and
+GIL traffic than its ~10k multiply-adds. The `.pt` stays the source of truth and
+`sim_player.get_net` re-exports automatically when it is newer than the `.bin`.
+Parity against PyTorch is 2e-6 on real feature vectors.
+
+**Ply parity matters more than depth.** Measured against `smart`:
+
+| Config | Pairs | Match score | Mean margin | Relative cost |
+|---|---|---|---|---|
+| `plies=1` (their reply — balanced 1v1) | 150 | 53.33% +/- 2.74pp | **+10.7 +/- 4.8** | 1x |
+| `plies=3` (reply, ours, reply — balanced 2v2) | 120 | 51.67% +/- 2.77pp | +8.8 +/- 5.4 | ~2.5x |
+| `plies=2` (reply, ours — **unbalanced 2v1**) | 20 | 45.00% +/- 6.18pp | -1.6 +/- 12.2 | ~1.7x |
+
+An even ply count gives us one more scoring turn than the opponent ever gets,
+which rewards setting up our own follow-up over noticing what the candidate
+concedes. `plies=1` is the default: same as the deeper balanced window within
+error, at a fraction of the cost.
+
+**Honest accounting.** Simulation is worth about **+10 points/game, ~+25 Elo**
+over `SmartPlayer` — real (the margin is significant at t=2.2, and the two
+measurements agree: +10.7 head-to-head, and +7.6 inferred from 70.12% vs 65.70%
+against the same baseline) but far short of the +60-90 Elo simulation is worth
+in engines like Quackle. The reason is visible in the design: the rollout policy
+*is* the static player, so the rollouts inherit its judgement. A sim can only
+distinguish candidates as well as the evaluator scoring its leaves, and this
+evaluator was trained on greedy self-play against an n-step return. There is
+also a scale mismatch — the net predicts a 4-turn score-differential return, and
+that gets added to a realised 1-ply differential, so the leave term double-counts
+future scoring.
+
+Which re-orders what to do next. Simulation was supposed to be the big lever;
+measurement says its ceiling is set by the leaf evaluator. The two things that
+should now come first are the **exact endgame solver** (with the bag empty the
+position is perfect information, and endgames decide exactly the close games
+where win rate is won) and **distilling sim output back into the static net**,
+which lifts the rollout policy and the ranking together.
+
+Cost: ~0.9 CPU-seconds per decision at the defaults, ~110 ms wall on 8 threads.
+Fine for real games; a benchmark needs `set_num_threads(1)` in each worker, which
+`arena.py` does — without it, one worker process per core each spinning up the
+engine's 8-thread pool turns a one-minute run into ten minutes of thrashing.
 
 ## Board-aware features
 
@@ -382,6 +448,8 @@ proven necessary yet.
 | File | Purpose |
 |---|---|
 | `model.py` | `LeaveValueNet`, rack + board-feature encoding, multi-checkpoint-aware loading |
+| `sim_player.py` | `SimPlayer` (picks its word by Monte-Carlo simulation) |
+| `export_weights.py` | Export a `.pt` checkpoint to the flat binary the Rust engine loads |
 | `board_features.py` | Bonus-square layout + `encode_board()` (board-state summary scalars) |
 | `simulate.py` | Shared self-play game loop + end-of-game scoring |
 | `player.py` | `SmartPlayer` (StrategicPlayer + learned leave evaluator + learned exchange decision) |

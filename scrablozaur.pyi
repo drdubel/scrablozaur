@@ -281,6 +281,62 @@ class Board:
         Pairs with `from_grid(grid, blanks)` to round-trip a position.
         """
 
+    def board_feature_scalars(self) -> tuple[float, float, float, float, float]:
+        """`(tw_open, dw_open, tl_open, dl_open, board_fill)`.
+
+        The fraction of each premium-square type still unclaimed, and how full
+        the board is. The same five scalars
+        `smart_player/board_features.encode_board` computes, but read from the
+        engine's own bonus layout rather than a transcription of it.
+        """
+
+    def unseen_tile_counts(self, rack: str) -> list[int]:
+        """Counts of the tiles neither on the board nor in `rack` -- the bag
+        plus every opponent's rack -- indexed by `LeaveNet.alphabet()`.
+
+        Legitimate information: a player can see the board and their own rack.
+        It is only *correct* because the board remembers which squares hold
+        blanks, so a played blank counts against the `'?'` supply instead of
+        against the letter it is standing in for.
+        """
+
+    def simulate(
+        self,
+        dawg: Dawg,
+        net: LeaveNet,
+        letters: str,
+        candidates: int = 20,
+        iterations: int = 200,
+        plies: int = 1,
+        batch: int = 25,
+        root_eval_cap: int = 150,
+        seed: int = 0,
+    ) -> list[tuple[str, int, tuple[int, int, bool], list[str], float, float, int]]:
+        """Rank this rack's plays by Monte-Carlo simulation.
+
+        Returns `(word, score, (row, col, horizontal), used, equity, stderr,
+        iterations)` per surviving candidate, best equity first.
+
+        `equity` is the simulated score differential plus the difference in what
+        each side is left holding, so it reads on the same points scale as a
+        move's score -- but unlike `score` it accounts for what the move hands
+        the opponent, which no function of (own score, own leave) can express.
+
+        Candidates are seeded from the *whole* legal move list ranked by static
+        equity, not the top-n by score. Every candidate within one iteration is
+        rolled out against the same sampled tiles (common random numbers), and
+        candidates whose confidence interval falls clear of the leader's stop
+        being sampled -- so the nominal `candidates * iterations` cost is rarely
+        paid in full.
+
+        `plies` counts half-moves after the candidate, opponent first. Prefer
+        odd values: they leave both sides having played equally often, so the
+        differential compares like with like. Requires a GADDAG.
+
+        `seed` of 0 picks one from the clock. Pass a real seed for a
+        reproducible decision.
+        """
+
     def exchange_letters(self, letters: str, letters_to_exchange: str) -> str:
         """Exchange letters from the player's hand with new letters from the bag.
 
@@ -326,4 +382,41 @@ class Board:
         closest to 'A' in alphabet order wins, a blank ('?') beats every
         letter, first index wins ties. Does not consume/mutate any bag —
         the caller returns the drawn tiles before dealing real racks.
+        """
+
+
+class LeaveNet:
+    """The trained leave-value MLP, run natively by the engine.
+
+    Simulation evaluates a leave at every rollout ply -- hundreds of thousands
+    of times per move -- so crossing back into PyTorch for a 13k-parameter net
+    would cost far more in FFI and GIL traffic than the ~10k multiply-adds it
+    is asking for. `smart_player/export_weights.py` writes a checkpoint into
+    the format loaded here; the `.pt` stays the source of truth.
+    """
+
+    def __init__(self, path: str) -> None:
+        """Load an exported net. Raises `OSError` if the file is not a
+        SCRBNET1 export, is truncated, or was trained against a different
+        number of input features than the engine encodes.
+        """
+
+    def raw(self, x: list[float]) -> float:
+        """Forward pass on an already-encoded feature vector.
+
+        Exists so a test can check the engine's arithmetic against PyTorch's on
+        identical input; ordinary callers want `value`.
+        """
+
+    def value(self, board: Board, leave: str, rack: str) -> float:
+        """Predicted value of holding `leave` in `board`'s context, for a player
+        whose full rack is `rack` (which fixes the unseen-tile count).
+        """
+
+    @staticmethod
+    def alphabet() -> list[str]:
+        """The tile-symbol order the feature vector's first 33 slots use.
+
+        Must equal `smart_player.model.ALPHABET`; if it ever diverges, every
+        prediction is silently wrong, so it is asserted in the tests.
         """
