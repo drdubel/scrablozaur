@@ -25,3 +25,7 @@ _*
 test
 ocr
 .*/
+
+# pi coding agent: share project config (settings, prompts, extensions)
+!.pi/
+!.pi/**
