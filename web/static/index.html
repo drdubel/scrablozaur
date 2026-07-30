@@ -174,7 +174,7 @@
             <!-- Human turn -->
             <section id="panel-human" class="panel" hidden>
               <h2 id="panel-human-title">Ruch gracza</h2>
-              <p class="typing-hint">Kliknij pole startowe · pisz litery lub klikaj kafelki na stojaku · spacja zmienia kierunek · Enter zatwierdza</p>
+              <p class="typing-hint">Kliknij pole startowe · pisz litery lub klikaj kafelki na stojaku · spacja zmienia kierunek · Enter zatwierdza · „Anuluj układanie” (Escape) zwalnia planszę</p>
               <div class="form-row">
                 <label>
                   Kierunek <small>(spacja)</small>
@@ -194,12 +194,16 @@
               </div>
               <div class="btn-row">
                 <button id="btn-place-human" class="btn btn-primary">Zatwierdź ↵</button>
+                <!-- The only way off the board on a phone: there is no Escape
+                     key there, and while a square is selected every rack tap
+                     places a tile instead of picking it for exchange. -->
+                <button id="btn-cancel-typing" class="btn btn-secondary" hidden>✕ Anuluj układanie</button>
                 <button id="btn-hints" class="btn btn-ghost">Pokaż podpowiedzi</button>
                 <button id="btn-exchange-human" class="btn btn-ghost">Wymień litery</button>
                 <button id="btn-skip-human" class="btn btn-ghost">Pomiń ruch</button>
                 <button id="btn-pass-human" class="btn btn-danger">Poddaj się</button>
               </div>
-              <p id="exchange-hint" class="typing-hint">Aby wymienić litery: gdy nie układasz słowa, kliknij je na stojaku, potem naciśnij „Wymień litery”.</p>
+              <p id="exchange-hint" class="typing-hint">Aby wymienić litery: zakończ układanie słowa („Anuluj układanie”), kliknij litery na stojaku, potem naciśnij „Wymień litery”.</p>
               <p id="human-error" class="error" hidden></p>
               <div id="hint-toolbar" class="list-toolbar" hidden>
                 <span class="list-toolbar-label">Sortuj</span>

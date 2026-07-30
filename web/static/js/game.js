@@ -58,6 +58,7 @@ class GameController {
     this._elWordDisplay     = document.getElementById('human-word-display');
     this._elScorePreview    = document.getElementById('human-score-preview');
     this._btnPlaceHuman     = document.getElementById('btn-place-human');
+    this._btnCancelTyping   = document.getElementById('btn-cancel-typing');
     this._btnExchangeHuman  = document.getElementById('btn-exchange-human');
     this._btnSkipHuman      = document.getElementById('btn-skip-human');
     this._btnPassHuman      = document.getElementById('btn-pass-human');
@@ -300,6 +301,7 @@ class GameController {
     this._btnStartGame.addEventListener('click', () => this._startGame());
 
     this._btnPlaceHuman.addEventListener('click', () => this._submitHumanWord());
+    this._btnCancelTyping.addEventListener('click', () => this._cancelTyping());
     this._btnExchangeHuman.addEventListener('click', () => this._exchangeTiles());
     this._btnSkipHuman.addEventListener('click', () => this._skipTurn());
     this._btnPassHuman.addEventListener('click', () => this._passTurn());
@@ -322,12 +324,28 @@ class GameController {
     // Board cell click
     this._board.setOnCellClick((r, c) => this._onBoardCellClick(r, c));
 
+    // Clicking away from the board lets go of the selected square, so the
+    // rack goes back to picking tiles for exchange. Controls are exempt --
+    // pressing a button, a rack tile or a form field is not "clicking away".
+    // pointerdown rather than click: iOS Safari does not reliably fire click
+    // on plain, non-interactive elements, which is exactly what is being
+    // clicked here.
+    document.addEventListener('pointerdown', e => {
+      if (!this._board.isTyping()) return;
+      if (e.target.closest?.('#board, .rack-tile, button, input, select, textarea, label, a, dialog')) return;
+      this._cancelTyping();
+    });
+
     // Sync word display + trigger live validation + score preview on typing change
     this._board.setOnTypingUpdate(data => {
       this._elWordDisplay.textContent  = data ? data.word.toUpperCase() : '—';
       this._elScorePreview.textContent = '—';
       this._board.clearWordHighlight();
       this._syncRackWithTyping();
+      // Offer the way out only while there is something to get out of.
+      // `data` is null for an empty-but-active session too, so ask the
+      // board whether a square is selected rather than reading `data`.
+      if (this._btnCancelTyping) this._btnCancelTyping.hidden = !this._board.isTyping();
       clearTimeout(this._scorePreviewTimer);
       this._previewAbortCtrl?.abort();
       this._previewAbortCtrl = null;
@@ -825,6 +843,19 @@ class GameController {
     this._elTypingInput.focus({ preventScroll: true });
   }
 
+  /** Let go of the selected square: drop the word in progress, put its
+   * letters back on the rack and hand the rack back to exchange-picking.
+   * Reachable three ways -- Escape, the "Anuluj układanie" button, and a
+   * click anywhere outside the board (see _bindEvents) -- because on a
+   * phone the first of those does not exist. */
+  _cancelTyping() {
+    this._board.clearTyping();
+    this._typingStartR = null;
+    this._typingStartC = null;
+    // Dismisses the on-screen keyboard that _onBoardCellClick summoned.
+    this._elTypingInput.blur();
+  }
+
   /** Escape/Backspace/Enter/Space/Arrow handling shared between the
    * document-wide physical-keyboard listener and #board-typing-input's own
    * keydown (focused on mobile) -- letters are handled separately by each
@@ -835,8 +866,7 @@ class GameController {
     const horiz = this._selHumanDir.value === 'true';
     switch (e.key) {
       case 'Escape':
-        this._board.clearTyping();
-        this._typingStartR = null; this._typingStartC = null;
+        this._cancelTyping();
         e.preventDefault(); return true;
       case 'Backspace':
         this._board.typeBackspace(); e.preventDefault(); return true;
