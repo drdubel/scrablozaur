@@ -18,6 +18,17 @@ from scrablozaur import Board, Dawg
 # times as they want and never counts toward this on its own.
 _NO_PLAY_LIMIT = 2
 
+# Exchanging never counts toward _NO_PLAY_LIMIT (it's a legal, repeatable
+# action), which leaves a hole: StrategicPlayer exchanges whenever its best
+# move is worth < 6 points, so two of them can reach a state -- blocked/closed
+# board, or a rack pool that keeps producing junk while the bag still holds a
+# full rack -- where both sides exchange forever and play_game never returns.
+# Measured rate in self-play: ~2 games in 700_000, which is exactly the kind of
+# thing that silently wedges one worker (and therefore the whole batch) during
+# a multi-million-game generate_data.py run. The standard tournament rule caps
+# *scoreless* turns instead, and exchanges are scoreless, so mirror that here.
+_NO_SCORE_LIMIT = 6
+
 
 class GamePlayer(Protocol):
     score: int
@@ -32,6 +43,7 @@ def play_game(players: list[GamePlayer], dawg: Dawg, parallel: bool = False) -> 
     `players[0], players[1], players[0], ...`."""
     turn = 0
     no_play_streak = 0
+    no_score_streak = 0
     went_out_idx: int | None = None
     n = len(players)
 
@@ -41,14 +53,20 @@ def play_game(players: list[GamePlayer], dawg: Dawg, parallel: bool = False) -> 
         word = player.play_word(dawg, parallel=parallel)
         if word:
             no_play_streak = 0
+            no_score_streak = 0
             if not player.letters:
                 went_out_idx = idx
                 break
         elif word is None:
-            pass  # exchanged -- doesn't count toward the no-play streak
+            # Exchanged -- a real action, so it doesn't count toward the
+            # no-play streak, but it is scoreless and so must be bounded.
+            no_score_streak += 1
+            if no_score_streak >= _NO_SCORE_LIMIT:
+                break
         else:
             no_play_streak += 1
-            if no_play_streak >= _NO_PLAY_LIMIT:
+            no_score_streak += 1
+            if no_play_streak >= _NO_PLAY_LIMIT or no_score_streak >= _NO_SCORE_LIMIT:
                 break
         turn += 1
 

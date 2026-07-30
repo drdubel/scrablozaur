@@ -144,10 +144,16 @@ def generate(
     n_workers: int | None = None,
     quiet: bool = False,
 ) -> None:
-    all_leaves: list[str] = []
-    all_unseen: list[int] = []
-    all_board_features: list[tuple[float, ...]] = []
-    all_targets: list[int] = []
+    # Compacted per batch rather than kept as Python objects for the whole
+    # run: a (str, int, 5-float tuple, int) sample costs ~300-600 B as live
+    # objects but ~60 B as numpy rows, and a multi-million-game run produces
+    # tens of millions of samples (~30 per game). Holding them as objects is
+    # what makes `generate_data.py 2000000` climb into the tens of GB and
+    # eventually thrash/OOM; batching them into arrays keeps it in single-digit GB.
+    leaf_chunks: list[np.ndarray] = []
+    unseen_chunks: list[np.ndarray] = []
+    board_chunks: list[np.ndarray] = []
+    target_chunks: list[np.ndarray] = []
 
     # Mirrors src/main.py's benchmark(): only let the Rust side parallelize
     # a single move's search when there's just one Python worker process --
@@ -164,26 +170,41 @@ def generate(
                     executor.submit(_play_one_game, parallel, lookahead, player, model_path)
                     for _ in range(min(batch, n_games - i))
                 ]
+                batch_leaves: list[str] = []
+                batch_unseen: list[int] = []
+                batch_board: list[tuple[float, ...]] = []
+                batch_targets: list[int] = []
                 for future in as_completed(futures):
                     for samples in future.result():
                         for leave, unseen, board_features, target in samples:
-                            all_leaves.append(leave)
-                            all_unseen.append(unseen)
-                            all_board_features.append(board_features)
-                            all_targets.append(target)
+                            batch_leaves.append(leave)
+                            batch_unseen.append(unseen)
+                            batch_board.append(board_features)
+                            batch_targets.append(target)
                     pbar.update(1)
+                if batch_leaves:
+                    leaf_chunks.append(np.array(batch_leaves))
+                    unseen_chunks.append(np.array(batch_unseen, dtype=np.int32))
+                    board_chunks.append(np.array(batch_board, dtype=np.float32))
+                    target_chunks.append(np.array(batch_targets, dtype=np.int32))
+                del batch_leaves, batch_unseen, batch_board, batch_targets
+
+    leaves_arr = np.concatenate(leaf_chunks) if leaf_chunks else np.array([], dtype="<U1")
+    unseen_arr = np.concatenate(unseen_chunks) if unseen_chunks else np.array([], dtype=np.int32)
+    board_arr = np.concatenate(board_chunks) if board_chunks else np.zeros((0, 5), dtype=np.float32)
+    targets_arr = np.concatenate(target_chunks) if target_chunks else np.array([], dtype=np.int32)
+    del leaf_chunks, unseen_chunks, board_chunks, target_chunks
 
     elapsed = time.perf_counter() - wall_start
     if not quiet:
-        print(f"{n_games} games -> {len(all_leaves)} samples in {elapsed:.1f}s")
+        print(f"{n_games} games -> {len(leaves_arr)} samples in {elapsed:.1f}s")
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    board_arr = np.array(all_board_features, dtype=np.float32)
     np.savez(
         out_path,
-        leaves=np.array(all_leaves),
-        unseen=np.array(all_unseen, dtype=np.int32),
-        margins=np.array(all_targets, dtype=np.int32),
+        leaves=leaves_arr,
+        unseen=unseen_arr,
+        margins=targets_arr,
         tw_open=board_arr[:, 0],
         dw_open=board_arr[:, 1],
         tl_open=board_arr[:, 2],
