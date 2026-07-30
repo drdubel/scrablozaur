@@ -479,6 +479,17 @@ An 8-game 4-bot benchmark (`/api/benchmark`) at levels 1/3/6/8 averaged
 82 / 128 / 197 / 229 points: the dial is monotone in real play, not just on
 paper.
 
+Benchmark games run in a process pool. Each worker re-imports the app (torch)
+and loads its own DAWG + GADDAG, i.e. ~300 MB RSS, so the pool is deliberately
+small and is shut down once it has been idle for a while instead of sitting on
+the memory for the lifetime of the server:
+
+| Env var | Default | What |
+|:---|:---|:---|
+| `SCRABLOZAUR_BENCH_WORKERS` | `min(4, cores)` | benchmark worker processes (~300 MB each) |
+| `SCRABLOZAUR_BENCH_THREADS` | `min(4, cores/workers)` | rayon threads inside each worker |
+| `SCRABLOZAUR_BENCH_POOL_IDLE` | `120` | seconds of idleness before the pool is reaped (`0` = immediately) |
+
 ```bash
 uv sync
 uv run maturin develop --release

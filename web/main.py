@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from web.engine import get_dawg
+from web.game import shutdown_benchmark_pool
 from web.routers import benchmark as benchmark_router
 from web.routers import board as board_router
 from web.routers import game as game_router
@@ -18,6 +19,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 async def lifespan(app: FastAPI):
     get_dawg()  # load the 44 MB DAWG binary eagerly to avoid first-request latency
     yield
+    shutdown_benchmark_pool()  # don't leave ~300 MB/worker benchmark processes behind
 
 
 app = FastAPI(title="Scrablozaur", lifespan=lifespan)

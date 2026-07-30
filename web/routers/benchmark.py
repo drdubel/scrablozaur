@@ -17,8 +17,10 @@ router = APIRouter(prefix="/benchmark")
 # In-memory job store -- benchmarks run in a background thread (not
 # request-scoped) so the client can poll progress instead of blocking on one
 # long request. Bounded to the most recent jobs since this is a single-process
-# dev-scale tool, not a multi-tenant service.
-_MAX_JOBS = 20
+# dev-scale tool, not a multi-tenant service. Keep the bound small: a finished
+# job holds its best game's full move-by-move detail (a board + tile-owner grid
+# per move), so every retained job is megabytes that are never handed back.
+_MAX_JOBS = 5
 _jobs: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 _jobs_lock = threading.Lock()
 

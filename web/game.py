@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import os
 import random
 import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from scrablozaur import Board, Dawg
+from scrablozaur import Board, Dawg, set_num_threads
 from web.difficulty import DEFAULT_LEVEL, EngineMode, clamp_level, engine_mode
 from web.engine import DAWG_PATH, GADDAG_PATH
 
@@ -725,8 +727,16 @@ class _SimulatedGame:
 _worker_dawg: Dawg | None = None
 
 
-def _init_worker(dawg_path: str, gaddag_path: str) -> None:
+def _init_worker(dawg_path: str, gaddag_path: str, engine_threads: int) -> None:
     global _worker_dawg
+    # Split the cores between workers instead of letting every worker build the
+    # engine's default min(8, cores) rayon pool -- with one pool per worker that
+    # oversubscribes the box several times over (and every thread costs stack +
+    # arena memory). Same call as smart_player/arena.py.
+    try:
+        set_num_threads(engine_threads)
+    except RuntimeError:
+        pass  # pool already built -- nothing to do in a fresh worker anyway
     _worker_dawg = Dawg(dawg_path, gaddag_path)
 
 
@@ -760,21 +770,92 @@ def _simulate_game(player_specs: list[tuple[str, int]]) -> _SimulatedGame:
     return _SimulatedGame(players=players, moves=moves, move_count=move_count)
 
 
-# Lazily-created, process-lifetime pool shared by every benchmark run so
-# repeated benchmarks (e.g. clicking "Run again" on the website) don't pay
-# process-spawn + Dawg-load cost every time.
+# A benchmark worker is *expensive*: re-importing this module pulls in torch and
+# the leave model, and every worker loads its own copy of the DAWG + GADDAG
+# (~300 MB RSS per process, measured). Defaulting to os.cpu_count() workers and
+# keeping them alive for the lifetime of the server therefore pinned several GB
+# after the first benchmark and never gave it back. So: cap the pool well below
+# the core count and tear it down once it has been idle for a while.
+BENCHMARK_WORKERS = max(1, int(os.environ.get("SCRABLOZAUR_BENCH_WORKERS") or 0)
+                        or min(4, os.cpu_count() or 1))
+# Rayon threads *inside* each worker (see _init_worker): share the cores out
+# rather than giving every worker a full-width pool.
+BENCHMARK_ENGINE_THREADS = max(1, int(os.environ.get("SCRABLOZAUR_BENCH_THREADS") or 0)
+                               or min(4, (os.cpu_count() or 1) // BENCHMARK_WORKERS))
+# Seconds of idleness after which the pool is shut down and its memory returned
+# to the OS. 0 (or less) means "shut down as soon as a run finishes".
+BENCHMARK_POOL_IDLE_TIMEOUT = float(os.environ.get("SCRABLOZAUR_BENCH_POOL_IDLE") or 120.0)
+
 _executor: ProcessPoolExecutor | None = None
 _executor_lock = threading.Lock()
+_executor_users = 0
+_executor_reaper: threading.Timer | None = None
 
 
-def _get_executor() -> ProcessPoolExecutor:
-    global _executor
+def _shutdown_pool_locked() -> ProcessPoolExecutor | None:
+    """Detach the current pool (caller must hold _executor_lock, and must do
+    the actual shutdown outside it)."""
+    global _executor, _executor_reaper
+    if _executor_reaper is not None:
+        _executor_reaper.cancel()
+        _executor_reaper = None
+    executor, _executor = _executor, None
+    return executor
+
+
+def _reap_idle_pool() -> None:
     with _executor_lock:
+        if _executor_users:  # a run started while the timer was firing
+            return
+        executor = _shutdown_pool_locked()
+    if executor is not None:
+        executor.shutdown(wait=False)
+
+
+def shutdown_benchmark_pool() -> None:
+    """Drop the worker pool now (server shutdown / tests)."""
+    with _executor_lock:
+        executor = _shutdown_pool_locked()
+    if executor is not None:
+        executor.shutdown(wait=False)
+
+
+@contextmanager
+def _benchmark_pool() -> Iterator[ProcessPoolExecutor]:
+    """Lazily-created pool shared by concurrent benchmark runs so back-to-back
+    benchmarks (e.g. clicking "Run again") don't pay process-spawn +
+    Dawg-load cost every time -- but which is reaped once nobody is using it,
+    so idle workers don't sit on hundreds of MB each."""
+    global _executor, _executor_users, _executor_reaper
+    with _executor_lock:
+        if _executor_reaper is not None:
+            _executor_reaper.cancel()
+            _executor_reaper = None
         if _executor is None:
             _executor = ProcessPoolExecutor(
-                initializer=_init_worker, initargs=(str(DAWG_PATH), str(GADDAG_PATH))
+                max_workers=BENCHMARK_WORKERS,
+                initializer=_init_worker,
+                initargs=(str(DAWG_PATH), str(GADDAG_PATH), BENCHMARK_ENGINE_THREADS),
             )
-        return _executor
+        _executor_users += 1
+        executor = _executor
+    try:
+        yield executor
+    finally:
+        idle_executor = None
+        with _executor_lock:
+            _executor_users -= 1
+            if _executor_users == 0:
+                if BENCHMARK_POOL_IDLE_TIMEOUT > 0:
+                    _executor_reaper = threading.Timer(
+                        BENCHMARK_POOL_IDLE_TIMEOUT, _reap_idle_pool
+                    )
+                    _executor_reaper.daemon = True
+                    _executor_reaper.start()
+                else:
+                    idle_executor = _shutdown_pool_locked()
+        if idle_executor is not None:
+            idle_executor.shutdown(wait=False)
 
 
 def run_benchmark(
@@ -786,7 +867,7 @@ def run_benchmark(
     level) players end-to-end using the same engine primitives as a
     live game (_deal_new_game + computer_auto_play), never touching
     SessionStore. Games are independent, so they're farmed out across a
-    process pool (see _get_executor) instead of run one at a time. Returns
+    process pool (see _benchmark_pool) instead of run one at a time. Returns
     aggregate per-player stats plus the full move-by-move detail of whichever
     single game had the highest final score for any one player."""
     start = time.perf_counter()
@@ -798,50 +879,68 @@ def run_benchmark(
     longest_word_score = 0
     highest_single_move_score = 0
 
-    executor = _get_executor()
-    futures = [executor.submit(_simulate_game, player_specs) for _ in range(games)]
-    for done, future in enumerate(as_completed(futures), start=1):
-        sim = future.result()
-        players, moves = sim.players, sim.moves
-        total_moves += sim.move_count
+    with _benchmark_pool() as executor:
+        pending: set[Future[_SimulatedGame]] = {
+            executor.submit(_simulate_game, player_specs) for _ in range(games)
+        }
+        try:
+            # `as_completed` gets its own copy of the futures and releases each
+            # one as it yields it; `pending` is drained in step so that a
+            # finished game's move-by-move detail (a full board + tile-owner
+            # grid *per move*, i.e. megabytes per game) is freed as soon as it
+            # has been folded into the stats, instead of every game's detail
+            # piling up until the whole run ends.
+            for done, future in enumerate(as_completed(set(pending)), start=1):
+                pending.discard(future)
+                sim = future.result()
+                players, moves = sim.players, sim.moves
+                total_moves += sim.move_count
 
-        for move in moves:
-            if not move.passed:
-                s = stats[move.player_idx]
-                s.words_played += 1
-                s.total_word_score += move.score
-                highest_single_move_score = max(highest_single_move_score, move.score)
-                if longest_word is None or len(move.word) > len(longest_word):
-                    longest_word, longest_word_score = move.word, move.score
+                for move in moves:
+                    if not move.passed:
+                        s = stats[move.player_idx]
+                        s.words_played += 1
+                        s.total_word_score += move.score
+                        highest_single_move_score = max(highest_single_move_score, move.score)
+                        if longest_word is None or len(move.word) > len(longest_word):
+                            longest_word, longest_word_score = move.word, move.score
 
-        top_score = max(p.score for p in players)
-        winners = [p for p in players if p.score == top_score]
-        for i, p in enumerate(players):
-            s = stats[i]
-            s.games_played += 1
-            s.total_score += p.score
-            if s.games_played == 1:
-                s.high_score, s.low_score = p.score, p.score
-            else:
-                s.high_score = max(s.high_score, p.score)
-                s.low_score = min(s.low_score, p.score)
-            if p.score == top_score:
-                if len(winners) > 1:
-                    s.ties += 1
-                else:
-                    s.wins += 1
+                top_score = max(p.score for p in players)
+                winners = [p for p in players if p.score == top_score]
+                for i, p in enumerate(players):
+                    s = stats[i]
+                    s.games_played += 1
+                    s.total_score += p.score
+                    if s.games_played == 1:
+                        s.high_score, s.low_score = p.score, p.score
+                    else:
+                        s.high_score = max(s.high_score, p.score)
+                        s.low_score = min(s.low_score, p.score)
+                    if p.score == top_score:
+                        if len(winners) > 1:
+                            s.ties += 1
+                        else:
+                            s.wins += 1
 
-        if top_score > best_score:
-            best_score = top_score
-            best_game = BenchmarkBestGame(
-                winner_name=winners[0].name if len(winners) == 1 else "Remis",
-                winner_score=top_score,
-                final_players=list(players),
-                moves=moves,
-            )
+                if top_score > best_score:
+                    best_score = top_score
+                    best_game = BenchmarkBestGame(
+                        winner_name=winners[0].name if len(winners) == 1 else "Remis",
+                        winner_score=top_score,
+                        final_players=list(players),
+                        moves=moves,
+                    )
 
-        if on_game_done:
-            on_game_done(done)
+                if on_game_done:
+                    on_game_done(done)
+
+                # Only the best game's detail is kept; drop this one's now
+                # rather than waiting for the next loop iteration to rebind.
+                del sim, future, players, moves
+        finally:
+            for f in pending:
+                f.cancel()
+            pending.clear()
 
     duration_ms = int((time.perf_counter() - start) * 1000)
     return BenchmarkResult(
