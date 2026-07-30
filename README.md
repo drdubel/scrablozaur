@@ -271,10 +271,20 @@ print(f"Player 1: {players[0].score}  Player 2: {players[1].score}")
 print(b)
 ```
 
-`src/strategy.py` ships ready-made `SimplePlayer`/`StrategicPlayer` classes
-(and `smart_player/player.py` a learned `SmartPlayer`) that wrap this loop
-with tile exchanging and the same end-of-game scoring — see
-[`smart_player/README.md`](smart_player/README.md).
+Ready-made players wrap this loop with tile exchanging, and all of them end a
+game by the same rules (`src/rules.py`):
+
+| Player | Where | Picks its move by |
+|---|---|---|
+| `SimplePlayer` | `src/strategy.py` | highest score |
+| `StrategicPlayer` | `src/strategy.py` | highest score (its leave term is constant, so it is greedy in practice) |
+| `RankedPlayer` | `src/strategy.py` | a rank window below the best, for the beatable difficulty tiers |
+| `SmartPlayer` | `smart_player/player.py` | score plus a learned value for the rack it leaves behind |
+| `SimPlayer` | `smart_player/sim_player.py` | Monte-Carlo simulation of what each candidate concedes |
+
+`SmartPlayer` and `SimPlayer` also search the endgame exactly once the bag is
+empty. See [`smart_player/README.md`](smart_player/README.md) for how they are
+trained and what each piece is worth.
 
 ---
 
@@ -443,7 +453,9 @@ under `web/static/`, Polish UI). All routers are mounted under `/api`:
 
 The scan assistant is backed by the computer-vision pipeline in
 [`board_reader/`](board_reader/README.md); the playable board and its bots are
-backed by `src/strategy.py` and [`smart_player/`](smart_player/README.md).
+backed by `src/strategy.py` and [`smart_player/`](smart_player/README.md) — the
+web bot calls the same decision functions the CLI players do, and
+`tests/test_web_agrees_with_cli.py` asserts the two never diverge.
 
 ```bash
 uv sync
@@ -459,7 +471,8 @@ scrablozaur/
 │   ├── lib.rs           # Rust engine: DAWG/GADDAG, Board, move search, scoring
 │   ├── main.rs          # thin binary entry point (delegates to lib.rs's CLI)
 │   ├── main.py          # Python self-play benchmark script (`graj()`, `benchmark()`)
-│   ├── strategy.py      # SimplePlayer / StrategicPlayer bot classes
+│   ├── strategy.py      # SimplePlayer / StrategicPlayer / RankedPlayer bot classes
+│   ├── rules.py         # when a game ends and how it is finally scored (one definition)
 │   └── verify_engine.py # engine sanity checks
 ├── web/                 # FastAPI web app (game UI + board scanner + benchmark UI)
 │   ├── main.py          # app entry point (`uvicorn web.main:app`)
@@ -475,7 +488,8 @@ scrablozaur/
 ├── test/                # sample board states (.in files) for manual testing
 ├── tests/
 │   ├── cli_build.rs     # `cargo test` integration test for the CLI
-│   └── test_strategy.py # player-logic tests
+│   ├── test_strategy.py # player-logic tests
+│   └── test_web_agrees_with_cli.py  # the web app and the CLI must choose the same move
 ├── scrablozaur.pyi      # Python type stubs (installed as scrablozaur/__init__.pyi)
 ├── pyproject.toml       # uv-managed Python dependencies (web/ + board_reader/ + smart_player/)
 ├── uv.lock
