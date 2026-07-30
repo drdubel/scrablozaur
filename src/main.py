@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from scrablozaur import Board, Dawg
 from smart_player.player import SmartPlayer
+from smart_player.sim_player import SimPlayer
 from strategy import SimplePlayer, StrategicPlayer
 
 d = Dawg("words/dawg.bin", "words/gaddag.bin")
@@ -125,6 +126,8 @@ def graj(
             p1 = StrategicPlayer(b)
         case "3":
             p1 = SmartPlayer(b)
+        case "4":
+            p1 = SimPlayer(b)
         case _:
             raise ValueError(f"Unknown player type: {p1_type}")
 
@@ -135,6 +138,8 @@ def graj(
             p2 = StrategicPlayer(b)
         case "3":
             p2 = SmartPlayer(b)
+        case "4":
+            p2 = SimPlayer(b)
         case _:
             raise ValueError(f"Unknown player type: {p2_type}")
 
@@ -368,14 +373,14 @@ if __name__ == "__main__":
         type=str,
         nargs="?",
         default="1",
-        help="Player 1 type: 1=Simple, 2=Strategic, 3=Smart (default: 1)",
+        help="Player 1 type: 1=Simple, 2=Strategic, 3=Smart, 4=Sim (default: 1)",
     )
     parser.add_argument(
         "p2",
         type=str,
         nargs="?",
         default="1",
-        help="Player 2 type: 1=Simple, 2=Strategic, 3=Smart (default: 1)",
+        help="Player 2 type: 1=Simple, 2=Strategic, 3=Smart, 4=Sim (default: 1)",
     )
     parser.add_argument(
         "--workers",

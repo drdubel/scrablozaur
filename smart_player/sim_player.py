@@ -34,6 +34,13 @@ from player import SmartPlayer  # noqa: E402
 
 DEFAULT_ITERATIONS = 200
 DEFAULT_CANDIDATES = 20
+# Deliberately *not* SmartPlayer's 0.8. Down-weighting the leave is a small win
+# for the static player, but measured inside the simulator it is neutral to
+# slightly negative (-5.9 +/- 5.8 pts over 80 pairs at w=0.8), which makes
+# sense: the sim's leaf already contains a realised score differential, so the
+# leave term is correcting a different quantity there. Left at 1.0 until a
+# bigger sim run says otherwise.
+SIM_LEAVE_WEIGHT = 1.0
 # One opponent reply, so both sides have played the same number of moves when
 # the position is scored. Measured against the alternatives (see
 # smart_player/README.md): the balanced 2v2 window (plies=3) is worth the same
@@ -79,9 +86,10 @@ class SimPlayer(SmartPlayer):
         iterations: int = DEFAULT_ITERATIONS,
         candidates: int = DEFAULT_CANDIDATES,
         plies: int = DEFAULT_PLIES,
+        leave_weight: float = SIM_LEAVE_WEIGHT,
         seed: int = 0,
     ) -> None:
-        super().__init__(board, model_path)
+        super().__init__(board, model_path, leave_weight)
         self.net = get_net(model_path)
         self.iterations = iterations
         self.candidates = candidates
@@ -108,6 +116,7 @@ class SimPlayer(SmartPlayer):
             candidates=self.candidates,
             iterations=self.iterations,
             plies=self.plies,
+            leave_weight=self.leave_weight,
             # Vary per decision, but reproducibly for a given player seed.
             seed=(self.seed * 0x9E3779B1 + self._decision) & 0xFFFFFFFFFFFFFFFF,
         )

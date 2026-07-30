@@ -43,7 +43,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import SimplePlayer, StrategicPlayer  # noqa: E402
 
 from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
-from player import SmartPlayer  # noqa: E402
+from player import DEFAULT_LEAVE_WEIGHT, SmartPlayer  # noqa: E402
 from sim_player import DEFAULT_CANDIDATES, DEFAULT_ITERATIONS, DEFAULT_PLIES, SimPlayer  # noqa: E402
 from simulate import GamePlayer, play_game  # noqa: E402
 
@@ -82,19 +82,23 @@ def make_player(spec: str, board: Board, seed: int = 0) -> GamePlayer:
     """Build a player from a spec string.
 
         simple | strategic
-        smart[:checkpoint.pt]
-        sim[:checkpoint.pt][@iterations[/candidates[/plies]]]
+        smart[:checkpoint.pt][~leave_weight]
+        sim[:checkpoint.pt][~leave_weight][@iterations[/candidates[/plies]]]
 
-    e.g. `sim`, `sim@500`, `sim@200/30/2`, `sim:models/cand.pt@200`.
+    e.g. `smart`, `smart~0.5`, `sim@500`, `sim~0.4@200/30/1`,
+    `sim:models/cand.pt@200`.
     """
     head, _, tuning = spec.partition("@")
+    head, _, weight = head.partition("~")
     name, _, path = head.partition(":")
+    leave_weight = float(weight) if weight else DEFAULT_LEAVE_WEIGHT
+
     if name == "simple":
         return SimplePlayer(board)
     if name == "strategic":
         return StrategicPlayer(board)
     if name == "smart":
-        return SmartPlayer(board, path or DEFAULT_WEIGHTS_PATH)
+        return SmartPlayer(board, path or DEFAULT_WEIGHTS_PATH, leave_weight)
     if name == "sim":
         parts = [p for p in tuning.split("/") if p]
         iterations = int(parts[0]) if len(parts) > 0 else DEFAULT_ITERATIONS
@@ -106,6 +110,7 @@ def make_player(spec: str, board: Board, seed: int = 0) -> GamePlayer:
             iterations=iterations,
             candidates=candidates,
             plies=plies,
+            leave_weight=leave_weight,
             seed=seed,
         )
     raise ValueError(f"unknown player spec {spec!r} (expected simple, strategic, smart, or sim)")

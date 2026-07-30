@@ -37,15 +37,42 @@ def remove_used(letters: str, used: list[str]) -> str:
     return letters
 
 
+# How heavily the learned leave value counts against a move's own score.
+#
+# This was implicitly 1.0, which looked suspicious: over ~30k leaves from real
+# self-play positions the model's predictions have a spread of 12.33 points
+# against a candidate-score spread of 12.8, so the leave term was weighted as
+# heavily as the actual points on the board -- an artefact of regressing a
+# 4-turn score-differential return (std 47.5) rather than a considered choice.
+#
+# Measured, at 2500 seeded pairs (5000 games) per point, against w = 1.0:
+#
+#   w    0.1     0.25    0.5     0.75    0.8     1.25    1.5     2.0
+#   pts  -25.0   -14.2   -2.1    +2.0    +2.5    -5.5    -32.1   -153.8
+#
+# So the implicit 1.0 was very nearly right, and the suspicion was wrong: the
+# term's *magnitude* is fine, and a 600-pair sweep that showed +7.7 at w=0.75
+# was noise -- at 2500 pairs 0.75 and 0.8 are a dead tie (-0.1 +/- 0.7). What
+# is left is a genuine but small +2.5 +/- 1.1 points/game, and the real problem
+# is the target's accuracy, not its scale (see README's "Simulation" section).
+DEFAULT_LEAVE_WEIGHT = 0.8
+
+
 class SmartPlayer(StrategicPlayer):
     """StrategicPlayer with a learned leave evaluator. `model_path` defaults
     to the current champion checkpoint; pass an explicit path to play a
     specific candidate/older checkpoint instead (used by evaluate.py's
     --candidate mode and iterate.py to pit checkpoints against each other)."""
 
-    def __init__(self, board: Board, model_path: str = DEFAULT_WEIGHTS_PATH) -> None:
+    def __init__(
+        self,
+        board: Board,
+        model_path: str = DEFAULT_WEIGHTS_PATH,
+        leave_weight: float = DEFAULT_LEAVE_WEIGHT,
+    ) -> None:
         super().__init__(board)
         self.model_path = model_path
+        self.leave_weight = leave_weight
 
     def get_best_word(
         self, dawg: Dawg, parallel: bool
@@ -65,10 +92,21 @@ class SmartPlayer(StrategicPlayer):
             remove_used(self.letters, used) for (_word, _pts, _pos, used) in words
         ]
         values = self._leave_values(leaves)
-        # Same key and first-max tie-break as StrategicPlayer's per-candidate
-        # max(evaluate_word): highest move score plus rounded leave value.
-        best_word, _ = max(zip(words, values), key=lambda wv: wv[0][1] + round(wv[1]))
+        # Highest move score plus the weighted leave value; `max` keeps the
+        # first at the maximum, so an exact tie still falls to the
+        # highest-scoring candidate as it always did.
+        best_word, _ = max(zip(words, values), key=lambda wv: self._rank(wv[0][1], wv[1]))
         return (best_word[0], best_word[1], best_word[2], best_word[3])
+
+    def _rank(self, points: int, leave_value: float) -> float:
+        """A candidate's ranking value: its score plus what it leaves behind.
+
+        No longer rounds the leave term. Rounding was there to reproduce an
+        older integer tie-break, but it quantises `leave_weight` away entirely
+        for weights below ~0.5 -- and the whole point of the weight is to find
+        out whether the leave term is currently over-counted.
+        """
+        return points + self.leave_weight * leave_value
 
     def evaluate_word(
         self,
@@ -77,12 +115,12 @@ class SmartPlayer(StrategicPlayer):
         points: int,
         position: tuple[int, int, bool],
         used: list[str],
-    ) -> int:
-        """Single-candidate ranking value (move score + rounded leave value).
+    ) -> float:
+        """Single-candidate ranking value (move score + weighted leave value).
         `get_best_word` ranks the real candidate set in one batched pass
         instead of calling this per candidate; kept for direct/external use."""
         leave = remove_used(self.letters, used)
-        return points + round(self._leave_value(leave))
+        return self._rank(points, self._leave_value(leave))
 
     def _leave_value(self, leave: str) -> float:
         """Predicted value of holding `leave`, in the current turn's board
@@ -148,14 +186,17 @@ class SmartPlayer(StrategicPlayer):
         genuinely no action is available (no legal word and can't exchange)."""
         word, points, position, used = self.get_best_word(dawg, parallel)
         word_value = (
-            points + round(self._leave_value(remove_used(self.letters, used)))
+            self._rank(points, self._leave_value(remove_used(self.letters, used)))
             if word
             else float("-inf")
         )
 
         if self.board.can_exchange():
             discard, exchange_value = self._best_exchange()
-            if round(exchange_value) > word_value:
+            # An exchange scores nothing, so its value is the kept leave alone --
+            # weighted the same way, which is why the weight genuinely moves the
+            # play-vs-exchange threshold instead of cancelling out.
+            if self._rank(0, exchange_value) > word_value:
                 self.exchange_letters(discard)
                 self.last_exchanged = True
                 return None

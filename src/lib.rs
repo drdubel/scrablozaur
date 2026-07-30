@@ -1472,7 +1472,7 @@ impl Board {
     /// rolled out against the same sampled tiles, and candidates whose interval
     /// falls clear of the leader's stop being sampled.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (dawg, net, letters, candidates=20, iterations=200, plies=1, batch=25, root_eval_cap=150, seed=0))]
+    #[pyo3(signature = (dawg, net, letters, candidates=20, iterations=200, plies=1, batch=25, root_eval_cap=150, leave_weight=1.0, seed=0))]
     fn simulate(
         &self,
         py: Python<'_>,
@@ -1484,6 +1484,7 @@ impl Board {
         plies: usize,
         batch: usize,
         root_eval_cap: usize,
+        leave_weight: f64,
         seed: u64,
     ) -> PyResult<Vec<(String, u32, (usize, usize, bool), Vec<char>, f64, f64, usize)>> {
         let Some(gaddag) = &dawg.gaddag else {
@@ -1497,6 +1498,7 @@ impl Board {
             batch,
             plies,
             root_eval_cap,
+            leave_weight,
             // A fixed default seed would make every position in every game
             // sample the same tile orders; mix in the position so it doesn't.
             seed: if seed == 0 { time_seed() } else { seed },
@@ -2734,6 +2736,11 @@ struct SimOpts {
     /// Root moves the net scores, by raw score. Bounds the once-per-decision
     /// cost of ranking a full move list.
     root_eval_cap: usize,
+    /// How heavily a leave counts against points actually scored. Applies both
+    /// to the rollout policy's own choices and to the leaf's leave difference.
+    /// See `DEFAULT_LEAVE_WEIGHT` in smart_player/player.py for why this is a
+    /// parameter rather than an implicit 1.0.
+    leave_weight: f64,
     seed: u64,
 }
 
@@ -2781,6 +2788,7 @@ impl Board {
         net: &LeaveNet,
         rack: &str,
         eval_cap: usize,
+        leave_weight: f64,
     ) -> Option<GenMove> {
         let mut moves = self.gaddag_generate(dawg, gaddag, rack, false, true);
         if moves.is_empty() {
@@ -2802,7 +2810,7 @@ impl Board {
             let used = self.hand_tiles_for_word(&m.3, m.0, m.1, m.2, rack);
             let leave = rack_after(rack, &used);
             let x = encode_leave_features(&leave, unseen_total, &feats);
-            let v = m.4 as f64 + net.forward(&x) as f64;
+            let v = m.4 as f64 + leave_weight * net.forward(&x) as f64;
             if v > best_v {
                 best_v = v;
                 best_i = i;
@@ -2826,6 +2834,7 @@ impl Board {
         cand: &SimCandidate,
         pool: &[char],
         plies: usize,
+        leave_weight: f64,
     ) -> f64 {
         let mut board = self.clone();
         board.apply_move(&cand.word, cand.pos.0, cand.pos.1, cand.pos.2, &cand.used);
@@ -2853,7 +2862,9 @@ impl Board {
             } else {
                 my_rack.clone()
             };
-            if let Some(m) = board.best_static_move(dawg, gaddag, net, &rack, ROLLOUT_EVAL_CAP) {
+            if let Some(m) =
+                board.best_static_move(dawg, gaddag, net, &rack, ROLLOUT_EVAL_CAP, leave_weight)
+            {
                 let used = board.hand_tiles_for_word(&m.3, m.0, m.1, m.2, &rack);
                 let left = rack_after(&rack, &used);
                 board.apply_move(&m.3, m.0, m.1, m.2, &used);
@@ -2877,7 +2888,7 @@ impl Board {
         let unseen_left = pool.len().saturating_sub(cursor);
         let my_leave_v = net.forward(&encode_leave_features(&my_rack, unseen_left, &feats)) as f64;
         let opp_leave_v = net.forward(&encode_leave_features(&opp_rack, unseen_left, &feats)) as f64;
-        (my_gain - opp_gain) as f64 + my_leave_v - opp_leave_v
+        (my_gain - opp_gain) as f64 + leave_weight * (my_leave_v - opp_leave_v)
     }
 
     /// Rank `rack`'s plays by simulation. Returns the surviving candidates,
@@ -2924,7 +2935,7 @@ impl Board {
                 let used = self.hand_tiles_for_word(&word, r, c, h, rack);
                 let leave = rack_after(rack, &used);
                 let x = encode_leave_features(&leave, unseen_total, &feats);
-                let static_equity = score as f64 + net.forward(&x) as f64;
+                let static_equity = score as f64 + opts.leave_weight * net.forward(&x) as f64;
                 SimCandidate {
                     word,
                     score,
@@ -2972,7 +2983,11 @@ impl Board {
                         shuffle(&mut shuffled, &mut rng);
                         cands
                             .iter()
-                            .map(|c| self.rollout(dawg, gaddag, net, c, &shuffled, opts.plies))
+                            .map(|c| {
+                                self.rollout(
+                                    dawg, gaddag, net, c, &shuffled, opts.plies, opts.leave_weight,
+                                )
+                            })
                             .collect()
                     })
                     .collect()
