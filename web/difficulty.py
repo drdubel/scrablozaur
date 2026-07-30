@@ -93,35 +93,35 @@ class LevelInfo:
     slow: bool
 
 
-# Name + expectation per level. Deliberately about the *experience* ("you
-# should win most games"), because that is what someone setting a slider is
-# actually choosing; the mechanical half of the description is generated.
+# Name + expectation per level. Written in a neutral, descriptive register:
+# each entry states the competitive level of the opponent and its practical
+# consequence for the game; the mechanical half of the description is generated.
 _LEVELS: dict[int, tuple[str, str, str]] = {
-    1: ("Nowicjusz", "🌱", "Wygrasz bez wysiłku — dobre na pierwszą partię i na naukę zasad."),
-    2: ("Początkujący", "🍀", "Powinieneś wygrywać niemal zawsze, ale komputer trafi kilka porządnych słów."),
-    3: ("Amator", "🎈", "Wygrasz, jeśli nie będziesz przepuszczał premii."),
-    4: ("Domowy gracz", "🎲", "Wyrównana partia dla kogoś, kto gra w Scrabble od czasu do czasu."),
-    5: ("Klubowy", "🎯", "Musisz grać uważnie: komputer regularnie wchodzi na premie."),
-    6: ("Mocny", "🔥", "Przegrasz, jeśli zmarnujesz choć kilka ruchów."),
-    7: ("Wymagający", "🧗", "Prawie zawsze wybiera jeden z dwóch najlepszych ruchów. Trudny przeciwnik."),
-    8: ("Bezlitosny", "💀", "Zawsze zagrywa najwyżej punktujący ruch, jaki istnieje na planszy."),
-    9: ("Sprytny", "🧠", "Gra jak silny turniejowy gracz — czasem zagra mniej punktów, żeby zostawić sobie lepsze litery."),
-    10: ("Wizjoner", "🔮", "Najsilniejszy przeciwnik, jakiego mamy. Zanim zagra, sprawdza, co możesz odpowiedzieć."),
+    1: ("Wprowadzający", "🌱", "Poziom szkoleniowy z wyraźną przewagą gracza. Zalecany do nauki zasad."),
+    2: ("Początkujący", "🍀", "Zdecydowana przewaga gracza; przeciwnik znajduje jedynie pojedyncze wartościowe słowa."),
+    3: ("Rekreacyjny", "🎈", "Przeciwnik gra poprawnie, ale rzadko wykorzystuje pola premiowane."),
+    4: ("Towarzyski", "🎲", "Wyrównana rywalizacja na poziomie gry towarzyskiej."),
+    5: ("Klubowy", "🎯", "Poziom klubowy: przeciwnik systematycznie sięga po pola premiowane i wymaga uważnej gry."),
+    6: ("Zaawansowany", "🔥", "Wysoki poziom gry — każdy słabszy ruch szybko przekłada się na stratę punktową."),
+    7: ("Ekspert", "🧗", "Przeciwnik niemal zawsze wybiera jeden z dwóch najlepiej punktujących ruchów."),
+    8: ("Maksymalizator", "💀", "Przeciwnik zawsze zagrywa ruch o najwyższej możliwej punktacji na planszy."),
+    9: ("Strateg", "🧠", "Poziom turniejowy: punktacja bilansowana z jakością liter pozostawianych na stojaku."),
+    10: ("Analityk", "🔮", "Najwyższy dostępny poziom: przed wyborem ruchu analizowane są możliwe odpowiedzi gracza."),
 }
 
 
 def _summary(level: int) -> str:
     mode = engine_mode(level)
     if mode is EngineMode.SIM:
-        return "Symuluje odpowiedzi przeciwnika (Monte-Carlo) i wybiera ruch o najlepszym bilansie."
+        return "Symuluje odpowiedzi przeciwnika metodą Monte-Carlo i wybiera ruch o najlepszym bilansie punktowym."
     if mode is EngineMode.SMART:
-        return "Ocenia ruch razem z resztą stojaka, którą po nim zostawia."
+        return "Ocenia ruch łącznie z wartością liter pozostających na stojaku."
     best, worst = rank_window(level)
     if best == worst == 1:
-        return "Zawsze wybiera ruch nr 1 z listy najlepiej punktujących."
+        return "Zawsze wybiera ruch nr 1 w rankingu najlepiej punktujących."
     if best == worst:
-        return f"Zawsze wybiera ruch nr {best} z listy najlepiej punktujących."
-    return f"Losuje spośród ruchów nr {best}–{worst} na liście najlepiej punktujących."
+        return f"Zawsze wybiera ruch nr {best} w rankingu najlepiej punktujących."
+    return f"Losuje spośród ruchów nr {best}–{worst} w rankingu najlepiej punktujących."
 
 
 def describe_level(level: int) -> LevelInfo:
