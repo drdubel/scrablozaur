@@ -5,14 +5,11 @@ import sys
 import threading
 import time
 import uuid
-from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-
-import torch
 
 from scrablozaur import Board, Dawg
 from web.engine import DAWG_PATH, GADDAG_PATH
@@ -24,8 +21,14 @@ SMART_PLAYER_SRC = Path(__file__).resolve().parent.parent / "smart_player"
 if str(SMART_PLAYER_SRC) not in sys.path:
     sys.path.insert(0, str(SMART_PLAYER_SRC))
 
-from board_features import encode_board  # noqa: E402
-from model import encode_leave, get_model  # noqa: E402
+from player import choose_move  # noqa: E402
+from sim_player import choose_move_sim  # noqa: E402
+
+# The endgame search is bounded by a node budget. The CLI's 300k default has a
+# measured 9.4s worst case -- fine for a benchmark, not for someone waiting on a
+# web request. The median endgame needs ~16k nodes, so this keeps essentially
+# all of the strength while bounding the tail.
+WEB_ENDGAME_NODES = 50_000
 
 
 class GameMode(str, Enum):
@@ -40,6 +43,9 @@ class Difficulty(str, Enum):
     HARD = "hard"
     IMPOSSIBLE = "impossible"
     SMART = "smart"
+    # Monte-Carlo simulation: the strongest tier, and the only one that spends
+    # real time thinking (~110 ms/move), hence the threadpool hop in the routers.
+    SIM = "sim"
 
 
 # Polish Scrabble tile distribution: letter → count (100 tiles total)
@@ -460,64 +466,69 @@ def _pick_by_difficulty(suggestions: list[dict], difficulty: Difficulty) -> dict
     return random.choices(suggestions, weights=weights, k=1)[0]
 
 
-def _unseen_tile_count(session: GameSession, rack: str) -> int:
-    """Tiles not yet on the board or in this player's own hand -- still in
-    the bag or an opponent's rack. Mirrors StrategicPlayer.get_letters_left
-    (src/strategy.py), the feature the leave-value model was trained on."""
-    board_letters = [ch for grid_row in session.board_grid() for ch in grid_row if ch != "-"]
-    seen = Counter(board_letters) + Counter(rack)
-    return sum((Counter(Board.fresh_tile_bag()) - seen).values())
+def _pick_engine_move(session: GameSession, dawg: Dawg, difficulty: Difficulty) -> dict | None:
+    """The strong tiers' move choice, delegated to `smart_player`.
 
+    SMART and SIM do not pick from the suggestion list at all -- they run the
+    same decision the CLI players run, so there is exactly one implementation
+    of it. This replaced a hand-rolled copy here that had drifted: it ignored
+    `leave_weight`, scored candidates one at a time instead of batching, and
+    never searched the endgame.
 
-def _pick_smart(session: GameSession, suggestions: list[dict]) -> dict:
-    """Rank suggestions by predicted total value: raw score plus
-    smart_player's learned leave-value model's estimate of the rack the move
-    would leave behind (see smart_player/player.py's SmartPlayer.evaluate_word)
-    -- instead of raw score alone, which can't tell two same-scoring
-    candidates apart even when one leaves a much better rack."""
-    if len(suggestions) == 1:
-        return suggestions[0]
-
+    `bag_remaining` comes from `session.tile_bag`, not from the engine Board --
+    the web app keeps its own bag and never draws from the Board's, so the
+    Board's count is meaningless here and would leave the endgame search
+    permanently switched off (or wrongly switched on).
+    """
     rack = session.current_player.letters
-    board_grid = session.board_grid()
-    board_features = encode_board(session.board)
-    unseen_tiles = _unseen_tile_count(session, rack)
-    model = get_model()
+    bag_remaining = session.tile_bag.remaining() if session.tile_bag else 0
 
-    best_sug, best_value = suggestions[0], float("-inf")
-    with torch.inference_mode():
-        for sug in suggestions:
-            leave = _leave_after_word(rack, sug["word"], board_grid, sug["row"], sug["col"], sug["horizontal"])
-            x = encode_leave(leave, unseen_tiles, board_features)
-            total = sug["score"] + model(x.unsqueeze(0)).item()
-            if total > best_value:
-                best_value, best_sug = total, sug
-
-    return best_sug
+    if difficulty == Difficulty.SIM:
+        choice = choose_move_sim(
+            session.board, dawg, rack, bag_remaining, endgame_max_nodes=WEB_ENDGAME_NODES
+        )
+    else:
+        choice = choose_move(
+            session.board, dawg, rack, bag_remaining, endgame_max_nodes=WEB_ENDGAME_NODES
+        )
+    if not choice.word:
+        return None
+    row, col, horizontal = choice.position
+    return {
+        "word": choice.word,
+        "score": choice.score,
+        "row": row,
+        "col": col,
+        "horizontal": horizontal,
+        "cells": [
+            (row, col + i) if horizontal else (row + i, col) for i in range(len(choice.word))
+        ],
+    }
 
 
 def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
     """Play a move for the computer weighted by its own difficulty, then advance the turn."""
     player_idx = session.current_player_idx
     difficulty = session.current_player.difficulty
-    # Fetch enough candidates so difficulty has real choices; cap at 30 for
-    # speed (50 for SMART, matching smart_player's own candidate count).
-    if difficulty == Difficulty.IMPOSSIBLE:
-        n_candidates = 1
-    elif difficulty == Difficulty.SMART:
-        n_candidates = 50
-    else:
-        n_candidates = 30
-    suggestions = get_suggestions(session, dawg, n=n_candidates)
 
-    if not suggestions:
+    if difficulty in (Difficulty.SMART, Difficulty.SIM):
+        # These tiers make the full decision themselves rather than sampling a
+        # shortlist -- they weigh the leave, and search the endgame outright.
+        sug = _pick_engine_move(session, dawg, difficulty)
+    else:
+        # The weighted tiers need a spread of candidates to sample from;
+        # IMPOSSIBLE only ever takes the best one.
+        n_candidates = 1 if difficulty == Difficulty.IMPOSSIBLE else 30
+        suggestions = get_suggestions(session, dawg, n=n_candidates)
+        sug = _pick_by_difficulty(suggestions, difficulty) if suggestions else None
+
+    if sug is None:
         session.consecutive_no_play += 1
         _check_game_over(session, player_idx)
         if not session.game_over:
             session.advance_turn()
         return ComputerMoveInfo(word="", score=0, row=0, col=0, horizontal=True, passed=True)
 
-    sug = _pick_smart(session, suggestions) if difficulty == Difficulty.SMART else _pick_by_difficulty(suggestions, difficulty)
     word, row, col, horizontal = sug["word"], sug["row"], sug["col"], sug["horizontal"]
 
     grid = session.board_grid()
@@ -540,94 +551,48 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
 # ── Suggestion generation ─────────────────────────────────────────────────────
 
 
+def _engine_suggestions(board: Board, dawg: Dawg, letters: str, n: int) -> list[dict]:
+    """Top `n` plays, straight from the engine's GADDAG generator.
+
+    This used to be two hand-rolled searches: a centre-covering scan for the
+    opening, and a per-board-span scan for everything after. The span scan kept
+    only the *best word per span* before ranking, so it systematically missed
+    plays -- measured against the engine over 1167 real positions, it returned a
+    lower top score in 5.1% of them, losing 35 points on average when it did, or
+    about 1.8 points per move overall. That handicapped every difficulty tier
+    and both human-facing hint endpoints.
+
+    `Board.get_best_words` enumerates every legal play and returns the true top
+    `n`, and picks the opening path itself when the board is empty, so one call
+    replaces both.
+    """
+    return [
+        {
+            "word": word,
+            "score": score,
+            "row": row,
+            "col": col,
+            "horizontal": horizontal,
+            "cells": [
+                (row, col + i) if horizontal else (row + i, col) for i in range(len(word))
+            ],
+        }
+        for word, score, (row, col, horizontal), _used in board.get_best_words(dawg, letters, n)
+    ]
+
+
 def get_suggestions(session: GameSession, dawg: Dawg, n: int = 10) -> list[dict]:
     letters = session.current_player.letters
     if not letters:
         return []
-    if session.is_first_move:
-        return _first_move_suggestions(session.board, dawg, letters, n)
-    return _subsequent_suggestions(session.board, dawg, letters, n)
-
-
-def _first_move_suggestions(board: Board, dawg: Dawg, letters: str, n: int) -> list[dict]:
-    candidates: list[dict] = []
-    seen: set[tuple[str, int, int, bool]] = set()
-
-    for word in dawg.search("*", letters):
-        word_len = len(word)
-        for offset in range(min(7, word_len)):
-            col = 7 - offset
-            if col + word_len - 1 > 14:
-                continue
-            key = (word, 7, col, True)
-            if key in seen:
-                continue
-            seen.add(key)
-            try:
-                score = board.calculate_word_points(word, 7, col, True, letters)
-                if score > 0:
-                    candidates.append(
-                        {
-                            "word": word,
-                            "score": score,
-                            "row": 7,
-                            "col": col,
-                            "horizontal": True,
-                            "cells": [(7, col + i) for i in range(word_len)],
-                        }
-                    )
-            except Exception:
-                pass
-
-    candidates.sort(key=lambda x: -x["score"])
-    return candidates[:n]
-
-
-def _subsequent_suggestions(board: Board, dawg: Dawg, letters: str, n: int) -> list[dict]:
-    candidates: list[dict] = []
-    seen: set[tuple[str, int, int, bool]] = set()
-
-    for index, start, end, horizontal in board.get_all_patterns():
-        row, col = (index, start) if horizontal else (start, index)
-        word = board.best_word_from_pattern(dawg, row, col, end, horizontal, letters)
-        if not word:
-            continue
-        key = (word, row, col, horizontal)
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            score = board.calculate_word_points(word, row, col, horizontal, letters)
-            if score <= 0:
-                continue
-            word_len = len(word)
-            cells = (
-                [(row, col + i) for i in range(word_len)] if horizontal else [(row + i, col) for i in range(word_len)]
-            )
-            candidates.append(
-                {
-                    "word": word,
-                    "score": score,
-                    "row": row,
-                    "col": col,
-                    "horizontal": horizontal,
-                    "cells": cells,
-                }
-            )
-        except Exception:
-            pass
-
-    candidates.sort(key=lambda x: -x["score"])
-    return candidates[:n]
+    return _engine_suggestions(session.board, dawg, letters, n)
 
 
 def get_suggestions_for_letters(session: GameSession, dawg: Dawg, letters: str, n: int = 10) -> list[dict]:
     """Like get_suggestions but uses the supplied letters instead of current player's rack."""
     if not letters:
         return []
-    if session.is_first_move:
-        return _first_move_suggestions(session.board, dawg, letters, n)
-    return _subsequent_suggestions(session.board, dawg, letters, n)
+    return _engine_suggestions(session.board, dawg, letters, n)
 
 
 def compute_move_rating(session: GameSession, dawg: Dawg, letters: str, actual_score: int) -> int:

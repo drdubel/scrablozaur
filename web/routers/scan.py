@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 
 from web.engine import Board, Dawg, get_dawg
-from web.game import _first_move_suggestions, _subsequent_suggestions
+from web.game import _engine_suggestions
 from web.models import (
     SaveTrainingResponse,
     ScanBoardResponse,
@@ -170,8 +170,9 @@ async def suggest_for_scan(
 
     letters = body.letters.lower()
     board = Board.from_grid(session.board)
-    fn = _first_move_suggestions if board_is_empty(session.board) else _subsequent_suggestions
-    raw = fn(board, dawg, letters, 10)
+    # `get_best_words` picks the opening path itself from the board's own
+    # first-move flag, which `from_grid` derives from the grid.
+    raw = _engine_suggestions(board, dawg, letters, 10)
     suggestions = [Suggestion(**s) for s in raw]
     return SuggestionsResponse(suggestions=suggestions, letters=letters)
 

@@ -5,6 +5,7 @@ import urllib.parse
 import urllib.request
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from web.engine import Dawg, get_dawg
 from web.game import (GameMode, _check_game_over, _deduct_tiles, _refill_rack,
@@ -124,7 +125,7 @@ async def place_human_word(
         session.advance_turn()
 
     if session.game_mode == GameMode.COMPETITIVE and not session.game_over:
-        session.last_computer_move = computer_auto_play(session, dawg)
+        session.last_computer_move = await run_in_threadpool(computer_auto_play, session, dawg)
 
     return _state_response(session)
 
@@ -149,7 +150,7 @@ async def skip_turn(
     if not session.game_over:
         session.advance_turn()
         if session.game_mode == GameMode.COMPETITIVE:
-            session.last_computer_move = computer_auto_play(session, dawg)
+            session.last_computer_move = await run_in_threadpool(computer_auto_play, session, dawg)
 
     return _state_response(session)
 
@@ -169,7 +170,7 @@ async def next_auto_move(
         raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
 
     session.push_undo()
-    session.last_computer_move = computer_auto_play(session, dawg)
+    session.last_computer_move = await run_in_threadpool(computer_auto_play, session, dawg)
     return _state_response(session)
 
 
@@ -212,7 +213,7 @@ async def exchange_tiles(
 
     if not session.game_over:
         session.advance_turn()
-        session.last_computer_move = computer_auto_play(session, dawg)
+        session.last_computer_move = await run_in_threadpool(computer_auto_play, session, dawg)
 
     return _state_response(session)
 

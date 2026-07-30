@@ -10,6 +10,7 @@ heuristic (`get_letters_to_exchange`, src/strategy.py).
 import itertools
 import os
 import sys
+from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -59,6 +60,114 @@ def remove_used(letters: str, used: list[str]) -> str:
 # tie -- and nearly discarded a real five-point improvement.
 DEFAULT_LEAVE_WEIGHT = 1.0
 
+# Candidates pulled from the engine before ranking them by leave value.
+DEFAULT_N_CANDIDATES = 50
+
+# Standard rack capacity, used as a sanity bound on a deduced opponent rack.
+MAX_RACK = 7
+
+# Endgame node budget. The CLI can afford the default 300k (median 16k nodes,
+# but a measured 9.4s worst case); an interactive caller should pass something
+# smaller to bound the tail -- see `web/game.py`.
+DEFAULT_ENDGAME_NODES = 300_000
+
+_NO_MOVE = ("", 0, (0, 0, True), [])
+
+
+class MoveChoice(NamedTuple):
+    """A chosen play, plus whatever the endgame search reported about it.
+
+    The first four fields match the engine's own move tuple, so callers can
+    unpack them the same way `Board.get_best_words` results are unpacked.
+    """
+
+    word: str
+    score: int
+    position: tuple[int, int, bool]
+    used: list[str]
+    endgame_diff: int | None = None
+    endgame_exact: bool | None = None
+
+
+def leave_values(
+    leaves: list[str],
+    unseen_tiles: int,
+    board_features: tuple[float, ...],
+    model_path: str = DEFAULT_WEIGHTS_PATH,
+) -> list[float]:
+    """Predicted value of each leave, in one batched forward pass.
+
+    Reuses `model.encode_leaves` (the vectorized encoder built for dataset
+    construction), so the whole (N, INPUT_DIM) matrix comes from a handful of
+    numpy passes rather than N per-sample tensor builds.
+    """
+    if not leaves:
+        return []
+    unseen = np.full(len(leaves), unseen_tiles, dtype=np.float32)
+    board_feats = np.tile(np.asarray(board_features, dtype=np.float32), (len(leaves), 1))
+    x = encode_leaves(np.asarray(leaves), unseen, board_feats)
+    with torch.inference_mode():
+        return get_model(model_path)(x).tolist()
+
+
+def choose_move(
+    board: Board,
+    dawg: Dawg,
+    rack: str,
+    bag_remaining: int,
+    *,
+    model_path: str = DEFAULT_WEIGHTS_PATH,
+    leave_weight: float = DEFAULT_LEAVE_WEIGHT,
+    use_endgame: bool = True,
+    endgame_max_nodes: int = DEFAULT_ENDGAME_NODES,
+    n_candidates: int = DEFAULT_N_CANDIDATES,
+    candidates: list[tuple[str, int, tuple[int, int, bool], list[str]]] | None = None,
+    parallel: bool = False,
+) -> MoveChoice:
+    """Pick a move for `rack` on `board`: the whole static decision, as a
+    function of the position rather than of a player object.
+
+    This exists so the CLI players and the web app share one implementation.
+    They did not, and the web copy quietly drifted into generating candidates
+    the slow legacy way, ignoring `leave_weight`, and never searching endgames.
+
+    `bag_remaining` is passed in rather than read off the board because the web
+    app keeps its own `TileBag` and never draws from the engine's -- so
+    `Board.bag_remaining()` is meaningless there, and getting this wrong would
+    silently disable (or wrongly trigger) the endgame search.
+    """
+    # Once the bag is empty the position is fully known, so search it exactly
+    # rather than estimating. Only correct because the board tracks blanks.
+    if use_endgame and bag_remaining == 0:
+        counts = board.unseen_tile_counts(rack)
+        opponent_rack = "".join(ALPHABET[i] * n for i, n in enumerate(counts))
+        # A real endgame leaves the opponent at most a rack. Anything larger
+        # means `bag_remaining` disagrees with the board -- which the web app
+        # can produce, since it tracks its bag separately from the engine's
+        # grid -- and handing `solve_endgame` a 90-tile rack does not fail, it
+        # simply never returns. Fall through to the static decision instead.
+        if opponent_rack and len(opponent_rack) <= MAX_RACK:
+            word, score, position, used, diff, _nodes, exact = board.solve_endgame(
+                dawg, rack, opponent_rack, endgame_max_nodes
+            )
+            # An empty word means passing beat every play; the caller's game
+            # loop reads that as a no-play, which is what a pass is.
+            return MoveChoice(word, score, position, used, diff, exact)
+
+    if candidates is None:
+        candidates = board.get_best_words(dawg, rack, n_candidates, parallel)
+    if not candidates:
+        return MoveChoice(*_NO_MOVE)
+
+    board_features = encode_board(board)
+    unseen_tiles = sum(board.unseen_tile_counts(rack))
+    leaves = [remove_used(rack, used) for (_w, _s, _pos, used) in candidates]
+    values = leave_values(leaves, unseen_tiles, board_features, model_path)
+    # `max` keeps the first at the maximum, so an exact tie still falls to the
+    # highest-scoring candidate.
+    best, _ = max(zip(candidates, values), key=lambda cv: cv[0][1] + leave_weight * cv[1])
+    return MoveChoice(best[0], best[1], best[2], best[3])
+
 
 class SmartPlayer(StrategicPlayer):
     """StrategicPlayer with a learned leave evaluator. `model_path` defaults
@@ -89,57 +198,37 @@ class SmartPlayer(StrategicPlayer):
         candidate's hypothetical placement does -- so they are computed once and
         reused by every leave valuation this turn, including `play_word`'s
         play-vs-exchange comparison.
+
+        The count comes from `unseen_tile_counts` rather than
+        `len(get_letters_left())` so it agrees with `choose_move`. The two
+        differ only when a blank on the board makes the Python side's Counter
+        subtraction clamp at zero -- at most two tiles, i.e. 0.02 in the scaled
+        feature -- and the engine's version is the correct one.
         """
         self._board_features = encode_board(self.board)
-        self._unseen_tiles = len(self.get_letters_left())
-
-    def _endgame_move(self, dawg: Dawg) -> tuple[str, int, tuple[int, int, bool], list[str]] | None:
-        """Searched best play once the bag is empty, or `None` while it isn't.
-
-        With no tiles left to draw the game stops being a game of chance: the
-        opponent holds exactly the tiles that are neither on the board nor in
-        our own rack, so the position is fully known and worth searching
-        instead of guessing at. Estimating is at its weakest here and the
-        margins are at their most decisive.
-        """
-        if not self.use_endgame or self.board.bag_remaining() > 0:
-            return None
-        counts = self.board.unseen_tile_counts(self.letters)
-        opponent_rack = "".join(ALPHABET[i] * n for i, n in enumerate(counts))
-        if not opponent_rack:
-            # Opponent is already out; there is no game left to search.
-            return None
-        word, score, position, used, diff, _nodes, exact = self.board.solve_endgame(
-            dawg, self.letters, opponent_rack
-        )
-        self.last_endgame_diff, self.last_endgame_exact = diff, exact
-        # An empty word means the search preferred to pass, which the game loop
-        # reads as a no-play -- exactly what a pass is, and the search already
-        # accounted for the fact that two in a row end the game.
-        return (word, score, position, used)
+        self._unseen_tiles = sum(self.board.unseen_tile_counts(self.letters))
 
     def get_best_word(
         self, dawg: Dawg, parallel: bool
     ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
         self._cache_turn_context()
-        endgame = self._endgame_move(dawg)
-        if endgame is not None:
-            return endgame
-        # Score every candidate's leave in a *single* batched forward pass,
-        # rather than one batch-size-1 forward (and its per-call dispatch
-        # overhead) per candidate.
-        words = self.get_best_words(dawg, self.letters, parallel)
-        if not words:
-            return ("", 0, (0, 0, True), [])
-        leaves = [
-            remove_used(self.letters, used) for (_word, _pts, _pos, used) in words
-        ]
-        values = self._leave_values(leaves)
-        # Highest move score plus the weighted leave value; `max` keeps the
-        # first at the maximum, so an exact tie still falls to the
-        # highest-scoring candidate as it always did.
-        best_word, _ = max(zip(words, values), key=lambda wv: self._rank(wv[0][1], wv[1]))
-        return (best_word[0], best_word[1], best_word[2], best_word[3])
+        # `choose_move` generates its own candidates: passing
+        # `self.get_best_words(...)` eagerly would build a 50-move shortlist on
+        # every endgame turn only to discard it, and nothing overrides that
+        # method anyway.
+        choice = choose_move(
+            self.board,
+            dawg,
+            self.letters,
+            self.board.bag_remaining(),
+            model_path=self.model_path,
+            leave_weight=self.leave_weight,
+            use_endgame=self.use_endgame,
+            parallel=parallel,
+        )
+        self.last_endgame_diff = choice.endgame_diff
+        self.last_endgame_exact = choice.endgame_exact
+        return (choice.word, choice.score, choice.position, choice.used)
 
     def _rank(self, points: int, leave_value: float) -> float:
         """A candidate's ranking value: its score plus what it leaves behind.
@@ -179,21 +268,9 @@ class SmartPlayer(StrategicPlayer):
             return get_model(self.model_path)(x.unsqueeze(0)).item()
 
     def _leave_values(self, leaves: list[str]) -> list[float]:
-        """Batched `_leave_value`: predicted value of each leave in `leaves`,
-        in the current turn's cached board context, via one forward pass.
-        Reuses model.encode_leaves (the vectorized encoder already used for
-        dataset construction) so the whole (N, INPUT_DIM) batch is built with
-        a handful of numpy passes rather than N per-sample tensor builds."""
-        if not leaves:
-            return []
-        leaves_arr = np.asarray(leaves)
-        unseen = np.full(len(leaves), self._unseen_tiles, dtype=np.float32)
-        board_feats = np.tile(
-            np.asarray(self._board_features, dtype=np.float32), (len(leaves), 1)
-        )
-        x = encode_leaves(leaves_arr, unseen, board_feats)
-        with torch.inference_mode():
-            return get_model(self.model_path)(x).tolist()
+        """Batched `_leave_value`, in the turn context cached by
+        `_cache_turn_context`. Used by the exchange search."""
+        return leave_values(leaves, self._unseen_tiles, self._board_features, self.model_path)
 
     def _best_exchange(self) -> tuple[str, float]:
         """Brute-force every non-empty subset of the rack to discard (i.e.

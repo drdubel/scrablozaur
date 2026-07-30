@@ -22,6 +22,7 @@ quantities. Simulation only chooses *which word*.
 
 import os
 import sys
+from typing import NamedTuple
 
 from scrablozaur import Board, Dawg, LeaveNet
 
@@ -29,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from export_weights import DEFAULT_BIN_PATH, export  # noqa: E402
 from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
-from player import SmartPlayer  # noqa: E402
+from player import DEFAULT_ENDGAME_NODES, SmartPlayer, choose_move  # noqa: E402
 
 DEFAULT_ITERATIONS = 200
 DEFAULT_CANDIDATES = 20
@@ -49,6 +50,83 @@ SIM_LEAVE_WEIGHT = 1.0
 DEFAULT_PLIES = 1
 
 _nets: dict[str, LeaveNet] = {}
+
+
+class SimChoice(NamedTuple):
+    """A simulated play. First four fields match the engine's move tuple.
+
+    `equity` is on the same points scale as a move's score but accounts for
+    what the move concedes; `stderr` says how well the simulation resolved it.
+    Both are `None` when the move came from the endgame search instead, which
+    reports a proven differential rather than a sampled estimate.
+    """
+
+    word: str
+    score: int
+    position: tuple[int, int, bool]
+    used: list[str]
+    equity: float | None = None
+    stderr: float | None = None
+    endgame_diff: int | None = None
+    endgame_exact: bool | None = None
+
+
+def choose_move_sim(
+    board: Board,
+    dawg: Dawg,
+    rack: str,
+    bag_remaining: int,
+    *,
+    model_path: str = DEFAULT_WEIGHTS_PATH,
+    iterations: int = DEFAULT_ITERATIONS,
+    candidates: int = DEFAULT_CANDIDATES,
+    plies: int = DEFAULT_PLIES,
+    leave_weight: float = SIM_LEAVE_WEIGHT,
+    use_endgame: bool = True,
+    endgame_max_nodes: int = DEFAULT_ENDGAME_NODES,
+    seed: int = 0,
+) -> SimChoice:
+    """Pick a move by simulation, as a function of the position.
+
+    Shared by `SimPlayer` and the web app so there is one implementation. See
+    `player.choose_move` for why `bag_remaining` is a parameter rather than
+    read off the board.
+    """
+    # Nothing left to sample once the bag is empty -- search it instead.
+    if use_endgame and bag_remaining == 0:
+        endgame = choose_move(
+            board,
+            dawg,
+            rack,
+            bag_remaining,
+            model_path=model_path,
+            leave_weight=leave_weight,
+            use_endgame=True,
+            endgame_max_nodes=endgame_max_nodes,
+        )
+        return SimChoice(
+            endgame.word,
+            endgame.score,
+            endgame.position,
+            endgame.used,
+            endgame_diff=endgame.endgame_diff,
+            endgame_exact=endgame.endgame_exact,
+        )
+
+    results = board.simulate(
+        dawg,
+        get_net(model_path),
+        rack,
+        candidates=candidates,
+        iterations=iterations,
+        plies=plies,
+        leave_weight=leave_weight,
+        seed=seed,
+    )
+    if not results:
+        return SimChoice("", 0, (0, 0, True), [])
+    word, score, position, used, equity, stderr, _n = results[0]
+    return SimChoice(word, score, position, used, equity, stderr)
 
 
 def get_net(pt_path: str = DEFAULT_WEIGHTS_PATH, bin_path: str | None = None) -> LeaveNet:
@@ -105,30 +183,23 @@ class SimPlayer(SmartPlayer):
         # against exchanging, so they have to be set even though the simulation
         # computes its own copies engine-side.
         self._cache_turn_context()
-
-        # Once the bag is empty there is nothing left to sample: the position is
-        # fully known, so search it exactly rather than rolling out guesses.
-        endgame = self._endgame_move(dawg)
-        if endgame is not None:
-            self.last_equity = self.last_stderr = None
-            return endgame
-
         self._decision += 1
-        results = self.board.simulate(
+
+        choice = choose_move_sim(
+            self.board,
             dawg,
-            self.net,
             self.letters,
-            candidates=self.candidates,
+            self.board.bag_remaining(),
+            model_path=self.model_path,
             iterations=self.iterations,
+            candidates=self.candidates,
             plies=self.plies,
             leave_weight=self.leave_weight,
+            use_endgame=self.use_endgame,
             # Vary per decision, but reproducibly for a given player seed.
             seed=(self.seed * 0x9E3779B1 + self._decision) & 0xFFFFFFFFFFFFFFFF,
         )
-        if not results:
-            self.last_equity = self.last_stderr = None
-            return ("", 0, (0, 0, True), [])
-
-        word, score, pos, used, equity, stderr, _n = results[0]
-        self.last_equity, self.last_stderr = equity, stderr
-        return (word, score, pos, used)
+        self.last_equity, self.last_stderr = choice.equity, choice.stderr
+        self.last_endgame_diff = choice.endgame_diff
+        self.last_endgame_exact = choice.endgame_exact
+        return (choice.word, choice.score, choice.position, choice.used)

@@ -10,13 +10,13 @@ from pydantic import BaseModel, Field
 class NewPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     is_computer: bool = False
-    difficulty: Literal["easy", "medium", "hard", "impossible", "smart"] = "hard"
+    difficulty: Literal["easy", "medium", "hard", "impossible", "smart", "sim"] = "hard"
 
 
 class NewGameRequest(BaseModel):
     players: list[NewPlayerConfig] = Field(..., min_length=1, max_length=4)
     game_mode: Literal["sandbox", "sandbox_auto", "competitive"] = "sandbox"
-    difficulty: Literal["easy", "medium", "hard", "impossible", "smart"] = "hard"
+    difficulty: Literal["easy", "medium", "hard", "impossible", "smart", "sim"] = "hard"
 
 
 class PlaceHumanWordRequest(BaseModel):
@@ -57,7 +57,7 @@ class PlaceComputerWordRequest(BaseModel):
 
 class BenchmarkPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
-    difficulty: Literal["easy", "medium", "hard", "impossible", "smart"] = "hard"
+    difficulty: Literal["easy", "medium", "hard", "impossible", "smart", "sim"] = "hard"
 
 
 class BenchmarkRequest(BaseModel):
