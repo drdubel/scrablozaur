@@ -228,9 +228,7 @@ def run(
 
     try:
         with ProcessPoolExecutor(max_workers=n_workers, initializer=_init_worker) as executor:
-            futures = [
-                executor.submit(play_pair, spec_a, spec_b, _splitmix64(seed0 + i)) for i in range(pairs)
-            ]
+            futures = [executor.submit(play_pair, spec_a, spec_b, _splitmix64(seed0 + i)) for i in range(pairs)]
             for future in tqdm(as_completed(futures), total=pairs, desc=label, disable=quiet):
                 results.append(future.result())
     except KeyboardInterrupt:
@@ -252,13 +250,17 @@ def _print_summary(spec_a: str, spec_b: str, s: dict[str, float]) -> None:
     print(f"  A = {spec_a}")
     print(f"  B = {spec_b}")
     print(f"  {int(s['wins'])}W {int(s['losses'])}L {int(s['ties'])}T")
-    print(f"  match score : {ms * 100:.2f}% +/- {se * 100:.2f}pp (95% CI {(ms - 1.96 * se) * 100:.2f} - {(ms + 1.96 * se) * 100:.2f})")
+    print(
+        f"  match score : {ms * 100:.2f}% +/- {se * 100:.2f}pp (95% CI {(ms - 1.96 * se) * 100:.2f} - {(ms + 1.96 * se) * 100:.2f})"
+    )
     print(f"  elo         : {s['elo']:+.0f}  (95% CI {_elo(ms - 1.96 * se):+.0f} to {_elo(ms + 1.96 * se):+.0f})")
     print(f"  win rate    : {s['win_rate'] * 100:.2f}%  (ties dropped; comparable to evaluate.py)")
     print(f"  mean margin : {s['mean_margin']:+.1f} +/- {s['margin_se']:.1f} pts")
     if s["margin_se"] > 0:
-        print(f"  pairing cut the margin std error {s['unpaired_margin_se'] / s['margin_se']:.2f}x "
-              f"(unpaired would be {s['unpaired_margin_se']:.1f})")
+        print(
+            f"  pairing cut the margin std error {s['unpaired_margin_se'] / s['margin_se']:.2f}x "
+            f"(unpaired would be {s['unpaired_margin_se']:.1f})"
+        )
     else:
         # Two deterministic, identical players on a mirrored bag play the same
         # game twice with the labels swapped, so every pair cancels exactly.
@@ -270,7 +272,9 @@ def _print_summary(spec_a: str, spec_b: str, s: dict[str, float]) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--a", required=True, help="Player A spec: simple | strategic | smart[:checkpoint.pt]")
+    ap.add_argument(
+        "--a", required=True, help="Player A spec: simple | strategic | smart[:checkpoint.pt] | sim[:checkpoint.pt]"
+    )
     ap.add_argument("--b", required=True, help="Player B spec (same syntax)")
     ap.add_argument("--pairs", type=int, default=500, help="Seeded bag pairs; each is 2 games (default: 500)")
     ap.add_argument("--seed", type=int, default=0, help="Base seed, so a run is reproducible (default: 0)")
