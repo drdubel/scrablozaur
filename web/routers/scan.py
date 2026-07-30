@@ -4,10 +4,12 @@ import json
 import tempfile
 from pathlib import Path
 
+from starlette.concurrency import run_in_threadpool
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 
 from web.engine import Board, Dawg, get_dawg
-from web.game import _engine_suggestions
+from web.game import SORT_MODES, rank_suggestions
 from web.models import (
     SaveTrainingResponse,
     ScanBoardResponse,
@@ -172,7 +174,9 @@ async def suggest_for_scan(
     board = Board.from_grid(session.board)
     # `get_best_words` picks the opening path itself from the board's own
     # first-move flag, which `from_grid` derives from the grid.
-    raw = _engine_suggestions(board, dawg, letters, 10)
+    if body.sort not in SORT_MODES:
+        raise HTTPException(status_code=400, detail=f"Nieznany sposób sortowania: {body.sort}")
+    raw = await run_in_threadpool(rank_suggestions, board, dawg, letters, 10, body.sort)
     suggestions = [Suggestion(**s) for s in raw]
     return SuggestionsResponse(suggestions=suggestions, letters=letters)
 

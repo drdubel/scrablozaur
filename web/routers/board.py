@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
 from web.engine import Dawg, get_dawg
-from web.game import (GameMode, _check_game_over, _deduct_tiles, _refill_rack,
+from web.game import (SORT_MODES, GameMode, _check_game_over, _deduct_tiles, _refill_rack,
                       _tiles_used_for_word, computer_auto_play, compute_move_rating,
                       get_suggestions, get_suggestions_for_letters, rack_contains,
                       validate_rack_for_word)
@@ -20,6 +20,14 @@ from web.routers.game import _require_session, _state_response
 router = APIRouter(prefix="/board")
 
 _SANDBOX_ONLY = "This endpoint is only available in sandbox mode."
+
+
+def _check_sort(sort: str) -> str:
+    """Validate the suggestion sort mode, rejecting rather than silently
+    falling back -- a typo'd mode should not quietly return score order."""
+    if sort not in SORT_MODES:
+        raise HTTPException(status_code=400, detail=f"Nieznany sposób sortowania: {sort}")
+    return sort
 
 
 def _check_connectivity(session, word: str, row: int, col: int, horizontal: bool) -> None:
@@ -264,12 +272,15 @@ async def set_computer_letters(
 @router.post("/suggest", response_model=SuggestionsResponse)
 async def suggest_moves(
     request: Request,
+    sort: str = "score",
     dawg: Dawg = Depends(get_dawg),
 ) -> SuggestionsResponse:
     session = _require_session(request)
     if session.game_mode != GameMode.SANDBOX:
         raise HTTPException(status_code=400, detail=_SANDBOX_ONLY)
-    raw = get_suggestions(session, dawg, n=10)
+    # `sim` spends real time thinking, so it goes to a worker thread like the
+    # bot does rather than stalling the event loop.
+    raw = await run_in_threadpool(get_suggestions, session, dawg, 10, _check_sort(sort))
     suggestions = [Suggestion(**s) for s in raw]
     return SuggestionsResponse(suggestions=suggestions, letters=session.current_player.letters)
 
@@ -277,13 +288,16 @@ async def suggest_moves(
 @router.get("/hints", response_model=SuggestionsResponse)
 async def get_hints(
     request: Request,
+    sort: str = "score",
     dawg: Dawg = Depends(get_dawg),
 ) -> SuggestionsResponse:
     session = _require_session(request)
     if session.game_mode != GameMode.COMPETITIVE:
         raise HTTPException(status_code=400, detail="Podpowiedzi dostępne tylko w trybie rywalizacji.")
     letters = session.current_player.letters
-    raw = get_suggestions_for_letters(session, dawg, letters, n=20)
+    raw = await run_in_threadpool(
+        get_suggestions_for_letters, session, dawg, letters, 20, _check_sort(sort)
+    )
     suggestions = [Suggestion(**s) for s in raw]
     return SuggestionsResponse(suggestions=suggestions, letters=letters)
 

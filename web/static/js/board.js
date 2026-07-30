@@ -162,10 +162,15 @@ class BoardRenderer {
    * @param {(number|null)[][]} owners  15×15 player-index ownership (null = empty) --
    *   tinted by seat index (0-3) so each player's tiles are visually distinct,
    *   regardless of how many players or whether they're human/computer.
+   * @param {boolean[][]} blanks   15×15 mask of squares holding a blank tile.
+   *   The grid stores a blank as the letter it stands in for, so this is the
+   *   only way to tell them apart -- and they differ where it matters: a blank
+   *   scores 0 for every word played through it, forever.
    */
-  render(grid, owners = null) {
+  render(grid, owners = null, blanks = null) {
     this._grid   = grid;
     this._owners = owners ?? Array.from({ length: 15 }, () => Array(15).fill(null));
+    this._blanks = blanks ?? Array.from({ length: 15 }, () => Array(15).fill(false));
     this.clearHighlights();
     this._typing = null;
     this._onTypingUpdate?.(null);
@@ -177,7 +182,7 @@ class BoardRenderer {
         if (letter !== '-') {
           const ownerIdx = this._owners[r][c];
           cell.className = 'cell placed' + (ownerIdx !== null ? ` placed-owner-${ownerIdx}` : '');
-          this._setTileLetter(cell, letter);
+          this._setTileLetter(cell, letter, '', this._blanks[r][c]);
         } else {
           const bonus = BONUS_GRID[r][c];
           cell.className   = 'cell ' + bonus;
@@ -187,12 +192,18 @@ class BoardRenderer {
     }
   }
 
-  /** Render a letter + its point value into a cell. */
-  _setTileLetter(cell, letter, extraClass = '') {
-    const val = LETTER_VALUES[letter.toLowerCase()] ?? 0;
+  /** Render a letter + its point value into a cell.
+   *
+   * A blank keeps showing the letter it was played as -- you need to read the
+   * board -- but scores 0 and is marked, because "which of these is the blank"
+   * decides whether a hook is worth playing.
+   */
+  _setTileLetter(cell, letter, extraClass = '', isBlank = false) {
+    const val = isBlank ? 0 : (LETTER_VALUES[letter.toLowerCase()] ?? 0);
     cell.innerHTML =
       `<span class="tile-letter">${letter.toUpperCase()}</span>` +
       `<span class="tile-val">${val}</span>`;
+    if (isBlank) cell.classList.add('tile-blank');
     if (extraClass) cell.classList.add(extraClass);
   }
 

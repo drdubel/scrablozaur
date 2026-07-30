@@ -844,6 +844,26 @@ dialog h2 {
   opacity: 0.85;
 }
 
+/* A blank keeps showing the letter it was played as -- you have to be able to
+   read the board -- but has to be identifiable at a glance, because it scores 0
+   for every word played through it for the rest of the game. Dashed outline for
+   the tile, and its "0" is dimmed rather than hidden so the value is still
+   legible next to the neighbouring tiles' real ones. */
+.cell.placed.tile-blank {
+  border-style: dashed;
+  border-width: 2px;
+  border-color: var(--color-accent, #6b7fd7);
+}
+
+.cell.placed.tile-blank .tile-letter {
+  font-style: italic;
+  opacity: 0.88;
+}
+
+.cell.placed.tile-blank .tile-val {
+  opacity: 0.5;
+}
+
 /* Per-player tile tint, keyed by seat index -- see --gradient-owner-* above. */
 .cell.placed-owner-0 {
   background: var(--gradient-owner-0);
@@ -2035,4 +2055,37 @@ select:focus {
   .benchmark-replay-scoreboard .score-label {
     max-width: none;
   }
+}
+/* Sort control above each suggestion list. Sits inline with the list header so
+   it reads as a property of the list rather than another action button. */
+.sort-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.35rem 0 0.25rem;
+  font-size: 0.82rem;
+}
+
+.sort-label {
+  color: var(--color-muted);
+}
+
+.sort-select {
+  padding: 0.15rem 0.35rem;
+  font-size: 0.82rem;
+  font-family: inherit;
+  border: 1px solid var(--color-placed-border, #ccc);
+  border-radius: 4px;
+  background: var(--color-surface, #fff);
+  color: inherit;
+}
+
+/* The number the list was ordered by, when that is not just the score. Dimmed
+   so it reads as an annotation next to the points, not a competing figure. */
+.sug-value,
+.hint-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8em;
+  opacity: 0.75;
+  color: var(--color-muted);
 }

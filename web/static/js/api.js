@@ -57,8 +57,8 @@ class ApiClient {
     return this._request('POST', '/board/set-letters', { letters });
   }
 
-  getSuggestions() {
-    return this._request('POST', '/board/suggest');
+  getSuggestions(sort = 'score') {
+    return this._request('POST', `/board/suggest?sort=${encodeURIComponent(sort)}`);
   }
 
   placeComputerWord(word, row, col, horizontal, score) {
@@ -73,8 +73,8 @@ class ApiClient {
     return this._request('GET', `/board/definition/${encodeURIComponent(word)}`);
   }
 
-  getHints() {
-    return this._request('GET', '/board/hints');
+  getHints(sort = 'score') {
+    return this._request('GET', `/board/hints?sort=${encodeURIComponent(sort)}`);
   }
 
   nextAutoMove() {
@@ -122,8 +122,8 @@ class ApiClient {
     return this._request('POST', '/scan/recheck', { board, locked });
   }
 
-  suggestForScan(letters) {
-    return this._request('POST', '/scan/suggest', { letters });
+  suggestForScan(letters, sort = 'score') {
+    return this._request('POST', '/scan/suggest', { letters, sort });
   }
 
   saveTrainingExample(file, board) {

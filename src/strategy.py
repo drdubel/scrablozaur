@@ -1,9 +1,47 @@
+import random
 from collections import Counter
 
 from scrablozaur import Board, Dawg
 
 VOWELS = "aąeęioóuy"
 CONSONANTS = "bcćdfghjklłmnńprsśtwzżź"
+
+# Rank windows for the beatable difficulty tiers, as (best, worst) 1-based ranks
+# into the candidate list ordered by StrategicPlayer's own evaluation.
+#
+# A weaker opponent should play a *worse move*, not a differently-chosen one, so
+# every tier ranks candidates identically and only differs in how far down the
+# list it reaches. Picking uniformly inside a window rather than at a fixed rank
+# keeps games from repeating themselves; clamping to the list length means a
+# position offering three legal plays still works.
+RANK_WINDOWS: dict[str, tuple[int, int]] = {
+    "impossible": (1, 1),
+    "hard": (1, 3),
+    "medium": (5, 12),
+    "easy": (15, 30),
+}
+
+
+def pick_by_rank(
+    ranked: list[tuple[str, int, tuple[int, int, bool], list[str]]],
+    difficulty: str,
+) -> tuple[str, int, tuple[int, int, bool], list[str]] | None:
+    """Choose from a best-first candidate list by `difficulty`'s rank window.
+
+    A free function rather than a method so the web app picks its bot's move
+    with exactly this code instead of a lookalike -- the same arrangement
+    `smart_player.player.choose_move` uses, and for the same reason: the last
+    time the web had its own copy of a decision, it silently drifted.
+    """
+    if not ranked:
+        return None
+    best, worst = RANK_WINDOWS[difficulty]
+    # Clamp into range: a position offering two legal plays cannot honour a
+    # window starting at rank 15, and should fall back to the worst it has
+    # rather than failing or silently playing the best.
+    hi = min(worst, len(ranked))
+    lo = min(best, hi)
+    return ranked[random.randint(lo, hi) - 1]
 
 
 class SimplePlayer:
@@ -220,3 +258,39 @@ class StrategicPlayer:
 
         self.draw_letters()
         return word
+
+
+class RankedPlayer(StrategicPlayer):
+    """A StrategicPlayer that deliberately plays a worse move.
+
+    The difficulty tiers used to live in `web/game.py` as a weighted-random
+    sample over raw scores, which meant the web had a notion of "a weaker
+    opponent" that no simulator could reproduce -- so tier strength could not be
+    benchmarked, only guessed at. As a player class it runs anywhere the others
+    do, including `arena.py` and self-play.
+
+    It ranks candidates exactly as `StrategicPlayer` does and then reaches
+    further down the list; `difficulty` names a window in `RANK_WINDOWS`.
+    """
+
+    def __init__(self, board: Board, difficulty: str = "hard") -> None:
+        super().__init__(board)
+        if difficulty not in RANK_WINDOWS:
+            raise ValueError(f"unknown difficulty {difficulty!r} (expected one of {sorted(RANK_WINDOWS)})")
+        self.difficulty = difficulty
+
+    def get_best_word(
+        self, dawg: Dawg, parallel: bool
+    ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
+        words = self.get_best_words(dawg, self.letters, parallel)
+        if not words:
+            return ("", 0, (0, 0, True), [])
+
+        # Same ordering StrategicPlayer's argmax would produce, kept whole so a
+        # rank can be taken from it.
+        self._leave_points = sum(self.board.letter_points(ch) for ch in self.get_letters_left())
+        ranked = sorted(words, key=lambda w: self.evaluate_word(dawg, *w), reverse=True)
+        chosen = pick_by_rank(ranked, self.difficulty)
+        if chosen is None:
+            return ("", 0, (0, 0, True), [])
+        return (chosen[0], chosen[1], chosen[2], chosen[3])

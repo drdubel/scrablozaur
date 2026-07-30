@@ -68,6 +68,7 @@ class GameController {
     this._btnSkipComputer   = document.getElementById('btn-skip-computer');
     this._elSuggestError    = document.getElementById('suggest-error');
     this._elSuggestionList  = document.getElementById('suggestion-list');
+    this._elSuggestionSort  = document.getElementById('suggestion-sort');
 
     this._panelAuto         = document.getElementById('panel-auto');
     this._elAutoCurrent     = document.getElementById('panel-auto-current');
@@ -96,6 +97,7 @@ class GameController {
 
     this._btnHints              = document.getElementById('btn-hints');
     this._elHintList            = document.getElementById('hint-list');
+    this._elHintSort            = document.getElementById('hint-sort');
     this._elRatingPanel         = document.getElementById('rating-panel');
     this._elRatingArc           = document.getElementById('rating-arc');
     this._elRatingValue         = document.getElementById('rating-value');
@@ -373,11 +375,17 @@ class GameController {
     });
 
     this._btnSuggest.addEventListener('click', () => this._getSuggestions());
+    this._elSuggestionSort?.addEventListener('change', () => {
+      if (!this._elSuggestionList.hidden) this._getSuggestions();
+    });
     this._inComputerLetters.addEventListener('keydown', e => {
       if (e.key === 'Enter') this._getSuggestions();
     });
 
     this._btnHints.addEventListener('click', () => this._loadHints());
+    this._elHintSort?.addEventListener('change', () => {
+      if (!this._elHintList.hidden) this._loadHints();
+    });
   }
 
   async init() {
@@ -468,7 +476,7 @@ class GameController {
       if (opts.popLog) this._autoMoveLog.pop();
     }
 
-    this._board.render(state.board, state.tile_owners ?? null);
+    this._board.render(state.board, state.tile_owners ?? null, state.board_blanks ?? null);
     this._renderScoreboard(state);
 
     this._suggestions = [];
@@ -1079,7 +1087,7 @@ class GameController {
     this._setLoading(this._btnSuggest, true);
     try {
       await this._api.setComputerLetters(letters);
-      const res = await this._api.getSuggestions();
+      const res = await this._api.getSuggestions(this._elSuggestionSort?.value ?? 'score');
       this._suggestions = res.suggestions;
       this._renderSuggestions();
     } catch (err) {
@@ -1102,6 +1110,11 @@ class GameController {
       li.querySelector('.sug-rank').textContent  = `${i + 1}.`;
       li.querySelector('.sug-word').textContent  = sug.word.toUpperCase();
       li.querySelector('.sug-score').textContent = `${sug.score} pkt`;
+      // Only worth showing when the ordering is by something other than the
+      // score, otherwise it just repeats the column next to it.
+      const sugValue = li.querySelector('.sug-value');
+      if (sugValue) sugValue.textContent =
+        this._rankedValueLabel(sug, this._elSuggestionSort?.value ?? 'score');
       li.querySelector('.sug-pos').textContent   =
         `w${sug.row} k${sug.col} ${sug.horizontal ? '→' : '↓'}`;
       li.querySelector('.btn-preview').addEventListener('click', () => this._previewSuggestion(i));
@@ -1187,7 +1200,7 @@ class GameController {
     }
     this._setLoading(this._btnHints, true);
     try {
-      const res = await this._api.getHints();
+      const res = await this._api.getHints(this._elHintSort?.value ?? 'score');
       this._hints = res.suggestions;
       this._renderHintList();
       this._btnHints.textContent = 'Ukryj podpowiedzi';
@@ -1196,6 +1209,17 @@ class GameController {
     } finally {
       this._setLoading(this._btnHints, false);
     }
+  }
+
+  /** Label for the number a suggestion list was ordered by.
+   *
+   * Blank in score order: repeating the score in the next column tells the
+   * player nothing. Under `smart` or `sim` the ordering is not obvious from
+   * the visible scores, so the value that produced it is worth showing.
+   */
+  _rankedValueLabel(sug, mode) {
+    if (sug.value == null || mode === 'score') return '';
+    return `${sug.value > 0 ? '+' : ''}${sug.value}`;
   }
 
   _renderHintList() {
@@ -1211,7 +1235,8 @@ class GameController {
       li.innerHTML =
         `<span class="hint-rank">${i + 1}.</span>` +
         `<span class="hint-word">${sug.word.toUpperCase()}</span>` +
-        `<span class="hint-score">${sug.score} pkt</span>`;
+        `<span class="hint-score">${sug.score} pkt</span>` +
+        `<span class="hint-value">${this._rankedValueLabel(sug, this._elHintSort?.value ?? 'score')}</span>`;
       li.addEventListener('click', () => this._selectHint(i, li));
       this._elHintList.appendChild(li);
     }

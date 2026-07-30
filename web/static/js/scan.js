@@ -177,6 +177,7 @@ class ScanController {
     this._btnSuggest        = document.getElementById('btn-scan-suggest');
     this._elSuggestError     = document.getElementById('scan-suggest-error');
     this._elSuggestionList    = document.getElementById('scan-suggestion-list');
+    this._elSuggestionSort    = document.getElementById('scan-suggestion-sort');
     this._tplScanSuggestion   = document.getElementById('tpl-scan-suggestion');
     this._btnNextPhoto       = document.getElementById('btn-scan-next-photo');
     this._btnNewSession      = document.getElementById('btn-scan-new-session');
@@ -212,6 +213,9 @@ class ScanController {
     this._btnConfirm.addEventListener('click', () => this._confirmBoard());
 
     this._btnSuggest.addEventListener('click', () => this._loadSuggestions());
+    this._elSuggestionSort?.addEventListener('change', () => {
+      if (!this._elSuggestionList.hidden) this._loadSuggestions();
+    });
     this._rackInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') this._loadSuggestions();
     });
@@ -461,7 +465,7 @@ class ScanController {
     this._grid.clearHighlight();
     this._setLoading(this._btnSuggest, true);
     try {
-      const res = await this._api.suggestForScan(letters);
+      const res = await this._api.suggestForScan(letters, this._elSuggestionSort?.value ?? 'score');
       this._scanSuggestions = res.suggestions;
       this._renderScanSuggestions();
     } catch (err) {
@@ -483,6 +487,10 @@ class ScanController {
       li.querySelector('.hint-rank').textContent = `${i + 1}.`;
       li.querySelector('.hint-word').textContent = sug.word.toUpperCase();
       li.querySelector('.hint-score').textContent = `${sug.score} pkt`;
+      const valueEl = li.querySelector('.hint-value');
+      if (valueEl && sug.value != null && (this._elSuggestionSort?.value ?? 'score') !== 'score') {
+        valueEl.textContent = `${sug.value > 0 ? '+' : ''}${sug.value}`;
+      }
       li.querySelector('.hint-pos').textContent = `w${sug.row} k${sug.col} ${sug.horizontal ? '→' : '↓'}`;
       li.addEventListener('click', () => this._selectScanSuggestion(i, li));
       this._elSuggestionList.appendChild(li);

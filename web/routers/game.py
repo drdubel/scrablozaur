@@ -15,6 +15,7 @@ router = APIRouter(prefix="/game")
 def _state_response(session: GameSession) -> BoardStateResponse:
     return BoardStateResponse(
         board=session.board_grid(),
+        board_blanks=session.board.blank_mask(),
         players=[
             PlayerState(
                 name=p.name,

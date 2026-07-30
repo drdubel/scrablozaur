@@ -103,6 +103,10 @@
           <span class="diff-card-icon">🧠</span>
           <span class="diff-card-name">Sprytny</span>
         </button>
+        <button type="button" class="diff-card" data-diff="sim">
+          <span class="diff-card-icon">🔮</span>
+          <span class="diff-card-name">Wizjoner</span>
+        </button>
       </div>
     </div>
 
@@ -196,6 +200,7 @@
               </div>
               <p id="exchange-hint" class="typing-hint">Aby wymienić litery: kliknij je na stojaku, potem naciśnij „Wymień litery”.</p>
               <p id="human-error" class="error" hidden></p>
+              <div class="sort-row"><label class="sort-label" for="hint-sort">Sortuj:</label><select id="hint-sort" class="sort-select"><option value="score">Punkty</option><option value="smart">Sprytny 🧠</option><option value="sim">Wizjoner 🔮</option></select></div>
               <ol id="hint-list" class="hint-list" hidden></ol>
             </section>
 
@@ -212,6 +217,7 @@
                 <button id="btn-skip-computer" class="btn btn-ghost">Pomiń ruch</button>
               </div>
               <p id="suggest-error" class="error" hidden></p>
+              <div class="sort-row"><label class="sort-label" for="suggestion-sort">Sortuj:</label><select id="suggestion-sort" class="sort-select"><option value="score">Punkty</option><option value="smart">Sprytny 🧠</option><option value="sim">Wizjoner 🔮</option></select></div>
               <ol id="suggestion-list" class="suggestion-list" hidden></ol>
             </section>
 
@@ -321,6 +327,7 @@
         <button id="btn-scan-suggest" class="btn btn-primary">Znajdź słowa</button>
       </div>
       <p id="scan-suggest-error" class="error" hidden></p>
+      <div class="sort-row"><label class="sort-label" for="scan-suggestion-sort">Sortuj:</label><select id="scan-suggestion-sort" class="sort-select"><option value="score">Punkty</option><option value="smart">Sprytny 🧠</option><option value="sim">Wizjoner 🔮</option></select></div>
       <ol id="scan-suggestion-list" class="hint-list scan-suggestion-list" hidden></ol>
 
       <div class="btn-row setup-btn-row">
@@ -395,6 +402,7 @@
       <span class="sug-rank"></span>
       <span class="sug-word"></span>
       <span class="sug-score"></span>
+      <span class="sug-value"></span>
       <span class="sug-pos"></span>
       <div class="sug-actions">
         <button class="btn btn-ghost btn-sm btn-preview">Podgląd</button>
@@ -410,6 +418,7 @@
       <span class="hint-rank"></span>
       <span class="hint-word"></span>
       <span class="hint-score"></span>
+      <span class="hint-value"></span>
       <span class="hint-pos"></span>
     </li>
   </template>

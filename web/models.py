@@ -40,6 +40,7 @@ class ScanConfirmRequest(BaseModel):
 
 class ScanSuggestRequest(BaseModel):
     letters: str = Field(..., min_length=1, max_length=7)
+    sort: Literal["score", "smart", "sim"] = "score"
 
 
 class ScanRecheckRequest(BaseModel):
@@ -92,10 +93,19 @@ class Suggestion(BaseModel):
     col: int
     horizontal: bool
     cells: list[tuple[int, int]]
+    # What the list was ordered by: the raw score, the score plus the leave the
+    # play would keep, or the simulated equity. Shown so a reordering is
+    # explained rather than mysterious.
+    value: float | None = None
 
 
 class BoardStateResponse(BaseModel):
     board: list[list[str]]
+    # Which occupied squares hold a blank. The grid renders a blank as the
+    # letter it stands in for, so without this the UI cannot tell a blank from
+    # a real tile -- and they score very differently for anything played
+    # through them later.
+    board_blanks: list[list[bool]] = Field(default_factory=list)
     players: list[PlayerState]
     current_player_idx: int
     is_first_move: bool

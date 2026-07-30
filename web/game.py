@@ -21,8 +21,15 @@ SMART_PLAYER_SRC = Path(__file__).resolve().parent.parent / "smart_player"
 if str(SMART_PLAYER_SRC) not in sys.path:
     sys.path.insert(0, str(SMART_PLAYER_SRC))
 
-from player import choose_move  # noqa: E402
-from sim_player import choose_move_sim  # noqa: E402
+from board_features import encode_board  # noqa: E402
+from player import DEFAULT_LEAVE_WEIGHT, choose_move, leave_values, remove_used  # noqa: E402
+from sim_player import choose_move_sim, get_net  # noqa: E402
+from strategy import RANK_WINDOWS, pick_by_rank  # noqa: E402
+
+# Rollouts per candidate when a human asks for `sim`-sorted suggestions. Lower
+# than the bot's own 200 because someone is waiting on the response: at 100 the
+# ordering is stable and the call lands near half a second.
+SUGGEST_SIM_ITERATIONS = 100
 
 # The endgame search is bounded by a node budget. The CLI's 300k default has a
 # measured 9.4s worst case -- fine for a benchmark, not for someone waiting on a
@@ -436,36 +443,6 @@ def _check_game_over(session: GameSession, just_played_idx: int) -> None:
         session.game_over = True
 
 
-def _pick_by_difficulty(suggestions: list[dict], difficulty: Difficulty) -> dict:
-    """Weighted-random choice: lower difficulty → higher weight for worse moves."""
-    if difficulty == Difficulty.IMPOSSIBLE or len(suggestions) == 1:
-        return suggestions[0]
-
-    scores = [s["score"] for s in suggestions]
-    best, worst = max(scores), min(scores)
-
-    if best == worst:
-        return random.choice(suggestions)
-
-    # Normalise each score to [0, 1] relative to range (0 = worst, 1 = best)
-    norm = [(s - worst) / (best - worst) for s in scores]
-
-    # Weight = normalised_score raised to an exponent:
-    #   easy   → exponent = -2  (inverts so bad moves get high weight)
-    #   medium → exponent =  0  (uniform — flat distribution)
-    #   hard   → exponent =  3  (good moves get much higher weight)
-    if difficulty == Difficulty.EASY:
-        # Invert: weight proportional to (1 - norm)^2 so worst = highest weight
-        weights = [(1.0 - v) ** 2 + 0.05 for v in norm]
-    elif difficulty == Difficulty.MEDIUM:
-        # Triangular peak around the middle of the range
-        weights = [1.0 - abs(v - 0.5) * 1.5 + 0.1 for v in norm]
-    else:  # HARD
-        weights = [v**3 + 0.02 for v in norm]
-
-    return random.choices(suggestions, weights=weights, k=1)[0]
-
-
 def _pick_engine_move(session: GameSession, dawg: Dawg, difficulty: Difficulty) -> dict | None:
     """The strong tiers' move choice, delegated to `smart_player`.
 
@@ -516,11 +493,13 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
         # shortlist -- they weigh the leave, and search the endgame outright.
         sug = _pick_engine_move(session, dawg, difficulty)
     else:
-        # The weighted tiers need a spread of candidates to sample from;
-        # IMPOSSIBLE only ever takes the best one.
-        n_candidates = 1 if difficulty == Difficulty.IMPOSSIBLE else 30
-        suggestions = get_suggestions(session, dawg, n=n_candidates)
-        sug = _pick_by_difficulty(suggestions, difficulty) if suggestions else None
+        # The beatable tiers rank candidates exactly as StrategicPlayer does
+        # and then reach further down the list, so a weaker bot plays a *worse
+        # move* rather than a differently-chosen one. `pick_by_rank` is shared
+        # with `RankedPlayer`, so a tier can actually be benchmarked.
+        _, worst_rank = RANK_WINDOWS[difficulty.value]
+        suggestions = get_suggestions(session, dawg, n=max(worst_rank, 1))
+        sug = pick_by_rank(suggestions, difficulty.value) if suggestions else None
 
     if sug is None:
         session.consecutive_no_play += 1
@@ -581,18 +560,90 @@ def _engine_suggestions(board: Board, dawg: Dawg, letters: str, n: int) -> list[
     ]
 
 
-def get_suggestions(session: GameSession, dawg: Dawg, n: int = 10) -> list[dict]:
-    letters = session.current_player.letters
+SORT_MODES = ("score", "smart", "sim")
+
+
+def rank_suggestions(
+    board: Board, dawg: Dawg, letters: str, n: int, sort: str = "score"
+) -> list[dict]:
+    """Top `n` plays, ordered by `sort`.
+
+    The three modes answer genuinely different questions, which is why offering
+    them is worth the cost:
+
+    - `score`   what scores most this turn.
+    - `smart`   what is worth most counting the rack it leaves behind, which is
+                what separates two similar-scoring plays.
+    - `sim`     what survives the opponent's reply -- the only one that can see
+                that a play scoring four more points opens the triple-word lane.
+
+    Each result carries `value`, the number it was ranked by, so the UI can show
+    what it is being told rather than an unexplained reordering.
+    """
+    if sort not in SORT_MODES:
+        raise ValueError(f"unknown sort {sort!r} (expected one of {SORT_MODES})")
     if not letters:
         return []
-    return _engine_suggestions(session.board, dawg, letters, n)
+
+    if sort == "sim":
+        # One simulation ranks the whole set; `batch == iterations` keeps every
+        # candidate rather than only the survivors of pruning.
+        results = board.simulate(
+            dawg,
+            get_net(),
+            letters,
+            candidates=max(n, 1),
+            iterations=SUGGEST_SIM_ITERATIONS,
+            plies=1,
+            batch=SUGGEST_SIM_ITERATIONS,
+        )
+        return [
+            {
+                "word": word,
+                "score": score,
+                "row": row,
+                "col": col,
+                "horizontal": horizontal,
+                "cells": [(row, col + i) if horizontal else (row + i, col) for i in range(len(word))],
+                "value": round(equity, 1),
+            }
+            for word, score, (row, col, horizontal), _used, equity, _se, _n in results
+        ][:n]
+
+    suggestions = _engine_suggestions(board, dawg, letters, n)
+    if sort == "score" or not suggestions:
+        for s in suggestions:
+            s["value"] = float(s["score"])
+        return suggestions
+
+    # `smart`: score plus what the play leaves behind, the same quantity
+    # `choose_move` ranks by, so the list agrees with what the bot would do.
+    grid = [row.split(" ") for row in str(board).strip().split("\n")]
+    board_features = encode_board(board)
+    unseen = sum(board.unseen_tile_counts(letters))
+    leaves = [
+        remove_used(
+            letters,
+            _tiles_used_for_word(letters, s["word"], grid, s["row"], s["col"], s["horizontal"]),
+        )
+        for s in suggestions
+    ]
+    values = leave_values(leaves, unseen, board_features)
+    for s, leave_value in zip(suggestions, values):
+        s["value"] = round(s["score"] + DEFAULT_LEAVE_WEIGHT * leave_value, 1)
+    suggestions.sort(key=lambda s: -s["value"])
+    return suggestions
 
 
-def get_suggestions_for_letters(session: GameSession, dawg: Dawg, letters: str, n: int = 10) -> list[dict]:
+def get_suggestions(session: GameSession, dawg: Dawg, n: int = 10, sort: str = "score") -> list[dict]:
+    return rank_suggestions(session.board, dawg, session.current_player.letters, n, sort)
+
+
+def get_suggestions_for_letters(
+    session: GameSession, dawg: Dawg, letters: str, n: int = 10, sort: str = "score"
+) -> list[dict]:
     """Like get_suggestions but uses the supplied letters instead of current player's rack."""
-    if not letters:
-        return []
-    return _engine_suggestions(session.board, dawg, letters, n)
+    return rank_suggestions(session.board, dawg, letters, n, sort)
 
 
 def compute_move_rating(session: GameSession, dawg: Dawg, letters: str, actual_score: int) -> int:
