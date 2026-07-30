@@ -60,11 +60,25 @@ Current ladder, via `arena.py`:
 
 | A | B | Pairs | A's match score | Elo | Mean margin |
 |---|---|---|---|---|---|
-| `sim` | `strategic` | 200 | **70.12% +/- 2.34pp** | +148 | +46.7 +/- 4.4 |
-| `smart` | `strategic` | 1000 | 65.70% +/- 0.99pp | +113 | +39.1 +/- 2.0 |
-| `smart` | `simple` | 1000 | 65.75% +/- 0.99pp | +113 | +39.1 +/- 2.0 |
-| `sim` | `smart` | 150 | 53.33% +/- 2.74pp | +23 | +10.7 +/- 4.8 |
+| `smart` | `strategic` | 2000 | 66.07% +/- 0.68pp | +116 | +41.2 +/- 1.4 |
 | `strategic` | `simple` | 1000 | 50.00% +/- 0.00pp | +0 | **+0.1 +/- 0.1** |
+
+What each piece contributes, measured against the same player without it:
+
+| Change | Pairs | Match score | Mean margin | Elo |
+|---|---|---|---|---|
+| simulation (`sim` vs `smart`) | 150 | 53.33% +/- 2.74pp | +10.7 +/- 4.8 | +23 |
+| endgame search (`smart` vs `smart!noeg`) | 1200 | 51.08% +/- 0.24pp | +2.7 +/- 0.2 | +8 |
+| leave weight 0.8 (vs 1.0) | 2500 | 50.81% +/- 0.57pp | +2.5 +/- 1.1 | +6 |
+
+The `strategic` vs `simple` row in the first table is the one to read carefully.
+The two differ only in when they exchange, and across 2000 games that difference
+is worth **a tenth of a point per game** — they are the same player to within
+measurement error.
+The README already said `StrategicPlayer` is "in effect, greedy"; this puts a
+number on it. So the headline "vs `StrategicPlayer`" has always meant "vs a
+greedy player", and `smart` beating `strategic` and `simple` by the same margin
+is one fact stated twice, not two results.
 
 That last row is the one to look at. `StrategicPlayer` and `SimplePlayer`
 differ only in when they exchange (`points < 6` vs. only-when-stuck), and
@@ -282,6 +296,93 @@ Cost: ~0.9 CPU-seconds per decision at the defaults, ~110 ms wall on 8 threads.
 Fine for real games; a benchmark needs `set_num_threads(1)` in each worker, which
 `arena.py` does — without it, one worker process per core each spinning up the
 engine's 8-thread pool turns a one-minute run into ten minutes of thrashing.
+
+## The leave weight, and what it ruled out
+
+`points + leave_value` weighted the model as heavily as the points themselves:
+over ~30k leaves from real self-play positions the predictions have a spread of
+**12.33** against a candidate-score spread of **12.8**. That looked like a scale
+artefact — the net regresses a 4-turn score-differential return (std 47.5), so
+it inherits that scale, and its mean output is −13.3 where a leave *equity*
+should sit near zero. So the weight became a parameter (`~w` in an arena spec)
+and was measured, at 2500 pairs — 5000 games — per point:
+
+| w | 0.1 | 0.25 | 0.5 | 0.75 | **0.8** | 1.25 | 1.5 | 2.0 |
+|---|---|---|---|---|---|---|---|---|
+| pts vs w=1.0 | −25.0 | −14.2 | −2.1 | +2.0 | **+2.5** | −5.5 | −32.1 | −153.8 |
+
+**The suspicion was wrong.** The implicit 1.0 was very nearly optimal. The term
+is load-bearing — w=2.0 collapses to an 18% match score, w=0.1 to 38.7% — and
+already about the right size. A 600-pair sweep showing +7.7 at w=0.75 was noise;
+at 2500 pairs 0.75 and 0.8 are a dead tie (−0.1 ± 0.7). What survives is a real
+but small **+2.5 ± 1.1 points/game**, now the default for `SmartPlayer`.
+
+`SimPlayer` deliberately stays at 1.0: the same weight measured −5.9 ± 5.8
+inside the simulator, which is coherent, since the sim's leaf already contains a
+realised score differential and the leave term is correcting a different
+quantity there.
+
+The useful result is the negative one. **The leave model's problem is its
+accuracy, not its scale**, so tuning is exhausted and the target is what has to
+change — see "What to try next".
+
+## Endgame search
+
+Once the bag is empty the game stops being a game of chance. Nobody draws again,
+so the opponent holds exactly the tiles neither on the board nor in our own rack
+— computable only because the board now remembers which squares hold blanks
+(`Board.unseen_tile_counts`, checked against the real rack on 120 endgames and
+correct every time). Simulation is at its *least* useful here: there is nothing
+left to sample.
+
+`Board.solve_endgame` runs negamax alpha-beta over both racks, passing included,
+terminal values carrying the standard rack adjustment, and out-plays ordered
+first — they collect the opponent's whole rack, so they are both the likely best
+move and the best source of cutoffs. Make/unmake, not cloning.
+
+It is bounded by **depth, not by a node budget**. A node cap bites part-way
+through the tree and leaves whichever branches were searched first with a deeper
+look than the rest, which makes the result depend on move ordering in a way that
+is not a search property. A ply horizon cuts every branch alike. Verified
+against unpruned brute force: with the branching limits lifted, alpha-beta
+returns the identical differential on small positions.
+
+**Worth +2.7 ± 0.2 points/game (+8 Elo)** over the same player without it —
+solid at t = 13.5, but well short of the +25-40 estimated. Endgames are two to
+four moves of a twenty-five move game, and playing the highest score is usually
+already right; though not always, since the search picks a different move in
+**59%** of endgames. ~490 ms median per endgame decision.
+
+That comparison is also the clearest demonstration of why the arena is paired:
+the two players play identically until the bag empties, so the pairs cancel and
+the margin std error drops **9.91x**. A 2.7-point effect is not resolvable
+otherwise.
+
+## What to try next
+
+Three rounds of measurement now point the same way. Simulation (+25 Elo), the
+leave weight (+6), and endgame search (+8) were each smaller than estimated, and
+each for the same underlying reason: **everything downstream is limited by how
+good the leave evaluator is, and it can explain at most 6.75% of its target's
+variance.** Tuning around it is finished.
+
+What that implies, in order:
+
+1. **Regenerate the training data.** Every existing sample was produced on a bag
+   that under-dealt ź/ę/ó/ł/ć by 7-8.5% and with blanks scoring at face value
+   forever. `_leave_dataset.npz` is also still the 34-dim-era file, so
+   `train.py` currently `KeyError`s on it. This is hygiene, not an experiment.
+2. **Change the target, not the volume.** Subtract a position-only baseline
+   (fit on the board features and unseen count) so the net learns leave equity
+   rather than game phase; the baseline is constant across a decision's
+   candidates, so dropping it at inference changes no argmax. Add the 33-dim
+   unseen *composition* — `get_letters_left()` already computes the multiset and
+   throws it away with `len()`. Report R², not raw MSE, which would have made
+   the 6% ceiling obvious from the first run.
+3. **Distil the simulation.** A sim equity has a standard error of ~1-1.5
+   points; the n-step return has a standard deviation of 47.5. Per sample a sim
+   label carries roughly 30x less noise, which is the direct fix for a 6.75%
+   ceiling in a way more n-step samples provably are not.
 
 ## Board-aware features
 
