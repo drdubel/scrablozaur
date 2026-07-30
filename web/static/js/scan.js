@@ -178,6 +178,7 @@ class ScanController {
     this._elSuggestError     = document.getElementById('scan-suggest-error');
     this._elSuggestionList    = document.getElementById('scan-suggestion-list');
     this._elSuggestionSort    = document.getElementById('scan-suggestion-sort');
+    this._elSuggestionBar     = document.getElementById('scan-suggestion-toolbar');
     this._tplScanSuggestion   = document.getElementById('tpl-scan-suggestion');
     this._btnNextPhoto       = document.getElementById('btn-scan-next-photo');
     this._btnNewSession      = document.getElementById('btn-scan-new-session');
@@ -450,6 +451,7 @@ class ScanController {
     this._rackInput.value = '';
     this._elSuggestionList.hidden = true;
     this._elSuggestionList.innerHTML = '';
+    this._elSuggestionBar.hidden = true;
     this._hideError(this._elSuggestError);
     this._grid.clearHighlight();
     this._showStep('upload');
@@ -462,6 +464,7 @@ class ScanController {
     if (!letters) return;
     this._hideError(this._elSuggestError);
     this._elSuggestionList.hidden = true;
+    this._elSuggestionBar.hidden = true;
     this._grid.clearHighlight();
     this._setLoading(this._btnSuggest, true);
     try {
@@ -477,6 +480,7 @@ class ScanController {
 
   _renderScanSuggestions() {
     this._elSuggestionList.innerHTML = '';
+    this._elSuggestionBar.hidden = this._scanSuggestions.length === 0;
     if (this._scanSuggestions.length === 0) {
       this._showError(this._elSuggestError, 'Brak możliwych słów dla podanych liter.');
       return;

@@ -69,6 +69,7 @@ class GameController {
     this._elSuggestError    = document.getElementById('suggest-error');
     this._elSuggestionList  = document.getElementById('suggestion-list');
     this._elSuggestionSort  = document.getElementById('suggestion-sort');
+    this._elSuggestionBar   = document.getElementById('suggestion-toolbar');
 
     this._panelAuto         = document.getElementById('panel-auto');
     this._elAutoCurrent     = document.getElementById('panel-auto-current');
@@ -98,6 +99,7 @@ class GameController {
     this._btnHints              = document.getElementById('btn-hints');
     this._elHintList            = document.getElementById('hint-list');
     this._elHintSort            = document.getElementById('hint-sort');
+    this._elHintBar             = document.getElementById('hint-toolbar');
     this._elRatingPanel         = document.getElementById('rating-panel');
     this._elRatingArc           = document.getElementById('rating-arc');
     this._elRatingValue         = document.getElementById('rating-value');
@@ -320,11 +322,6 @@ class GameController {
     // Board cell click
     this._board.setOnCellClick((r, c) => this._onBoardCellClick(r, c));
 
-    // Mouse drag-and-drop from the rack (native HTML5 DnD) -- the touch
-    // equivalent is wired per-tile in _bindRackTileDrag instead, since
-    // touch input has no native drag event stream to hook here.
-    this._board.setOnTileDrop((r, c, payload) => this._handleTileDrop(r, c, payload));
-
     // Sync word display + trigger live validation + score preview on typing change
     this._board.setOnTypingUpdate(data => {
       this._elWordDisplay.textContent  = data ? data.word.toUpperCase() : '—';
@@ -382,7 +379,9 @@ class GameController {
       if (e.key === 'Enter') this._getSuggestions();
     });
 
-    this._btnHints.addEventListener('click', () => this._loadHints());
+    this._btnHints.addEventListener('click', () => this._toggleHints());
+    // Re-sorting an open hint list reloads it in place -- it must not
+    // collapse the list the way the button's own toggle does.
     this._elHintSort?.addEventListener('change', () => {
       if (!this._elHintList.hidden) this._loadHints();
     });
@@ -463,9 +462,7 @@ class GameController {
     this._typingStartR = null;
     this._typingStartC = null;
     this._players = state.players;
-    this._board.clearHint();
-    if (this._elHintList) { this._elHintList.hidden = true; this._elHintList.innerHTML = ''; }
-    if (this._btnHints) this._btnHints.textContent = 'Pokaż podpowiedzi';
+    this._hideHints();
     if (state.move_number === 0) {
       this._ratingHistory = [];
       if (this._elRatingPanel) this._elRatingPanel.style.visibility = 'hidden';
@@ -483,6 +480,7 @@ class GameController {
     this._activeIndex = -1;
     this._elSuggestionList.hidden    = true;
     this._elSuggestionList.innerHTML = '';
+    if (this._elSuggestionBar) this._elSuggestionBar.hidden = true;
     this._hideError(this._elHumanError);
     this._hideError(this._elSuggestError);
     this._btnUndo.disabled = !state.can_undo;
@@ -589,8 +587,15 @@ class GameController {
       }
       tile.addEventListener('click', () => {
         // A tile already placed on the board (shown as an empty slot) is
-        // out of play for exchange until it's taken back off the board.
+        // out of play until it's taken back off the board.
         if (tile.classList.contains('rack-tile-used')) return;
+        // With a board square selected, the rack acts as a keyboard: a tap
+        // plays that tile onto the cursor square and the cursor moves on.
+        // Only with no word in progress does a tap mean "pick for exchange".
+        if (!this._panelHuman.hidden && this._board.isTyping()) {
+          this._playRackTile(ch, isBlank);
+          return;
+        }
         if (this._selectedExchangeIndices.has(i)) {
           this._selectedExchangeIndices.delete(i);
           tile.classList.remove('selected');
@@ -599,7 +604,6 @@ class GameController {
           tile.classList.add('selected');
         }
       });
-      this._bindRackTileDrag(tile, isBlank ? 'BLANK' : ch);
       this._rackTiles.push({ el: tile, letter: ch, isBlank });
       this._elTileRack.appendChild(tile);
     }
@@ -610,12 +614,15 @@ class GameController {
    * they visibly "leave" the rack (rendered as empty slots), and restore
    * any that a backspace/Escape/direction-change freed back up. Driven off
    * the board's typing state, so it stays in sync whether letters were
-   * dragged onto the board or typed. Greedy assignment (a matching real
+   * tapped from the rack or typed. Greedy assignment (a matching real
    * tile first, else a blank) mirrors the server's own tile deduction
    * (_leave_after_word), so what's shown as used is exactly what will be
    * deducted on submit. */
   _syncRackWithTyping() {
     if (!this._rackTiles) return;
+    // While a square is selected the rack is a keyboard, not an exchange
+    // picker -- reflected in the cursor/hover styling of the whole rack.
+    this._elTileRack.classList.toggle('tile-rack--placing', this._board.isTyping());
     const typed = this._board.getTypedLetters();
     const used = new Set();
     for (const letter of typed) {
@@ -631,108 +638,33 @@ class GameController {
     });
   }
 
-  // ── Drag-and-drop tile placement (rack → board) ──────────────────────────
-  // Two input paths feed the same _handleTileDrop: native HTML5 drag-and-drop
-  // for mouse (dragstart on the tile, drop on a board cell -- see
-  // board.js's setOnTileDrop), and a hand-rolled touch version below, since
-  // touch input never fires HTML5 DnD events on phones/tablets.
+  // ── Tap-to-place tile placement (rack → board) ───────────────────────────
+  // No drag-and-drop: pick the square on the board first (click/tap it, which
+  // starts typing mode there), then tap rack tiles to fill it in. One code
+  // path, identical on desktop and touch, and it reuses exactly the same
+  // typing state the physical keyboard drives.
 
-  _bindRackTileDrag(tile, payload) {
-    tile.draggable = true;
-    tile.addEventListener('dragstart', e => {
-      // Not during the computer's/other turn, and not a tile that already
-      // left the rack onto the board (an empty slot -- take it back off the
-      // board first, via Backspace, to redrag it).
-      if (this._panelHuman.hidden || tile.classList.contains('rack-tile-used')) { e.preventDefault(); return; }
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', payload);
-    });
-
-    // Distinguish a tap (handled by the tile's own 'click' listener, e.g.
-    // toggling exchange-selection) from a drag: only commit to dragging
-    // once the finger has actually moved past a small threshold, so a
-    // plain tap still reaches the click handler undisturbed.
-    let touch = null;
-    tile.addEventListener('touchstart', e => {
-      if (this._panelHuman.hidden || tile.classList.contains('rack-tile-used') || e.touches.length !== 1) return;
-      const t = e.touches[0];
-      touch = { startX: t.clientX, startY: t.clientY, dragging: false, ghost: null, target: null };
-    }, { passive: true });
-
-    tile.addEventListener('touchmove', e => {
-      if (!touch) return;
-      const t = e.touches[0];
-      if (!touch.dragging) {
-        if (Math.hypot(t.clientX - touch.startX, t.clientY - touch.startY) < 10) return;
-        touch.dragging = true;
-        touch.ghost = this._createDragGhost(tile);
-      }
-      e.preventDefault();
-      this._moveDragGhost(touch.ghost, t.clientX, t.clientY);
-      const cell = this._board.cellAt(t.clientX, t.clientY);
-      if (!cell || !touch.target || cell.row !== touch.target.row || cell.col !== touch.target.col) {
-        this._board.clearDragTarget();
-      }
-      if (cell) this._board.setDragTarget(cell.row, cell.col);
-      touch.target = cell;
-    }, { passive: false });
-
-    const endTouch = () => {
-      if (!touch) return;
-      if (touch.dragging) {
-        touch.ghost.remove();
-        this._board.clearDragTarget();
-        if (touch.target) this._handleTileDrop(touch.target.row, touch.target.col, payload);
-      }
-      touch = null;
-    };
-    tile.addEventListener('touchend', endTouch);
-    tile.addEventListener('touchcancel', endTouch);
+  /** Drop any exchange picks. Selecting a board square switches the rack
+   * from "pick tiles to exchange" to "tap tiles to place", so leftover
+   * picks would just be a highlight the next tap no longer clears. */
+  _clearExchangeSelection() {
+    if (this._selectedExchangeIndices.size === 0) return;
+    this._selectedExchangeIndices.clear();
+    for (const t of this._rackTiles ?? []) t.el.classList.remove('selected');
   }
 
-  _createDragGhost(tile) {
-    const ghost = tile.cloneNode(true);
-    ghost.className = tile.className + ' rack-tile-ghost';
-    document.body.appendChild(ghost);
-    return ghost;
-  }
-
-  _moveDragGhost(ghost, x, y) {
-    const w = ghost.offsetWidth, h = ghost.offsetHeight;
-    ghost.style.transform = `translate(${x - w / 2}px, ${y - h / 2}px)`;
-  }
-
-  /** Shared by the mouse (native drop event) and touch (manual hit-test)
-   * paths -- payload is either a literal letter or the 'BLANK' sentinel for
-   * a blank tile, which has no letter of its own until the player says
-   * what it stands for. */
-  _handleTileDrop(r, c, payload) {
-    if (this._panelHuman.hidden) return;
-    let letter = payload;
-    if (payload === 'BLANK') {
+  /** Play one rack tile onto the current typing cursor. A blank has no
+   * letter of its own until the player says what it stands for. */
+  _playRackTile(rackChar, isBlank) {
+    if (this._panelHuman.hidden || !this._board.isTyping()) return;
+    let letter = rackChar.toLowerCase();
+    if (isBlank) {
       const chosen = (prompt('Jaką literę reprezentuje pusty kafelek?', '') ?? '').trim().toLowerCase();
       letter = chosen[0];
       if (!letter || !/^[a-ząćęłńóśźż]$/.test(letter)) return;
     }
-    this._placeLetterAt(r, c, letter);
-  }
-
-  /** Place one letter at (r, c): continue the word in progress if the drop
-   * is still on its line (typeLetter already auto-skips any existing
-   * board tiles between the cursor and the next empty slot, same as it
-   * does for keyboard typing -- so this only needs to know whether to
-   * keep going, not exactly which cell the engine will land on),
-   * otherwise (re)start typing there -- same as clicking that cell fresh
-   * (see _onBoardCellClick). */
-  _placeLetterAt(r, c, letter) {
-    const horizontal = this._selHumanDir.value === 'true';
-    const continuesLine = this._board.isTyping()
-      && (horizontal ? r === this._typingStartR : c === this._typingStartC);
-    if (!continuesLine) {
-      this._typingStartR = r;
-      this._typingStartC = c;
-      this._board.startTyping(r, c, horizontal);
-    }
+    // typeLetter advances the cursor itself (auto-skipping any tiles already
+    // on the board), so the next tap lands on the next free square.
     this._board.typeLetter(letter);
     this._elTypingInput.focus({ preventScroll: true });
   }
@@ -886,6 +818,7 @@ class GameController {
 
     this._typingStartR = r;
     this._typingStartC = c;
+    this._clearExchangeSelection();
     this._board.startTyping(r, c, this._selHumanDir.value === 'true');
     // Summons the on-screen keyboard on phones/tablets -- see the input's
     // own comment in index.html. No-op/harmless on desktop.
@@ -998,11 +931,18 @@ class GameController {
   async _submitHumanWord() {
     const data = this._board.getWordData();
     if (!data) {
-      this._showError(this._elHumanError, 'Kliknij pole startowe na planszy i wpisz słowo.');
+      this._showError(this._elHumanError, 'Kliknij pole startowe na planszy i ułóż słowo.');
       return;
     }
+    await this._submitWord(data, this._btnPlaceHuman);
+  }
+
+  /** Send one word to the server, whatever produced it: the board's typing
+   * state (_submitHumanWord) or a picked hint (_placeHintWord). `btn` is
+   * the control to show the pending state on. */
+  async _submitWord(data, btn) {
     this._hideError(this._elHumanError);
-    this._setLoading(this._btnPlaceHuman, true);
+    this._setLoading(btn, true);
     try {
       const state = await this._api.placeHumanWord(data.word, data.row, data.col, data.horizontal);
       if (state.last_move_rating != null) {
@@ -1016,7 +956,7 @@ class GameController {
       this._showError(this._elHumanError, err.detail ?? err.message);
       this._board.shakeTypedCells();
     } finally {
-      this._setLoading(this._btnPlaceHuman, false);
+      this._setLoading(btn, false);
     }
   }
 
@@ -1084,6 +1024,7 @@ class GameController {
     if (!letters) return;
     this._hideError(this._elSuggestError);
     this._elSuggestionList.hidden = true;
+    if (this._elSuggestionBar) this._elSuggestionBar.hidden = true;
     this._setLoading(this._btnSuggest, true);
     try {
       await this._api.setComputerLetters(letters);
@@ -1099,8 +1040,10 @@ class GameController {
 
   _renderSuggestions() {
     this._elSuggestionList.innerHTML = '';
+    this._elSuggestionBar.hidden = false;
     this._activeIndex = -1;
     if (this._suggestions.length === 0) {
+      this._elSuggestionBar.hidden = true;
       this._showError(this._elSuggestError, 'Brak możliwych ruchów dla podanych liter.');
       return;
     }
@@ -1190,14 +1133,23 @@ class GameController {
 
   // ── Hints list ────────────────────────────────────────────────────────────
 
+  /** The "Pokaż/Ukryj podpowiedzi" button: open the list, or close it if
+   * it is already open. Deliberately separate from _loadHints, which only
+   * ever (re)fills an open list -- re-sorting must refresh the hints in
+   * place, not collapse them. */
+  _toggleHints() {
+    if (this._elHintList.hidden) this._loadHints();
+    else this._hideHints();
+  }
+
+  _hideHints() {
+    this._board.clearHint();
+    if (this._elHintList) { this._elHintList.hidden = true; this._elHintList.innerHTML = ''; }
+    if (this._elHintBar) this._elHintBar.hidden = true;
+    if (this._btnHints) this._btnHints.textContent = 'Pokaż podpowiedzi';
+  }
+
   async _loadHints() {
-    if (!this._elHintList.hidden) {
-      this._elHintList.hidden = true;
-      this._elHintList.innerHTML = '';
-      this._board.clearHint();
-      this._btnHints.textContent = 'Pokaż podpowiedzi';
-      return;
-    }
     this._setLoading(this._btnHints, true);
     try {
       const res = await this._api.getHints(this._elHintSort?.value ?? 'score');
@@ -1224,8 +1176,9 @@ class GameController {
 
   _renderHintList() {
     this._elHintList.innerHTML = '';
+    this._elHintBar.hidden = false;
     if (!this._hints?.length) {
-      this._elHintList.innerHTML = '<li style="padding:.5rem .75rem;color:var(--color-muted);font-size:.85rem">Brak możliwych ruchów.</li>';
+      this._elHintList.innerHTML = '<li class="list-empty">Brak możliwych ruchów.</li>';
       this._elHintList.hidden = false;
       return;
     }
@@ -1236,8 +1189,16 @@ class GameController {
         `<span class="hint-rank">${i + 1}.</span>` +
         `<span class="hint-word">${sug.word.toUpperCase()}</span>` +
         `<span class="hint-score">${sug.score} pkt</span>` +
-        `<span class="hint-value">${this._rankedValueLabel(sug, this._elHintSort?.value ?? 'score')}</span>`;
+        `<span class="hint-value">${this._rankedValueLabel(sug, this._elHintSort?.value ?? 'score')}</span>` +
+        `<span class="hint-pos">w${sug.row} k${sug.col} ${sug.horizontal ? '→' : '↓'}</span>` +
+        `<button type="button" class="btn btn-primary btn-sm hint-place">Połóż ▶</button>`;
       li.addEventListener('click', () => this._selectHint(i, li));
+      // Same one-click "play this word" the sandbox suggestion list has --
+      // stopPropagation so it doesn't double as a preview click.
+      li.querySelector('.hint-place').addEventListener('click', e => {
+        e.stopPropagation();
+        this._placeHintWord(i, e.currentTarget);
+      });
       this._elHintList.appendChild(li);
     }
     this._elHintList.hidden = false;
@@ -1247,6 +1208,22 @@ class GameController {
     this._elHintList.querySelectorAll('.hint-item').forEach(el => el.classList.remove('active'));
     li.classList.add('active');
     this._board.highlightHint(this._hints[idx]);
+  }
+
+  /** Play a hinted word straight from the list (competitive mode). Goes
+   * through the same /board/human-move endpoint as a hand-placed word, so
+   * rack deduction, scoring, rating and the computer's reply are identical. */
+  async _placeHintWord(idx, btn) {
+    const sug = this._hints?.[idx];
+    if (!sug) return;
+    // A half-typed word would otherwise stay on the board under the hint.
+    this._board.clearTyping();
+    this._typingStartR = null;
+    this._typingStartC = null;
+    await this._submitWord(
+      { word: sug.word, row: sug.row, col: sug.col, horizontal: sug.horizontal },
+      btn,
+    );
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

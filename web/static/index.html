@@ -174,7 +174,7 @@
             <!-- Human turn -->
             <section id="panel-human" class="panel" hidden>
               <h2 id="panel-human-title">Ruch gracza</h2>
-              <p class="typing-hint">Kliknij pole startowe · pisz litery · spacja zmienia kierunek · Enter zatwierdza</p>
+              <p class="typing-hint">Kliknij pole startowe · pisz litery lub klikaj kafelki na stojaku · spacja zmienia kierunek · Enter zatwierdza</p>
               <div class="form-row">
                 <label>
                   Kierunek <small>(spacja)</small>
@@ -199,9 +199,16 @@
                 <button id="btn-skip-human" class="btn btn-ghost">Pomiń ruch</button>
                 <button id="btn-pass-human" class="btn btn-danger">Poddaj się</button>
               </div>
-              <p id="exchange-hint" class="typing-hint">Aby wymienić litery: kliknij je na stojaku, potem naciśnij „Wymień litery”.</p>
+              <p id="exchange-hint" class="typing-hint">Aby wymienić litery: gdy nie układasz słowa, kliknij je na stojaku, potem naciśnij „Wymień litery”.</p>
               <p id="human-error" class="error" hidden></p>
-              <div class="sort-row"><label class="sort-label" for="hint-sort">Sortuj:</label><select id="hint-sort" class="sort-select"><option value="score">Punkty</option><option value="smart">Sprytny 🧠</option><option value="sim">Wizjoner 🔮</option></select></div>
+              <div id="hint-toolbar" class="list-toolbar" hidden>
+                <span class="list-toolbar-label">Sortuj</span>
+                <div id="hint-sort" class="segmented" role="group" aria-label="Sortuj podpowiedzi">
+                  <button type="button" class="seg-btn seg-btn--active" data-value="score">🏆 Punkty</button>
+                  <button type="button" class="seg-btn" data-value="smart">🧠 Sprytny</button>
+                  <button type="button" class="seg-btn" data-value="sim">🔮 Wizjoner</button>
+                </div>
+              </div>
               <ol id="hint-list" class="hint-list" hidden></ol>
             </section>
 
@@ -218,7 +225,14 @@
                 <button id="btn-skip-computer" class="btn btn-ghost">Pomiń ruch</button>
               </div>
               <p id="suggest-error" class="error" hidden></p>
-              <div class="sort-row"><label class="sort-label" for="suggestion-sort">Sortuj:</label><select id="suggestion-sort" class="sort-select"><option value="score">Punkty</option><option value="smart">Sprytny 🧠</option><option value="sim">Wizjoner 🔮</option></select></div>
+              <div id="suggestion-toolbar" class="list-toolbar" hidden>
+                <span class="list-toolbar-label">Sortuj</span>
+                <div id="suggestion-sort" class="segmented" role="group" aria-label="Sortuj propozycje">
+                  <button type="button" class="seg-btn seg-btn--active" data-value="score">🏆 Punkty</button>
+                  <button type="button" class="seg-btn" data-value="smart">🧠 Sprytny</button>
+                  <button type="button" class="seg-btn" data-value="sim">🔮 Wizjoner</button>
+                </div>
+              </div>
               <ol id="suggestion-list" class="suggestion-list" hidden></ol>
             </section>
 
@@ -328,7 +342,14 @@
         <button id="btn-scan-suggest" class="btn btn-primary">Znajdź słowa</button>
       </div>
       <p id="scan-suggest-error" class="error" hidden></p>
-      <div class="sort-row"><label class="sort-label" for="scan-suggestion-sort">Sortuj:</label><select id="scan-suggestion-sort" class="sort-select"><option value="score">Punkty</option><option value="smart">Sprytny 🧠</option><option value="sim">Wizjoner 🔮</option></select></div>
+      <div id="scan-suggestion-toolbar" class="list-toolbar" hidden>
+        <span class="list-toolbar-label">Sortuj</span>
+        <div id="scan-suggestion-sort" class="segmented" role="group" aria-label="Sortuj propozycje">
+          <button type="button" class="seg-btn seg-btn--active" data-value="score">🏆 Punkty</button>
+          <button type="button" class="seg-btn" data-value="smart">🧠 Sprytny</button>
+          <button type="button" class="seg-btn" data-value="sim">🔮 Wizjoner</button>
+        </div>
+      </div>
       <ol id="scan-suggestion-list" class="hint-list scan-suggestion-list" hidden></ol>
 
       <div class="btn-row setup-btn-row">
@@ -424,6 +445,7 @@
     </li>
   </template>
 
+  <script src="/static/js/ui.js"></script>
   <script src="/static/js/api.js"></script>
   <script src="/static/js/board.js"></script>
   <script src="/static/js/game.js"></script>

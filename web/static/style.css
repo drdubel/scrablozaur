@@ -580,15 +580,21 @@ dialog h2 {
   transform: translateY(-4px);
 }
 
-/* Draggable (mouse HTML5 DnD + the hand-rolled touch equivalent in game.js,
-   see _bindRackTileDrag) -- touch-action:none stops the browser's own
-   scroll/zoom gestures from hijacking a drag that starts on a tile; a plain
-   tap (no movement) still reaches the tile's own 'click' listener fine. */
-.rack-tile {
-  touch-action: none;
+/* While a board square is selected the rack acts as a keyboard: tapping a
+   tile plays it onto the cursor square (see game.js's _playRackTile), so the
+   tiles read as "press me" rather than as exchange checkboxes. */
+.tile-rack--placing .rack-tile:not(.rack-tile-used) {
+  cursor: pointer;
+  border-color: var(--color-primary);
 }
 
-/* A tile whose letter has been dragged/typed onto the board -- shown as an
+.tile-rack--placing .rack-tile:not(.rack-tile-used):hover {
+  transform: translateY(-4px);
+  box-shadow: 0 0 0 2px var(--color-primary), inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 4px 8px rgba(0, 0, 0, 0.18);
+}
+
+/* A tile whose letter has been tapped/typed onto the board -- shown as an
    empty rack slot so it visibly "leaves" the rack, while still holding its
    place (no reflow) so the other tiles don't jump around mid-word. Restored
    the moment the letter is taken back off the board (backspace/Escape), via
@@ -613,27 +619,6 @@ dialog h2 {
 
 .rack-tile-used:hover {
   transform: none;
-}
-
-/* Floating clone that follows the finger during a touch-drag (see
-   _createDragGhost/_moveDragGhost) -- positioned via transform on a 0,0
-   fixed box rather than left/top so each move is a single compositor-only
-   update. */
-.rack-tile-ghost {
-  position: fixed;
-  left: 0;
-  top: 0;
-  margin: 0;
-  pointer-events: none;
-  z-index: 1000;
-  opacity: 0.9;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
-}
-
-/* Board cell currently under a dragged tile (mouse dragenter or the touch
-   hit-test) -- both drag paths funnel into board.js's setDragTarget. */
-.cell.drag-target {
-  box-shadow: inset 0 0 0 3px var(--color-primary) !important;
 }
 
 /* ── Computer move notification (competitive) ──────────────────────────────── */
@@ -1369,14 +1354,14 @@ select:focus {
 .hint-list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 4px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 220px;
+  max-height: 280px;
   overflow-y: auto;
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   background: var(--color-bg);
 }
 
@@ -1384,9 +1369,9 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.35rem 0.6rem;
+  padding: 0.35rem 0.5rem;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: 6px;
   font-size: 0.85rem;
   transition: background 0.1s;
 }
@@ -1424,6 +1409,13 @@ select:focus {
   color: var(--color-muted);
   font-size: 0.72rem;
   white-space: nowrap;
+}
+
+/* "Play this word" straight from the hint list (competitive mode) -- the
+   same one-click placement the sandbox suggestion list has. */
+.hint-item .hint-place {
+  margin-left: auto;
+  flex: none;
 }
 
 /* Scan assistant's suggestion list is the step's main content, not a
@@ -1949,6 +1941,93 @@ select:focus {
   #word-def-panel { order: 3; }
 }
 
+/* ── List toolbar + segmented sort control ─────────────────────────────────── */
+/* Header strip shown above a result list (hints, sandbox suggestions, scan
+   suggestions) -- one shared look for all three, and only visible while the
+   list it belongs to is. */
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.list-toolbar-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-muted);
+}
+
+/* Button group standing in for a <select> (see js/ui.js): every option is
+   visible at a glance and one tap away, instead of a native dropdown that
+   takes over the screen on mobile. */
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  background: var(--color-empty);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+}
+
+.seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.28rem 0.75rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-muted);
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.seg-btn:hover {
+  color: var(--color-text);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.seg-btn--active {
+  color: #fff;
+  background: var(--gradient-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.seg-btn--active:hover {
+  color: #fff;
+  background: var(--gradient-primary-h);
+}
+
+.seg-btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+/* Placeholder row for a list that came back empty -- same box as the list
+   itself, so it doesn't look like the panel broke. */
+.list-empty {
+  padding: 0.5rem 0.75rem;
+  color: var(--color-muted);
+  font-size: 0.85rem;
+}
+
+/* The number the list was ordered by, when that is not just the score. Dimmed
+   so it reads as an annotation next to the points, not a competing figure. */
+.sug-value,
+.hint-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8em;
+  opacity: 0.75;
+  color: var(--color-muted);
+}
+
 /* ── Responsive: phones ──────────────────────────────────────────────────── */
 @media (max-width: 640px) {
   main {
@@ -2055,37 +2134,28 @@ select:focus {
   .benchmark-replay-scoreboard .score-label {
     max-width: none;
   }
-}
-/* Sort control above each suggestion list. Sits inline with the list header so
-   it reads as a property of the list rather than another action button. */
-.sort-row {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin: 0.35rem 0 0.25rem;
-  font-size: 0.82rem;
-}
 
-.sort-label {
-  color: var(--color-muted);
-}
+  /* One control per line on a phone: the label above, the three sort
+     options stretched across the full width underneath. */
+  .list-toolbar {
+    flex-wrap: wrap;
+  }
 
-.sort-select {
-  padding: 0.15rem 0.35rem;
-  font-size: 0.82rem;
-  font-family: inherit;
-  border: 1px solid var(--color-placed-border, #ccc);
-  border-radius: 4px;
-  background: var(--color-surface, #fff);
-  color: inherit;
-}
+  .list-toolbar .segmented {
+    width: 100%;
+  }
 
-/* The number the list was ordered by, when that is not just the score. Dimmed
-   so it reads as an annotation next to the points, not a competing figure. */
-.sug-value,
-.hint-value {
-  font-variant-numeric: tabular-nums;
-  font-size: 0.8em;
-  opacity: 0.75;
-  color: var(--color-muted);
+  .seg-btn {
+    flex: 1;
+    justify-content: center;
+    padding: 0.4rem 0.3rem;
+  }
+
+  .hint-item {
+    flex-wrap: wrap;
+  }
+
+  .hint-item .hint-pos {
+    flex: 1;
+  }
 }
