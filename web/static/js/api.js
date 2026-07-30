@@ -1,5 +1,27 @@
 'use strict';
 
+/** Turn an error body into something a human can read.
+ *
+ * Our own handlers raise HTTPException with a plain string, but FastAPI's
+ * request validation returns `detail` as an array of error objects. Those
+ * stringify to "[object Object]", which is how a difficulty the server did not
+ * recognise showed up as an unreadable error instead of naming the field.
+ */
+function formatDetail(detail) {
+  if (detail == null) return '';
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map(e => {
+        const field = Array.isArray(e.loc) ? e.loc.filter(x => x !== 'body').join('.') : '';
+        return field ? `${field}: ${e.msg}` : e.msg;
+      })
+      .filter(Boolean)
+      .join('; ');
+  }
+  return String(detail.msg ?? JSON.stringify(detail));
+}
+
 class ApiError extends Error {
   /** @param {number} status @param {string} detail */
   constructor(status, detail) {
@@ -23,7 +45,7 @@ class ApiClient {
     const res = await fetch('/api' + path, opts);
     if (!res.ok) {
       const payload = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new ApiError(res.status, payload.detail ?? res.statusText);
+      throw new ApiError(res.status, formatDetail(payload.detail) || res.statusText);
     }
     return res.json();
   }
