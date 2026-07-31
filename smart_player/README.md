@@ -90,17 +90,8 @@ number on it. So the headline "vs `StrategicPlayer`" has always meant "vs a
 greedy player", and `smart` beating `strategic` and `simple` by the same margin
 is one fact stated twice, not two results.
 
-That last row is the one to look at. `StrategicPlayer` and `SimplePlayer`
-differ only in when they exchange (`points < 6` vs. only-when-stuck), and
-across 2000 games that difference is worth **a tenth of a point per game** --
-they are the same player to within measurement error. The README already said
-`StrategicPlayer` is "in effect, greedy"; this puts a number on it. The
-pairing cancels 24x on that row precisely *because* the two play nearly
+The pairing cancels 24x on that row precisely *because* the two play nearly
 identical games.
-
-Which means the headline "vs `StrategicPlayer`" number has always been "vs a
-greedy player", and `smart` beating `strategic` and `simple` by the same
-65.7% is the same fact stated twice, not two independent results.
 
 ## Pipeline
 
@@ -468,6 +459,34 @@ Which makes rollout throughput, not model capacity, the thing worth working on:
 a simulation costs ~2175 move generations (263 ms against 0.12 ms), and every
 one of them rebuilds both 15x15 cross-check tables from scratch even though a
 rollout only disturbs the squares near its last placement.
+
+## Measured: rollout throughput is not the lever either
+
+The conclusion above pointed at making the simulator faster instead. That was
+measured before building, and it does not hold up.
+
+A simulation costs ~2175 move generations, and each rebuilds both 15x15
+cross-check tables, so caching them incrementally looked like the obvious win.
+Two probes, on 715 fixed seeded positions:
+
+- **The tables cost 0.7% of a generation.** Building them twice per generation
+  instead of once moved 0.3620 ms to 0.3647 ms. A perfect incremental cache
+  cannot save more than that, which is not worth the stale-cache risk of
+  carrying invalidation through `Clone`, `place_word` and `unplace_word`.
+- **Removing them entirely makes generation 4x *slower*** (0.36 -> 1.43 ms).
+  The cross-checks are not overhead, they are what prunes the traversal. Worth
+  knowing before anyone tries to "optimise" them away.
+
+A related attempt is also recorded as not working: `compute_cross_data` built
+two `Vec<char>` per empty square, 900 heap allocations per generation, and
+removing them changed a controlled A/B by 0.5% -- inside the noise. Reverted;
+the allocator was never the problem.
+
+So generation time is the GADDAG traversal doing its actual work, and the
+simulator is about as fast as this design gets. Making `sim` stronger by giving
+it more rollouts is not available cheaply -- and the earlier measurement that
+50, 200 and 500 iterations pick the same move in a typical position suggests
+more rollouts would not buy much anyway.
 
 ## What to try next
 
