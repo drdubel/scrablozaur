@@ -307,11 +307,9 @@ needs.
 | File | Games | Lookahead | Best weight | Margin vs `leave_v1` |
 |---|---|---|---|---|
 | **`leave_value.pt`** (= `leave_v2.pt`) | **2M** | **4** | **1.0** | **+5.4 +/- 1.6** |
-| `leave_v1.pt` (previous champion) | ? | ~8, see below | 0.8 | — |
-| `leave_k2.pt` | 200k | 2 | ~1.0 | −0.3 +/- 1.5 |
+| `leave_v1.pt` (previous champion, archived) | ? | ~8, see below | 0.8 | — |
 | `leave_k4.pt` | 200k | 4 | ~1.0 | −1.1 +/- 1.6 |
-| `leave_k6.pt` | 200k | 6 | ~0.83 | −1.4 +/- 1.5 |
-| `leave_k8.pt` | 200k | 8 | ~0.82 | +1.1 +/- 1.5 |
+| *(k2/k6/k8, not kept)* | 200k | 2 / 6 / 8 | ~1.0 / 0.83 / 0.82 | −0.3 / −1.4 / +1.1 |
 
 Measured at 1500 seeded pairs each, endgame search off on both sides — it is
 checkpoint-independent, so it only added cost (9 minutes a run instead of one).
