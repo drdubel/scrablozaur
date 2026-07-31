@@ -103,9 +103,14 @@ class BenchmarkController {
     this._setProgress(0, games);
     this._elLoading.hidden = false;
 
+    // The replay board is a second renderer, so it needs the point table too;
+    // the benchmark runs in whatever language the setup dialog selected.
+    const language = this._gameController._language;
+    this._board.setLetterValues(Languages.letterValues(language));
+
     const generation = ++this._pollGeneration;
     try {
-      const { job_id } = await this._api.startBenchmark(players, games);
+      const { job_id } = await this._api.startBenchmark(players, games, language);
       await this._pollUntilDone(job_id, generation);
     } catch (err) {
       if (generation !== this._pollGeneration) return;

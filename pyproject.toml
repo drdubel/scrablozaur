@@ -20,6 +20,8 @@ dependencies = [
 dev = [
     "maturin>=1.14.1",
     "pytest>=8.4.2",
+    # fastapi.testclient needs httpx (tests/test_api_languages.py).
+    "httpx>=0.28.1",
 ]
 
 # This pyproject.toml exists for uv's dependency management (web/ + board_reader/

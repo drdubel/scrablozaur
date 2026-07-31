@@ -12,7 +12,6 @@ hardcoded language, and this file is what lets them stop being.
 """
 
 import os
-import re
 
 import pytest
 from languages import engine_language as _engine_lang
@@ -57,10 +56,23 @@ def test_leave_net_feature_order_matches_the_derived_eval_alphabet(pl):
 # ── The web app (web/game.py) ────────────────────────────────────────────────
 
 
-def test_web_tile_counts_match_the_json(pl):
-    from web.game import TILE_COUNTS
+def test_web_tile_bag_is_dealt_from_the_json(pl):
+    """`web/game.py` used to hold its own 100-tile table, separate from the
+    engine's. The bag a game deals from is now built from the definition file,
+    so the visible bag and the engine's can no longer disagree."""
+    from collections import Counter
 
-    assert TILE_COUNTS == pl.counts
+    from web.game import TileBag
+
+    assert Counter(TileBag.full(pl).tiles) == Counter(pl.counts)
+
+
+def test_web_game_no_longer_hardcodes_a_tile_table(pl):
+    import web.game
+
+    assert not hasattr(web.game, "TILE_COUNTS"), (
+        "a hardcoded tile table is back in web/game.py -- it belongs in languages/*.json"
+    )
 
 
 # ── The strategy heuristic (src/strategy.py) ─────────────────────────────────
@@ -86,16 +98,29 @@ def test_smart_player_alphabet_matches_the_json(pl):
 # ── The board renderer (web/static/js/board.js) ──────────────────────────────
 
 
-def test_js_letter_values_match_the_json(pl):
-    """The JS copy exists because the renderer draws the point value in the
-    corner of every tile. Parsed out of the source rather than trusted, since
-    nothing else would notice it drifting."""
+def test_js_no_longer_hardcodes_the_point_table(pl):
+    """The renderer draws each tile's point value, and used to carry its own
+    copy of the table to do it. It now takes one from
+    `GET /api/game/languages`; this fails if a literal creeps back in."""
     source = open(os.path.join(_ROOT, "web", "static", "js", "board.js"), encoding="utf-8").read()
-    body = re.search(r"const LETTER_VALUES = \{(.*?)\};", source, re.S)
-    assert body, "board.js no longer defines LETTER_VALUES -- update or drop this test"
+    assert "const LETTER_VALUES" not in source, (
+        "board.js has a hardcoded point table again -- it should call setLetterValues()"
+    )
+    assert "setLetterValues" in source
 
-    js_values = {ch: int(n) for ch, n in re.findall(r"'(.)'\s*:\s*(\d+)", body.group(1))}
-    assert js_values == pl.points
+    # The diacritics are the tell: no Polish-specific letters should appear as
+    # data anywhere in a renderer that is meant to be language-agnostic.
+    for letter in "ąćęłńóśźż":
+        assert letter not in source, f"board.js still mentions '{letter}'"
+
+
+def test_js_typing_filters_are_not_hardcoded_to_polish(pl):
+    """Which keys count as letters follows the language now, via
+    `Languages.isLetter` -- a fixed character class would silently reject a
+    letter that another alphabet has."""
+    source = open(os.path.join(_ROOT, "web", "static", "js", "game.js"), encoding="utf-8").read()
+    assert "a-ząćęłńóśźż" not in source, "game.js still has a hardcoded Polish letter class"
+    assert "Languages.isLetter" in source
 
 
 # ── The board scanner (board_reader/src/letter_classifier.py) ────────────────
@@ -120,10 +145,13 @@ def test_ocr_tables_match_the_json(pl):
 def test_declared_artifacts_are_the_ones_actually_loaded(pl):
     """The JSON claims where the dictionary and models live. Until every loader
     reads it, this proves the claim matches the paths they hardcode."""
-    from web.engine import DAWG_PATH, GADDAG_PATH
+    from web.engine import get_pack
 
-    assert DAWG_PATH.resolve() == pl.dawg.resolve()
-    assert GADDAG_PATH.resolve() == pl.gaddag.resolve()
+    pack = get_pack(pl.code)
+    assert pack.spec.dawg.resolve() == pl.dawg.resolve()
+    assert pack.spec.gaddag.resolve() == pl.gaddag.resolve()
+    # And the loaded dictionary really is in this language.
+    assert pack.dawg.lang.alphabet == pl.alphabet
 
     model = pytest.importorskip("model", reason="smart_player needs torch + numpy")
     assert pl.leave_net is not None

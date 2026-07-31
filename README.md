@@ -6,7 +6,7 @@ A high-performance Polish-language Scrabble engine written in Rust, exposed to P
 
 ## Features
 
-- **Minimized DAWG** — 2.58 million-word Polish dictionary compressed into a compact binary format; sub-microsecond lookups via a binary-searched, flat node layout
+- **Minimized DAWG** — multi-language (2.58M-word Polish, 168k-word English) compressed into a compact binary format; sub-microsecond lookups via a binary-searched, flat node layout
 - **GADDAG move generation** — the primary generator: anchor-based bidirectional search over a GADDAG of the same lexicon, ~7× faster per position than the legacy pattern search it falls back to (measured by `gen-bench`, verified move-for-move by `gen-verify`)
 - **Pattern search** — flexible wildcard syntax (`-` one letter, `*` any number) with blank-tile support
 - **Board-aware scoring** — all bonus squares (Double/Triple Letter and Word), bingo bonus for using all 7 tiles
@@ -106,39 +106,70 @@ uv run maturin develop --release   # compiles the Rust extension into that same 
 (`scrablozaur`) and the `libscrablozaur.dylib`/`.so` cdylib, neither of which
 Python imports.
 
-### Rebuild the DAWG dictionary
+### Languages
 
-A pre-built `words/dawg.bin` is included. To recompile from a word list:
+A language is one file, `languages/<code>.json`, holding its alphabet (in
+collation order), tile distribution, point values, vowel/consonant split, and
+the paths to its dictionary and models. It is the **single source of truth**:
+the engine, the web app, the board renderer, the OCR classifier and the leave
+model all read it, and `tests/test_tables_agree.py` fails if any of them drifts.
+
+Two ship: **Polish** (`pl`, 2.58M words) and **English** (`en`, ENABLE, 168k
+words). The picker is on the new-game screen; each game stores its own language,
+so two sessions can run different ones side by side.
+
+To add a third: drop in `languages/xx.json`, put a word list at
+`words/xx/words.txt`, run `make dicts LANG=xx`, and it appears in the picker —
+no code change. Constraints are ≤32 letters (a cross-check set is a `u32`) and
+every letter below U+0190 (letters are indexed by codepoint), which means Latin
+script. `src/languages.py` validates all of it at load, naming the offending
+letter.
+
+Optional artifacts degrade rather than break. A language with no trained
+leave-value net (`"leave_net": null`) caps at difficulty 8 and hides the
+`smart`/`sim` suggestion orderings — a net is only valid for the tile alphabet
+it was trained on, so borrowing another language's would silently produce
+confident nonsense. A language with no OCR models (`"ocr": null`) simply has no
+board scanner.
+
+### Rebuild the dictionaries
+
+Each language keeps its lexicon under `words/<code>/`, and both binaries are
+pre-built and committed. To recompile them:
 
 ```bash
-cargo run --release -- build words/words.txt words/dawg.bin
+make dicts LANG=pl
 ```
 
-To verify quickly with a smaller input file:
+or by hand:
 
 ```bash
-cargo run --release -- build words/sth.txt /tmp/dawg.bin
+cargo run --release -- build        words/pl/words.txt words/pl/dawg.bin
+cargo run --release -- build-gaddag words/pl/words.txt words/pl/gaddag.bin
 ```
 
-### Rebuild the GADDAG (move generation)
-
-`Board.get_best_words` uses a GADDAG for fast anchor-based move generation. A
-pre-built `words/gaddag.bin` is included; `Dawg("words/dawg.bin")` auto-loads
-the sibling `gaddag.bin`. Recompile it from the same word list with:
+To check the pipeline quickly with a tiny input:
 
 ```bash
-cargo run --release -- build-gaddag words/words.txt words/gaddag.bin
+cargo run --release -- build words/en/smoke.txt /tmp/dawg.bin
 ```
 
-The GADDAG is larger than the DAWG (~36 MiB vs ~3 MiB for the full Polish
-lexicon) and the build peaks around ~7 GB RAM. If no `gaddag.bin` is present,
+`Board.get_best_words` uses the GADDAG for fast anchor-based move generation;
+`Dawg(lang, "words/pl/dawg.bin")` auto-loads the sibling `gaddag.bin`. The
+GADDAG is much larger than the DAWG (~36 MiB vs ~3 MiB for the full Polish
+lexicon) and its build peaks around ~7 GB RAM. If no `gaddag.bin` is present,
 move generation transparently falls back to the legacy DAWG pattern search.
+
+**Rebuild both together.** Each file's header stamps the letters its lexicon
+actually uses, and the engine refuses to load one whose letters the language
+does not have — which is what stops a dictionary in the wrong language from
+loading silently and mis-scoring every move.
 
 Two commands validate and benchmark the generator against that fallback:
 
 ```bash
-cargo run --release -- gen-verify pl words/dawg.bin words/gaddag.bin 200  # best-move parity
-cargo run --release -- gen-bench  pl words/dawg.bin words/gaddag.bin 200  # single-thread speedup
+make verify LANG=pl   # best-move parity  (gen-verify)
+make bench  LANG=pl   # single-thread speedup (gen-bench)
 ```
 
 `gen-verify` must report zero score mismatches; `gen-bench` reports the
@@ -155,7 +186,7 @@ single-threaded speedup. Both take an optional trailing game count (default 200)
 ```python
 from scrablozaur import Dawg
 
-d = Dawg("words/dawg.bin")
+d = Dawg(lang, "words/pl/dawg.bin")
 
 # membership test
 d.contains("hamulec")        # True
@@ -177,7 +208,7 @@ d.has_gaddag()               # True when the sibling gaddag.bin was auto-loaded
 ```python
 from scrablozaur import Board, Dawg
 
-d = Dawg("words/dawg.bin")
+d = Dawg(lang, "words/pl/dawg.bin")
 b = Board()                            # empty 15x15 board + full 100-tile bag
 # Board.from_grid([["-"] * 15 for _ in range(15)])  # or start from a given grid
 
@@ -221,7 +252,7 @@ to stand in for a letter the hand had run out of.
 ```python
 from scrablozaur import Board, Dawg
 
-d = Dawg("words/dawg.bin")
+d = Dawg(lang, "words/pl/dawg.bin")
 
 
 class Player:
@@ -346,7 +377,13 @@ When a word crosses multiple bonus squares, all active Word multipliers stack mu
 ### DAWG binary format
 
 ```
-header (8 bytes):
+header:
+  [8] magic "SCRBDWG2"
+  [4] format version (2)
+  [1] kind: 0 = DAWG, 1 = GADDAG
+  [3] reserved (zero)
+  [4] number of distinct letters N
+  [4N] their Unicode codepoints, ascending
   [4] root node ID
   [4] total node count
 
@@ -358,7 +395,15 @@ per node:
     [4] child node ID
 ```
 
-Child edges are stored sorted by codepoint, enabling binary search in O(log k) where k ≤ 32 (`words.txt`'s alphabet: 23 Latin letters + 9 Polish diacritics). The offset of each node is precomputed into a flat table at load time so every node access is a direct array index with no pointer chasing.
+The stamped letters are the ones the lexicon actually contains, computed from
+the word list at build time rather than declared — so it cannot be mislabelled.
+At load, every stamped letter must exist in the language being loaded: an
+English dictionary opened as Polish fails on `q`, and a Polish one opened as
+English fails on `ą`. The `kind` byte catches the other easy mistake, loading a
+DAWG where a GADDAG is wanted or vice versa. Version 1 files carried none of
+this and are refused; rebuild them with `make dicts`.
+
+Child edges are stored sorted by codepoint, enabling binary search in O(log k) where k ≤ 32 (Polish: 23 Latin letters + 9 diacritics). The offset of each node is precomputed into a flat table at load time so every node access is a direct array index with no pointer chasing.
 
 `gaddag.bin` uses the identical format and loader — it is simply a different
 lexicon, one entry per (word, anchor) pair, with a `\0` separator edge between
@@ -419,12 +464,16 @@ let (letter_mul, word_mul) = BONUS_TABLE[r2][c2];  // O(1) lookup
 The crate includes these diagnostic commands:
 
 ```bash
-cargo run --release -- build        words/words.txt words/dawg.bin    # compile DAWG
-cargo run --release -- build-gaddag words/words.txt words/gaddag.bin  # compile GADDAG (move gen)
-cargo run --release -- lookup       pl words/dawg.bin  hamulec        # single lookup
-cargo run --release -- bench        pl words/dawg.bin  words/words.txt   # lookup throughput
-cargo run --release -- gen-verify   pl words/dawg.bin  words/gaddag.bin  [games]  # GADDAG vs legacy parity
-cargo run --release -- gen-bench    pl words/dawg.bin  words/gaddag.bin  [games]  # GADDAG vs legacy speed
+cargo run --release -- build        words/pl/words.txt words/pl/dawg.bin    # compile DAWG
+cargo run --release -- build-gaddag words/pl/words.txt words/pl/gaddag.bin  # compile GADDAG (move gen)
+cargo run --release -- lookup       pl words/pl/dawg.bin hamulec             # single lookup
+cargo run --release -- bench        pl words/pl/dawg.bin words/pl/words.txt  # lookup throughput
+cargo run --release -- gen-verify   pl words/pl/dawg.bin words/pl/gaddag.bin [games]  # GADDAG vs legacy parity
+cargo run --release -- gen-bench    pl words/pl/dawg.bin words/pl/gaddag.bin [games]  # GADDAG vs legacy speed
+
+# `build`/`build-gaddag` derive everything from the word list. The rest read a
+# `.bin`, so they need the alphabet: they take a language code (a definition in
+# `languages/<code>.json`) as their first argument.
 ```
 
 Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):

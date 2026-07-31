@@ -21,6 +21,9 @@ class GameController {
 
     this._lastMode      = 'competitive';
     this._lastHumanName = 'Gracz';
+    // Chosen language, remembered across dialog reopens. Also decides which
+    // point table the board renders with and which letters count as typeable.
+    this._language      = Languages.default;
     this._playerConfig  = [
       { name: 'Gracz', is_computer: false },
       { name: 'Komputer', is_computer: true },
@@ -127,9 +130,62 @@ class GameController {
 
     this._elSandboxSubDesc  = document.getElementById('sandbox-sub-desc');
     this._elBenchmarkRow    = document.getElementById('setup-benchmark-row');
+    this._elLanguageSlot    = document.getElementById('setup-language-slot');
   }
 
   // ── Setup dialog ──────────────────────────────────────────────────────────
+
+  _buildLanguagePicker() {
+    this._elLanguageSlot.innerHTML = '';
+    // Nothing to choose from is not worth a control: with one language the
+    // picker would just be a disabled dropdown taking up space.
+    if (Languages.isSingle) return;
+    this._langPicker = Languages.createSelect({
+      value: this._language,
+      onChange: code => this._onLanguageChange(code),
+    });
+    this._elLanguageSlot.appendChild(this._langPicker.el);
+  }
+
+  /** Switching language changes the point table the board draws with and,
+   * where no leave net exists for it, how far the difficulty slider goes --
+   * so the level table is re-fetched for the new language. */
+  async _onLanguageChange(code) {
+    this._language = code;
+    this._board.setLetterValues(Languages.letterValues(code));
+    this._syncSortModeAvailability();
+    await Difficulty.load(this._api, code);
+    this._competitiveLevel = Difficulty.clamp(this._competitiveLevel);
+    this._buildDifficultySlider();
+    this._buildSetupRows(parseInt(this._setupCount.value, 10));
+  }
+
+  /** Called once the language list lands (main.js). */
+  onLanguagesLoaded() {
+    this._language = Languages.default;
+    this._buildLanguagePicker();
+    this._syncSortModeAvailability();
+  }
+
+  /** Hide the `smart` / `sim` suggestion orderings in a language with no
+   * trained leave evaluator. The server rejects them there, so offering the
+   * buttons would just produce an error the player cannot act on. */
+  _syncSortModeAvailability() {
+    const available = Languages.hasLeaveNet(this._language);
+    const groups = ['hint-sort', 'suggestion-sort', 'scan-suggestion-sort'];
+    for (const id of groups) {
+      const group = document.getElementById(id);
+      if (!group) continue;
+      for (const btn of group.querySelectorAll('.seg-btn')) {
+        const needsNet = btn.dataset.value === 'smart' || btn.dataset.value === 'sim';
+        btn.hidden = needsNet && !available;
+      }
+      // Fall back to plain score order if the hidden option was selected.
+      if (!available && (group.value === 'smart' || group.value === 'sim')) {
+        group.value = 'score';
+      }
+    }
+  }
 
   _buildDifficultySlider() {
     this._elDifficultySlot.innerHTML = '';
@@ -258,7 +314,7 @@ class GameController {
     if (mode === 'competitive') {
       const name = this._inPlayerName.value.trim() || 'Gracz';
       const difficulty = this._diffSlider.getLevel();
-      return { players: [{ name, is_computer: false }], game_mode: 'competitive', difficulty };
+      return { players: [{ name, is_computer: false }], game_mode: 'competitive', difficulty, language: this._language };
     }
     const rows = [...this._setupPlayers.querySelectorAll('.setup-player-row')];
     if (this._sandboxSubMode === 'auto') {
@@ -269,6 +325,7 @@ class GameController {
           difficulty: Number(row.dataset.difficulty),
         })),
         game_mode: 'sandbox_auto',
+        language: this._language,
       };
     }
     const radios = [...this._setupPlayers.querySelectorAll('input[type="radio"]')];
@@ -279,6 +336,7 @@ class GameController {
         is_computer: i === checked,
       })),
       game_mode: 'sandbox',
+      language: this._language,
     };
   }
 
@@ -376,7 +434,7 @@ class GameController {
       if (this._panelHuman.hidden) return;
       if (this._typingStartR === null) return;
       if (this._handleTypingControlKey(e)) return;
-      if (/^[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]$/.test(e.key)) {
+      if (Languages.isLetter(e.key, { code: this._language })) {
         this._board.typeLetter(e.key.toLowerCase());
         e.preventDefault();
       }
@@ -395,7 +453,7 @@ class GameController {
     this._elTypingInput.addEventListener('input', () => {
       if (this._typingStartR !== null) {
         for (const ch of this._elTypingInput.value) {
-          if (/^[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]$/.test(ch)) this._board.typeLetter(ch.toLowerCase());
+          if (Languages.isLetter(ch, { code: this._language })) this._board.typeLetter(ch.toLowerCase());
         }
       }
       this._elTypingInput.value = '';
@@ -486,6 +544,15 @@ class GameController {
 
   _applyState(state, opts = {}) {
     this._lastState = state;
+    // The server is the authority on which language this game is in -- a page
+    // reload picks up an existing session whose language the client never
+    // chose, so the point table has to follow the state, not the dialog.
+    if (state.language && state.language !== this._language) {
+      this._language = state.language;
+      this._board.setLetterValues(Languages.letterValues(state.language));
+      if (this._langPicker) this._langPicker.setCode(state.language);
+      this._syncSortModeAvailability();
+    }
     this._elScanView.hidden = true;
     this._elGameView.hidden = false;
     this._btnUndo.hidden = false;
@@ -691,7 +758,7 @@ class GameController {
     if (isBlank) {
       const chosen = (prompt('Jaką literę reprezentuje pusty kafelek?', '') ?? '').trim().toLowerCase();
       letter = chosen[0];
-      if (!letter || !/^[a-ząćęłńóśźż]$/.test(letter)) return;
+      if (!letter || !Languages.isLetter(letter, { code: this._language, lowerOnly: true })) return;
     }
     // typeLetter advances the cursor itself (auto-skipping any tiles already
     // on the board), so the next tap lands on the next free square.

@@ -55,8 +55,15 @@ class ApiClient {
   resetGame(body) { return this._request('POST', '/game/reset', body); }
   getState()        { return this._request('GET',  '/game/state'); }
 
-  /** The custom-difficulty slider's notches + their descriptions. */
-  getDifficultyLevels() { return this._request('GET', '/game/difficulty-levels'); }
+  /** The custom-difficulty slider's notches + their descriptions. Takes the
+   * language because a language with no trained leave net has fewer of them. */
+  getDifficultyLevels(language = null) {
+    const q = language ? `?language=${encodeURIComponent(language)}` : '';
+    return this._request('GET', `/game/difficulty-levels${q}`);
+  }
+
+  /** Installed languages, with each one's alphabet and point/count tables. */
+  getLanguages() { return this._request('GET', '/game/languages'); }
 
   placeHumanWord(word, row, col, horizontal) {
     return this._request('POST', '/board/human-move', { word, row, col, horizontal });
@@ -107,8 +114,8 @@ class ApiClient {
   }
 
   /** @param {{name:string,difficulty:number}[]} players */
-  startBenchmark(players, games) {
-    return this._request('POST', '/benchmark/start', { players, games });
+  startBenchmark(players, games, language = null) {
+    return this._request('POST', '/benchmark/start', { players, games, language });
   }
 
   getBenchmarkStatus(jobId) {

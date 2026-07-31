@@ -18,9 +18,9 @@ const Difficulty = {
   loaded: false,
   _byLevel: new Map(),
 
-  async load(api) {
+  async load(api, language = null) {
     try {
-      const data = await api.getDifficultyLevels();
+      const data = await api.getDifficultyLevels(language);
       this.min = data.min_level;
       this.max = data.max_level;
       this.default = data.default_level;

@@ -20,10 +20,11 @@ from smart_player.simulate import play_game
 from rules import TurnResult
 from strategy import SimplePlayer, StrategicPlayer
 
-from languages import engine_language  # noqa: E402
+from languages import engine_language, load as load_language  # noqa: E402
 
-LANG = engine_language("pl")
-d = Dawg(LANG, "words/dawg.bin", "words/gaddag.bin")
+_spec = load_language("pl")
+LANG = engine_language(_spec)
+d = Dawg(LANG, str(_spec.dawg), str(_spec.gaddag))
 
 
 def _rusage_self_now() -> float:

@@ -1,33 +1,38 @@
 from __future__ import annotations
 
-import re
-import urllib.parse
-import urllib.request
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from web.engine import Dawg, get_dawg
+from web.engine import Dawg, LanguagePack
 from rules import TurnResult
-from web.game import (SORT_MODES, GameMode, _check_game_over, _deduct_tiles, _refill_rack,
+from web.game import (LEAVE_NET_SORTS, SORT_MODES, GameMode, has_leave_net, _check_game_over, _deduct_tiles, _refill_rack,
                       _tiles_used_for_word, computer_auto_play, compute_move_rating,
                       get_suggestions, get_suggestions_for_letters, rack_contains,
                       validate_rack_for_word)
 from web.models import (BoardStateResponse, DefinitionResponse, ExchangeTilesRequest,
                         PlaceComputerWordRequest, PlaceHumanWordRequest, PreviewScoreResponse,
                         SetComputerLettersRequest, Suggestion, SuggestionsResponse)
-from web.routers.game import _require_session, _state_response
+from web.definitions import lookup
+from web.deps import require_session as _require_session, session_dawg, session_pack
+from web.routers.game import _state_response
 
 router = APIRouter(prefix="/board")
 
 _SANDBOX_ONLY = "This endpoint is only available in sandbox mode."
 
 
-def _check_sort(sort: str) -> str:
+def _check_sort(sort: str, language: str) -> str:
     """Validate the suggestion sort mode, rejecting rather than silently
-    falling back -- a typo'd mode should not quietly return score order."""
+    falling back -- a typo'd mode should not quietly return score order, and
+    nor should an ordering this language cannot actually compute."""
     if sort not in SORT_MODES:
         raise HTTPException(status_code=400, detail=f"Nieznany sposób sortowania: {sort}")
+    if sort in LEAVE_NET_SORTS and not has_leave_net(language):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sortowanie „{sort}” nie jest dostępne dla tego języka (brak wytrenowanego modelu).",
+        )
     return sort
 
 
@@ -63,7 +68,7 @@ def _check_connectivity(session, word: str, row: int, col: int, horizontal: bool
 async def place_human_word(
     body: PlaceHumanWordRequest,
     request: Request,
-    dawg: Dawg = Depends(get_dawg),
+    dawg: Dawg = Depends(session_dawg),
 ) -> BoardStateResponse:
     session = _require_session(request)
     word = body.word.lower()
@@ -142,7 +147,7 @@ async def place_human_word(
 @router.post("/skip", response_model=BoardStateResponse)
 async def skip_turn(
     request: Request,
-    dawg: Dawg = Depends(get_dawg),
+    dawg: Dawg = Depends(session_dawg),
 ) -> BoardStateResponse:
     """Current player skips their turn (plays no word) -- the standard
     Scrabble "pass". The game only ends once nobody has played a word for
@@ -167,7 +172,7 @@ async def skip_turn(
 @router.post("/next-move", response_model=BoardStateResponse)
 async def next_auto_move(
     request: Request,
-    dawg: Dawg = Depends(get_dawg),
+    dawg: Dawg = Depends(session_dawg),
 ) -> BoardStateResponse:
     """Advance a SANDBOX_AUTO game by one turn -- every player in this mode
     is a computer, so this is the only kind of turn it has. The live
@@ -187,7 +192,7 @@ async def next_auto_move(
 async def exchange_tiles(
     body: ExchangeTilesRequest,
     request: Request,
-    dawg: Dawg = Depends(get_dawg),
+    dawg: Dawg = Depends(session_dawg),
 ) -> BoardStateResponse:
     """Return the given tiles to the bag and draw the same number of new
     ones instead of playing a word — only legal in COMPETITIVE mode while
@@ -279,14 +284,14 @@ async def set_computer_letters(
 async def suggest_moves(
     request: Request,
     sort: str = "score",
-    dawg: Dawg = Depends(get_dawg),
+    dawg: Dawg = Depends(session_dawg),
 ) -> SuggestionsResponse:
     session = _require_session(request)
     if session.game_mode != GameMode.SANDBOX:
         raise HTTPException(status_code=400, detail=_SANDBOX_ONLY)
     # `sim` spends real time thinking, so it goes to a worker thread like the
     # bot does rather than stalling the event loop.
-    raw = await run_in_threadpool(get_suggestions, session, dawg, 10, _check_sort(sort))
+    raw = await run_in_threadpool(get_suggestions, session, dawg, 10, _check_sort(sort, session.language))
     suggestions = [Suggestion(**s) for s in raw]
     return SuggestionsResponse(suggestions=suggestions, letters=session.current_player.letters)
 
@@ -295,14 +300,14 @@ async def suggest_moves(
 async def get_hints(
     request: Request,
     sort: str = "score",
-    dawg: Dawg = Depends(get_dawg),
+    dawg: Dawg = Depends(session_dawg),
 ) -> SuggestionsResponse:
     session = _require_session(request)
     if session.game_mode != GameMode.COMPETITIVE:
         raise HTTPException(status_code=400, detail="Podpowiedzi dostępne tylko w trybie rywalizacji.")
     letters = session.current_player.letters
     raw = await run_in_threadpool(
-        get_suggestions_for_letters, session, dawg, letters, 20, _check_sort(sort)
+        get_suggestions_for_letters, session, dawg, letters, 20, _check_sort(sort, session.language)
     )
     suggestions = [Suggestion(**s) for s in raw]
     return SuggestionsResponse(suggestions=suggestions, letters=letters)
@@ -312,7 +317,7 @@ async def get_hints(
 async def place_computer_word(
     body: PlaceComputerWordRequest,
     request: Request,
-    dawg: Dawg = Depends(get_dawg),
+    dawg: Dawg = Depends(session_dawg),
 ) -> BoardStateResponse:
     session = _require_session(request)
     if session.game_mode != GameMode.SANDBOX:
@@ -371,7 +376,7 @@ async def place_computer_word(
 async def preview_score(
     body: PlaceHumanWordRequest,
     request: Request,
-    dawg: Dawg = Depends(get_dawg),
+    dawg: Dawg = Depends(session_dawg),
 ) -> PreviewScoreResponse:
     session = _require_session(request)
     word = body.word.lower()
@@ -399,139 +404,12 @@ async def preview_score(
         return PreviewScoreResponse(error="score_error")
 
 
-_SKIP_P = re.compile(
-    r"^(SŁOWNIK SJP|KOMENTARZE|PROSIMY|POWIĄZANE|dopuszczal|niedopuszczal|function |-$|\(brak\)|dodaj$|OK$|nazwisko$|imię$)",
-    re.IGNORECASE,
-)
-_HTML_TAG = re.compile(r"<[^>]+>")
-_ENTITIES = {"&quot;": '"', "&amp;": "&", "&nbsp;": " ", "&lt;": "<", "&gt;": ">"}
-_SENSE_BREAK = re.compile(r"\s*;?\s*(?=\d{1,2}\.\s)")
-
-
-def _clean_html(s: str) -> str:
-    # A space (not "") for stripped tags -- source markup uses bare `<br />`
-    # between numbered senses with no surrounding whitespace, so dropping tags
-    # outright glues the tail of one sense to the next one's digit, e.g.
-    # "...kotwica<br />5. ..." would collapse into "...kotwica5. ...".
-    s = _HTML_TAG.sub(" ", s)
-    for ent, ch in _ENTITIES.items():
-        s = s.replace(ent, ch)
-    return " ".join(s.split())
-
-
-def _break_senses(text: str) -> str:
-    """Put each numbered sense ("1. ...", "2. ...") on its own line.
-
-    Source dictionaries separate senses with `;` or a lone `<br>` in the raw
-    HTML, which `_clean_html` flattens to plain whitespace -- this restores
-    readable line breaks without touching unnumbered single-sense entries.
-    """
-    parts = [p for p in _SENSE_BREAK.split(text) if p]
-    return "<br>".join(parts)
-
-
-def _fetch_sjp(word: str) -> list[tuple[str, str]]:
-    """Fetch entries from sjp.pl for *word*.
-
-    Returns list of (lemma, definition) tuples — sjp.pl transparently maps
-    inflected forms to their base form, so "zwie" yields ("zwać", "...") etc.
-    """
-    url = f"https://sjp.pl/{urllib.parse.quote(word)}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "scrablozaur/1.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            html = resp.read().decode("utf-8")
-    except Exception:
-        return []
-
-    raw = [
-        _clean_html(p)
-        for p in re.findall(r"<p[^>]*>(.*?)</p>", html, re.DOTALL)
-    ]
-    # Stop at comments section — everything after it is user noise
-    paragraphs = []
-    for p in raw:
-        if re.match(r"^KOMENTARZE", p, re.IGNORECASE) or re.match(r"^POWIĄZANE", p, re.IGNORECASE):
-            break
-        if p and not _SKIP_P.search(p):
-            paragraphs.append(p)
-
-    entries: list[tuple[str, str]] = []
-    i = 0
-    while i < len(paragraphs):
-        t = paragraphs[i]
-        is_lemma = (
-            not t.startswith("znaczenie")
-            and len(t) < 60
-            and not re.search(r"\d\.", t)
-        )
-        if is_lemma:
-            # Skip proper nouns (capitalized lemmas not matching the searched word)
-            if t[0].isupper() and t.lower() != word:
-                i += 1
-                continue
-            # Skip the "znaczenie: info (N)" line if present
-            j = i + 1
-            if j < len(paragraphs) and paragraphs[j].startswith("znaczenie"):
-                j += 1
-            if j < len(paragraphs):
-                defn = paragraphs[j]
-                if not _SKIP_P.search(defn):
-                    entries.append((t, defn))
-                    i = j + 1
-                    continue
-        i += 1
-    return entries[:3]
-
-
-_PWN_HEADWORD = re.compile(
-    r'<span class="tytul"><a[^>]*title="([^"]*)"[^>]*>.*?</a></span>.*?<li[^>]*>(.*?)</li>',
-    re.DOTALL,
-)
-_PWN_SENSE = re.compile(r'<div class="znacz">(.*?)</div>', re.DOTALL)
-
-
-def _fetch_pwn(word: str) -> list[tuple[str, str]]:
-    """Fetch entries from sjp.pwn.pl for *word* -- fallback for words sjp.pl has no entry for.
-
-    A word absent from PWN's dictionary responds with a 307 that has no
-    `Location` header (a same-URL "not found" render, not a real redirect),
-    which urllib surfaces as an HTTPError -- treated the same as any other
-    fetch failure, i.e. no entries.
-    """
-    url = f"https://sjp.pwn.pl/slowniki/{urllib.parse.quote(word)}.html"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "scrablozaur/1.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            html = resp.read().decode("utf-8")
-    except Exception:
-        return []
-
-    entries: list[tuple[str, str]] = []
-    for m in _PWN_HEADWORD.finditer(html):
-        lemma = _clean_html(m.group(1))
-        li = m.group(2)
-        senses = _PWN_SENSE.findall(li)
-        if senses:
-            # Leave line-breaking to _break_senses (applied uniformly in
-            # get_definition) instead of inserting <br> here directly.
-            defn = " ".join(_clean_html(s) for s in senses)
-        else:
-            body = re.split(r'<br|<div class="s-przykl"', li)[0]
-            defn = _clean_html(body)
-        if defn:
-            entries.append((lemma, defn))
-    return entries[:3]
-
-
 @router.get("/definition/{word}", response_model=DefinitionResponse)
-async def get_definition(word: str) -> DefinitionResponse:
+async def get_definition(
+    word: str, pack: LanguagePack = Depends(session_pack)
+) -> DefinitionResponse:
     word = word.lower()
-    entries = _fetch_sjp(word) or _fetch_pwn(word)
-    if not entries:
-        return DefinitionResponse(word=word, definitions=[], found=False)
-    definitions = []
-    for lemma, defn in entries:
-        defn = _break_senses(defn)
-        definitions.append(f"{lemma} — {defn}" if lemma.lower() != word else defn)
-    return DefinitionResponse(word=word, definitions=definitions, found=True)
+    definitions = await run_in_threadpool(lookup, word, pack.spec.definitions)
+    return DefinitionResponse(
+        word=word, definitions=definitions, found=bool(definitions)
+    )

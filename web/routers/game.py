@@ -2,19 +2,23 @@ from __future__ import annotations
 
 from starlette.concurrency import run_in_threadpool
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 
-from web.difficulty import DEFAULT_LEVEL, MAX_LEVEL, MIN_LEVEL, all_levels
-from web.engine import Dawg, get_dawg
+from web.deps import require_session, resolve_language
+from web.difficulty import DEFAULT_LEVEL, MIN_LEVEL, all_levels, max_level_for
+from web.engine import DEFAULT_LANGUAGE, Dawg, available
+from languages import load as load_spec
 from web.game import GameMode, GameSession, Player, SessionStore, computer_auto_play
 from web.models import (BoardStateResponse, DifficultyLevelInfo, DifficultyLevelsResponse,
-                        LastComputerMove, NewGameRequest, PlayerState)
+                        LanguageInfo, LanguagesResponse, LastComputerMove, NewGameRequest,
+                        PlayerState)
 
 router = APIRouter(prefix="/game")
 
 
 def _state_response(session: GameSession) -> BoardStateResponse:
     return BoardStateResponse(
+        language=session.language,
         board=session.board_grid(),
         board_blanks=session.board.blank_mask(),
         players=[
@@ -113,22 +117,27 @@ async def _play_opening_computer_move(session: GameSession, dawg: Dawg) -> None:
 
 
 @router.post("/new", response_model=BoardStateResponse)
-async def new_game(body: NewGameRequest, response: Response, dawg: Dawg = Depends(get_dawg)) -> BoardStateResponse:
+async def new_game(body: NewGameRequest, response: Response) -> BoardStateResponse:
+    pack = resolve_language(body.language)
     players = _players_from_request(body)
-    session = SessionStore.create(players, game_mode=GameMode(body.game_mode))
-    await _play_opening_computer_move(session, dawg)
+    session = SessionStore.create(players, game_mode=GameMode(body.game_mode), pack=pack)
+    await _play_opening_computer_move(session, pack.dawg)
     _set_session_cookie(response, session.session_id)
     return _state_response(session)
 
 
 @router.get("/difficulty-levels", response_model=DifficultyLevelsResponse)
-async def difficulty_levels() -> DifficultyLevelsResponse:
+async def difficulty_levels(language: str | None = None) -> DifficultyLevelsResponse:
     """Every notch of the custom-difficulty slider, with the feedback text the
     setup dialog shows. Server-side so the descriptions stay tied to the rank
-    windows the bot actually plays by."""
+    windows the bot actually plays by -- and so a language without a trained
+    leave net simply serves a shorter list, which the slider honours without
+    needing to know why."""
+    spec = resolve_language(language).spec
+    levels = all_levels(spec)
     return DifficultyLevelsResponse(
         min_level=MIN_LEVEL,
-        max_level=MAX_LEVEL,
+        max_level=max_level_for(spec),
         default_level=DEFAULT_LEVEL,
         levels=[
             DifficultyLevelInfo(
@@ -142,7 +151,7 @@ async def difficulty_levels() -> DifficultyLevelsResponse:
                 rank_worst=info.rank_worst,
                 slow=info.slow,
             )
-            for info in all_levels()
+            for info in levels
         ],
     )
 
@@ -154,23 +163,48 @@ async def get_state(request: Request) -> BoardStateResponse:
 
 @router.post("/reset", response_model=BoardStateResponse)
 async def reset_game(
-    body: NewGameRequest, request: Request, response: Response, dawg: Dawg = Depends(get_dawg)
+    body: NewGameRequest, request: Request, response: Response
 ) -> BoardStateResponse:
+    pack = resolve_language(body.language)
     sid = request.cookies.get("scrablozaur_session")
     if sid:
         SessionStore.delete(sid)
     players = _players_from_request(body)
-    session = SessionStore.create(players, game_mode=GameMode(body.game_mode))
-    await _play_opening_computer_move(session, dawg)
+    session = SessionStore.create(players, game_mode=GameMode(body.game_mode), pack=pack)
+    await _play_opening_computer_move(session, pack.dawg)
     _set_session_cookie(response, session.session_id)
     return _state_response(session)
 
 
-def _require_session(request: Request) -> GameSession:
-    sid = request.cookies.get("scrablozaur_session")
-    if not sid:
-        raise HTTPException(status_code=401, detail="No session. Start a new game.")
-    session = SessionStore.get(sid)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found. Start a new game.")
-    return session
+@router.get("/languages", response_model=LanguagesResponse)
+async def list_languages() -> LanguagesResponse:
+    """The language picker's options, plus each language's point and count
+    tables. Serving the tables means the client never carries its own copy --
+    `board.js` used to hold a hand-maintained duplicate of the point values."""
+    infos = []
+    for code in available():
+        # Read the definition file, not `get_pack` -- the picker only needs
+        # metadata, and loading every language's dictionary to build a dropdown
+        # would cost ~60-80 MB apiece for nothing.
+        spec = load_spec(code)
+        infos.append(
+            LanguageInfo(
+                code=spec.code,
+                name=spec.name,
+                flag=spec.flag,
+                alphabet=spec.alphabet,
+                blank=spec.blank,
+                letter_values=spec.points,
+                tile_counts=spec.counts,
+                total_tiles=spec.total_tiles,
+                max_level=max_level_for(spec),
+                has_ocr=spec.ocr is not None,
+                has_leave_net=spec.leave_net is not None,
+            )
+        )
+    return LanguagesResponse(default=DEFAULT_LANGUAGE, languages=infos)
+
+
+# Re-exported: the other routers imported this from here before it moved to
+# `web/deps.py`, and this keeps that import working.
+_require_session = require_session

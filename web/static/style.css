@@ -260,6 +260,48 @@ dialog h2 {
   padding: 0.55rem 0.75rem;
 }
 
+/* Language picker (built by js/languages.js). Empty, and so collapsed to
+   nothing, when only one language is installed. */
+.setup-language-slot:empty {
+  display: none;
+}
+
+.setup-language-slot {
+  margin-bottom: 1.25rem;
+}
+
+.language-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.setup-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.setup-select {
+  font-size: 1rem;
+  padding: 0.55rem 0.75rem;
+  border: 2px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg);
+  color: inherit;
+}
+
+.setup-select:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.setup-note {
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  line-height: 1.4;
+}
+
 /* Custom difficulty slider (built by js/difficulty.js) */
 .setup-difficulty-slot {
   margin-bottom: 1.5rem;

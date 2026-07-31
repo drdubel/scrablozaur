@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from web.deps import resolve_language
 from web.game import BenchmarkResult, run_benchmark
 from web.models import (BenchmarkBestGame, BenchmarkJobStartResponse, BenchmarkJobStatusResponse,
                         BenchmarkMoveRecord, BenchmarkPlayerStats, BenchmarkRequest,
@@ -25,13 +26,13 @@ _jobs: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 _jobs_lock = threading.Lock()
 
 
-def _run_job(job_id: str, player_specs: list[tuple[str, int]], games: int) -> None:
+def _run_job(job_id: str, player_specs: list[tuple[str, int]], games: int, language: str) -> None:
     def on_game_done(done: int) -> None:
         with _jobs_lock:
             _jobs[job_id]["games_done"] = done
 
     try:
-        result = run_benchmark(player_specs, games, on_game_done=on_game_done)
+        result = run_benchmark(player_specs, games, on_game_done=on_game_done, language=language)
         with _jobs_lock:
             _jobs[job_id]["status"] = "done"
             _jobs[job_id]["result"] = result
@@ -43,6 +44,7 @@ def _run_job(job_id: str, player_specs: list[tuple[str, int]], games: int) -> No
 
 @router.post("/start", response_model=BenchmarkJobStartResponse)
 async def start_benchmark(body: BenchmarkRequest) -> BenchmarkJobStartResponse:
+    pack = resolve_language(body.language)
     player_specs = [(p.name, p.difficulty) for p in body.players]
     job_id = str(uuid.uuid4())
     with _jobs_lock:
@@ -57,7 +59,7 @@ async def start_benchmark(body: BenchmarkRequest) -> BenchmarkJobStartResponse:
             _jobs.popitem(last=False)
 
     threading.Thread(
-        target=_run_job, args=(job_id, player_specs, body.games), daemon=True
+        target=_run_job, args=(job_id, player_specs, body.games, pack.code), daemon=True
     ).start()
     return BenchmarkJobStartResponse(job_id=job_id)
 

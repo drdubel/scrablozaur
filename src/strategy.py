@@ -28,9 +28,14 @@ MAX_RANKED_LEVEL = 8
 WORST_RANK_AT_MIN_LEVEL = 40
 
 
-def clamp_level(level: int) -> int:
-    """Force *level* into [MIN_LEVEL, MAX_LEVEL]."""
-    return max(MIN_LEVEL, min(MAX_LEVEL, int(level)))
+def clamp_level(level: int, ceiling: int = MAX_LEVEL) -> int:
+    """Force *level* into [MIN_LEVEL, ceiling].
+
+    `ceiling` is normally MAX_LEVEL, but a language with no trained leave net
+    cannot field levels 9-10 (see `web.difficulty.max_level_for`), so callers
+    that know the language pass its own limit.
+    """
+    return max(MIN_LEVEL, min(int(ceiling), int(level)))
 
 
 def rank_window(level: int) -> tuple[int, int]:

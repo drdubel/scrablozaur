@@ -14,8 +14,8 @@ from enum import Enum
 from pathlib import Path
 
 from scrablozaur import Board, Dawg, set_num_threads
-from web.difficulty import DEFAULT_LEVEL, EngineMode, clamp_level, engine_mode
-from web.engine import DAWG_PATH, GADDAG_PATH, LANG
+from web.difficulty import DEFAULT_LEVEL, EngineMode, clamp_level, engine_mode, max_level_for
+from web.engine import DEFAULT_LANGUAGE, get_pack
 
 # smart_player is a standalone script-style package (like board_reader, see
 # web/scan.py), not importable as a normal module -- add its dir to sys.path
@@ -54,51 +54,16 @@ class GameMode(str, Enum):
 
 
 
-# Polish Scrabble tile distribution: letter → count (100 tiles total)
-TILE_COUNTS: dict[str, int] = {
-    "a": 9,
-    "ą": 1,
-    "b": 2,
-    "c": 3,
-    "ć": 1,
-    "d": 3,
-    "e": 7,
-    "ę": 1,
-    "f": 1,
-    "g": 2,
-    "h": 2,
-    "i": 8,
-    "j": 2,
-    "k": 3,
-    "l": 3,
-    "ł": 2,
-    "m": 3,
-    "n": 5,
-    "ń": 1,
-    "o": 6,
-    "ó": 1,
-    "p": 3,
-    "r": 4,
-    "s": 4,
-    "ś": 1,
-    "t": 3,
-    "u": 2,
-    "w": 4,
-    "y": 4,
-    "z": 5,
-    "ź": 1,
-    "ż": 1,
-    "?": 2,
-}
-
-
 @dataclass
 class TileBag:
     tiles: list[str]
 
     @classmethod
-    def full(cls) -> TileBag:
-        bag = [letter for letter, count in TILE_COUNTS.items() for _ in range(count)]
+    def full(cls, spec) -> TileBag:
+        """A shuffled bag for `spec`'s distribution. The counts come from
+        `languages/<code>.json`, the same file the engine's own bag is built
+        from -- this used to be a second hand-maintained copy."""
+        bag = list(spec.bag)
         random.shuffle(bag)
         return cls(tiles=bag)
 
@@ -164,6 +129,9 @@ class GameSession:
     session_id: str
     board: Board
     players: list[Player]
+    #: Which language this game is played in. Fixed at creation -- the board,
+    #: the bag and the dictionary all have to agree, so it cannot change later.
+    language: str = DEFAULT_LANGUAGE
     current_player_idx: int = 0
     is_first_move: bool = True
     move_number: int = 0
@@ -239,7 +207,7 @@ _DEFAULT_PLAYERS = [
 ]
 
 
-def _deal_new_game(players: list[Player], game_mode: GameMode) -> GameSession:
+def _deal_new_game(players: list[Player], game_mode: GameMode, pack) -> GameSession:
     """Build a fresh GameSession for *players*, dealing a real bag + random
     racks for the modes that use one. Shared by SessionStore.create (a real,
     registered game) and run_benchmark (ephemeral simulated games that never
@@ -250,9 +218,9 @@ def _deal_new_game(players: list[Player], game_mode: GameMode) -> GameSession:
     # COMPETITIVE (1 human + 1 computer) and SANDBOX_AUTO (2-4 computers)
     # both play with a real bag and random racks -- only the referee-style
     # plain SANDBOX mode has no bag at all.
-    board = Board(LANG)
+    board = Board(pack.lang)
     if game_mode in (GameMode.COMPETITIVE, GameMode.SANDBOX_AUTO):
-        tile_bag = TileBag.full()
+        tile_bag = TileBag.full(pack.spec)
         # Standard rule: each player draws one tile, closest to 'A'
         # (blank beats everything) goes first; drawn tiles go back to
         # the bag and get reshuffled in before dealing real racks.
@@ -267,6 +235,7 @@ def _deal_new_game(players: list[Player], game_mode: GameMode) -> GameSession:
         session_id=str(uuid.uuid4()),
         board=board,
         players=players,
+        language=pack.code,
         current_player_idx=first_player_idx,
         game_mode=game_mode,
         tile_bag=tile_bag,
@@ -281,12 +250,17 @@ class SessionStore:
         cls,
         players: list[Player] | None = None,
         game_mode: GameMode = GameMode.SANDBOX,
+        pack=None,
     ) -> GameSession:
+        pack = pack or get_pack()
+        # Clamp to what this language can actually field: without a trained
+        # leave net there is no level 9 or 10 to give anyone.
+        ceiling = max_level_for(pack.spec)
         player_list = [
-            Player(p.name, p.is_computer, difficulty=clamp_level(p.difficulty))
+            Player(p.name, p.is_computer, difficulty=clamp_level(p.difficulty, ceiling))
             for p in (players or _DEFAULT_PLAYERS)
         ]
-        session = _deal_new_game(player_list, game_mode)
+        session = _deal_new_game(player_list, game_mode, pack)
         cls._sessions[session.session_id] = session
         return session
 
@@ -548,6 +522,20 @@ def _engine_suggestions(board: Board, dawg: Dawg, letters: str, n: int) -> list[
 
 
 SORT_MODES = ("score", "smart", "sim")
+#: Orderings that consult the learned rack-leave evaluator, and so are only
+#: available in a language that has one trained.
+LEAVE_NET_SORTS = ("smart", "sim")
+
+
+def has_leave_net(language: str) -> bool:
+    """Whether `language` has a trained rack-leave evaluator.
+
+    The `smart` and `sim` orderings both consult one, and a net is only ever
+    valid for the tile alphabet it was trained on -- feeding an English rack to
+    a Polish net does not fail, it silently drops the letters Polish lacks and
+    scores the rest against the wrong distribution.
+    """
+    return get_pack(language).spec.leave_net is not None
 
 
 def rank_suggestions(
@@ -569,6 +557,10 @@ def rank_suggestions(
     """
     if sort not in SORT_MODES:
         raise ValueError(f"unknown sort {sort!r} (expected one of {SORT_MODES})")
+    if sort in LEAVE_NET_SORTS and not has_leave_net(board.lang.code):
+        raise ValueError(
+            f"'{sort}' ordering needs a trained leave net, and '{board.lang.code}' has none"
+        )
     if not letters:
         return []
 
@@ -722,14 +714,10 @@ class _SimulatedGame:
 # Each simulated game runs in its own process (games are independent, so this
 # is embarrassingly parallel). `Dawg`/`Board` are Rust (pyo3) objects that
 # can't be pickled across the process boundary, so instead of passing one in,
-# every worker loads its own copy once at startup and keeps it in a
-# process-local global -- mirrors how src/main.py's `benchmark` gets a fresh
+# each worker resolves the language itself and `web.engine.get_pack` caches the
+# result process-locally -- mirrors how src/main.py's `benchmark` gets a fresh
 # `d = Dawg(...)` per worker for free via module re-import under spawn.
-_worker_dawg: Dawg | None = None
-
-
-def _init_worker(dawg_path: str, gaddag_path: str, engine_threads: int) -> None:
-    global _worker_dawg
+def _init_worker(engine_threads: int) -> None:
     # Split the cores between workers instead of letting every worker build the
     # engine's default min(8, cores) rayon pool -- with one pool per worker that
     # oversubscribes the box several times over (and every thread costs stack +
@@ -738,19 +726,21 @@ def _init_worker(dawg_path: str, gaddag_path: str, engine_threads: int) -> None:
         set_num_threads(engine_threads)
     except RuntimeError:
         pass  # pool already built -- nothing to do in a fresh worker anyway
-    _worker_dawg = Dawg(LANG, dawg_path, gaddag_path)
 
 
-def _simulate_game(player_specs: list[tuple[str, int]]) -> _SimulatedGame:
-    assert _worker_dawg is not None, "worker executor initializer did not run"
+def _simulate_game(player_specs: list[tuple[str, int]], language: str) -> _SimulatedGame:
+    # `get_pack` caches per process, so the first game in a worker pays the
+    # dictionary load and the rest are free -- and a worker that has served two
+    # languages simply holds both, which is cheaper than a pool per language.
+    pack = get_pack(language)
     players = [Player(name=name, is_computer=True, difficulty=level) for name, level in player_specs]
-    session = _deal_new_game(players, GameMode.SANDBOX_AUTO)
+    session = _deal_new_game(players, GameMode.SANDBOX_AUTO, pack)
 
     moves: list[BenchmarkMoveRecord] = []
     move_count = 0
     while not session.game_over and move_count < MAX_BENCHMARK_GAME_MOVES:
         player_idx = session.current_player_idx
-        move = computer_auto_play(session, _worker_dawg)
+        move = computer_auto_play(session, pack.dawg)
         move_count += 1
         moves.append(
             BenchmarkMoveRecord(
@@ -836,7 +826,7 @@ def _benchmark_pool() -> Iterator[ProcessPoolExecutor]:
             _executor = ProcessPoolExecutor(
                 max_workers=BENCHMARK_WORKERS,
                 initializer=_init_worker,
-                initargs=(str(DAWG_PATH), str(GADDAG_PATH), BENCHMARK_ENGINE_THREADS),
+                initargs=(BENCHMARK_ENGINE_THREADS,),
             )
         _executor_users += 1
         executor = _executor
@@ -863,6 +853,7 @@ def run_benchmark(
     player_specs: list[tuple[str, int]],
     games: int,
     on_game_done: Callable[[int], None] | None = None,
+    language: str = DEFAULT_LANGUAGE,
 ) -> BenchmarkResult:
     """Simulate *games* full SANDBOX_AUTO games with the given (name,
     level) players end-to-end using the same engine primitives as a
@@ -882,7 +873,7 @@ def run_benchmark(
 
     with _benchmark_pool() as executor:
         pending: set[Future[_SimulatedGame]] = {
-            executor.submit(_simulate_game, player_specs) for _ in range(games)
+            executor.submit(_simulate_game, player_specs, language) for _ in range(games)
         }
         try:
             # `as_completed` gets its own copy of the futures and releases each

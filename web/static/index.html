@@ -38,6 +38,12 @@
       </button>
     </div>
 
+    <!-- Language picker. Placed above the mode-specific blocks because it
+         applies to all of them: sandbox, automatic sandbox, competitive and
+         scanning all play in one language. Filled by js/languages.js, and
+         hidden entirely when only one language is installed. -->
+    <div id="setup-language-slot" class="setup-language-slot"></div>
+
     <!-- Sandbox: multi-player config -->
     <div id="setup-sandbox-config" hidden>
       <div class="sandbox-sub-toggle" role="group" aria-label="Tryb sandboxa">
@@ -422,6 +428,7 @@
   <script src="/static/js/ui.js"></script>
   <script src="/static/js/api.js"></script>
   <script src="/static/js/difficulty.js"></script>
+  <script src="/static/js/languages.js"></script>
   <script src="/static/js/board.js"></script>
   <script src="/static/js/game.js"></script>
   <script src="/static/js/scan.js"></script>

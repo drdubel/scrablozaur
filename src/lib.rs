@@ -582,6 +582,10 @@ struct Dawg {
     /// The language this lexicon is in. Edge letters are decoded into symbol
     /// indexes at load, so a DAWG is bound to the alphabet it was loaded under.
     lang: &'static Language,
+    /// `KIND_DAWG` or `KIND_GADDAG`, from the file header -- so loading one
+    /// where the other is wanted is caught rather than silently generating
+    /// nothing.
+    kind: u8,
     root: u32,
     terminal: Vec<bool>,
     child_start: Vec<u32>,
@@ -594,19 +598,73 @@ impl Dawg {
         Self::from_bytes(fs::read(path)?, lang)
     }
 
-    fn from_bytes(data: Vec<u8>, lang: &'static Language) -> io::Result<Self> {
-        if data.len() < 8 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "file too short"));
+    /// Load and check the file is the kind the caller asked for. A GADDAG
+    /// opened as a DAWG finds no words at all, and a DAWG opened as a GADDAG
+    /// generates no moves -- both silent failures worth naming.
+    fn load_kind(path: &str, lang: &'static Language, want: u8) -> io::Result<Self> {
+        let dawg = Self::load(path, lang)?;
+        if dawg.kind != want {
+            let name = |k: u8| if k == KIND_GADDAG { "GADDAG" } else { "DAWG" };
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("'{path}' is a {}, expected a {}", name(dawg.kind), name(want)),
+            ));
         }
-        let root = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        let node_count = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+        Ok(dawg)
+    }
+
+    fn from_bytes(data: Vec<u8>, lang: &'static Language) -> io::Result<Self> {
+        let bad = |m: String| io::Error::new(io::ErrorKind::InvalidData, m);
+        if data.len() < 20 {
+            return Err(bad("file too short".into()));
+        }
+        if &data[..8] != DAWG_MAGIC {
+            return Err(bad(
+                "not a SCRBDWG2 lexicon -- rebuild it with `build` / `build-gaddag`".into(),
+            ));
+        }
+        let version = u32::from_le_bytes(data[8..12].try_into().unwrap());
+        if version != DAWG_FORMAT_VERSION {
+            return Err(bad(format!(
+                "lexicon is format version {version}, this engine reads {DAWG_FORMAT_VERSION}"
+            )));
+        }
+        let kind = data[12];
+        if kind != KIND_DAWG && kind != KIND_GADDAG {
+            return Err(bad(format!("unknown lexicon kind {kind}")));
+        }
+
+        // The stamped letters are the ones the lexicon actually contains. Every
+        // one must exist in the language being loaded, which is what catches an
+        // English dictionary opened as Polish (q/v/x) or the reverse (ą, ć, …).
+        let n_letters = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let mut pos = 20usize;
+        if data.len() < pos + n_letters * 4 + 8 {
+            return Err(bad("truncated header".into()));
+        }
+        for _ in 0..n_letters {
+            let cp = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+            pos += 4;
+            let ch = char::from_u32(cp)
+                .ok_or_else(|| bad(format!("header holds invalid codepoint U+{cp:04X}")))?;
+            if lang.letter_index(ch).is_none() {
+                return Err(bad(format!(
+                    "lexicon uses '{ch}', which is not a letter of '{}' -- \
+                     is this dictionary for a different language?",
+                    lang.code
+                )));
+            }
+        }
+
+        let root = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        let node_count = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        pos += 8;
 
         let mut terminal = Vec::with_capacity(node_count);
         let mut child_start = Vec::with_capacity(node_count + 1);
         let mut bitmap = Vec::with_capacity(node_count);
         let mut children: Vec<Child> = Vec::new();
 
-        let mut pos = 8usize;
         for _ in 0..node_count {
             child_start.push(children.len() as u32);
             terminal.push(data[pos] != 0);
@@ -637,6 +695,7 @@ impl Dawg {
 
         Ok(Self {
             lang,
+            kind,
             root,
             terminal,
             child_start,
@@ -989,13 +1048,15 @@ impl DawgPy {
     #[new]
     #[pyo3(signature = (lang, path, gaddag_path=None))]
     fn new(lang: &LanguagePy, path: &str, gaddag_path: Option<&str>) -> PyResult<Self> {
-        let inner = Dawg::load(path, lang.inner).map_err(|e| PyIOError::new_err(e.to_string()))?;
+        let inner = Dawg::load_kind(path, lang.inner, KIND_DAWG)
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+        let load_gaddag = |gp: &str| {
+            Dawg::load_kind(gp, lang.inner, KIND_GADDAG).map_err(|e| PyIOError::new_err(e.to_string()))
+        };
         let gaddag = match gaddag_path {
-            Some(gp) => Some(Dawg::load(gp, lang.inner).map_err(|e| PyIOError::new_err(e.to_string()))?),
+            Some(gp) => Some(load_gaddag(gp)?),
             None => match sibling_gaddag_path(path) {
-                Some(gp) if std::path::Path::new(&gp).exists() => {
-                    Some(Dawg::load(&gp, lang.inner).map_err(|e| PyIOError::new_err(e.to_string()))?)
-                }
+                Some(gp) if std::path::Path::new(&gp).exists() => Some(load_gaddag(&gp)?),
                 _ => None,
             },
         };
@@ -1734,6 +1795,7 @@ impl Board {
     /// returning an empty list, which a caller would read as "no legal plays".
     #[pyo3(signature = (dawg, letters, parallel=true))]
     fn all_moves(&self, dawg: &DawgPy, letters: &str, parallel: bool) -> PyResult<Vec<BestWord>> {
+        self.require_same_lang(dawg.inner.lang, "dictionary")?;
         if self.first {
             return Ok(self.best_opening_words(dawg, letters, usize::MAX));
         }
@@ -1784,6 +1846,7 @@ impl Board {
         opp_rack: &str,
         max_nodes: usize,
     ) -> PyResult<(String, u32, (usize, usize, bool), Vec<char>, i32, usize, bool)> {
+        self.require_same_lang(dawg.inner.lang, "dictionary")?;
         let Some(gaddag) = &dawg.gaddag else {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "solve_endgame needs a GADDAG; this Dawg was loaded without one",
@@ -1859,6 +1922,10 @@ impl Board {
         leave_weight: f64,
         seed: u64,
     ) -> PyResult<Vec<(String, u32, (usize, usize, bool), Vec<char>, f64, f64, usize)>> {
+        self.require_same_lang(dawg.inner.lang, "dictionary")?;
+        // A leave net encodes one slot per tile type, so a net for another
+        // language does not merely score badly -- it reads the wrong features.
+        self.require_same_lang(net.lang, "leave net")?;
         let Some(gaddag) = &dawg.gaddag else {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "simulate needs a GADDAG; this Dawg was loaded without one",
@@ -1899,6 +1966,21 @@ impl Board {
 
 // Pure Rust methods — no PyO3 overhead, safe to call from rayon threads.
 impl Board {
+    /// Reject a board/dictionary pairing from different languages.
+    ///
+    /// Interning makes this a pointer comparison: two `Language` objects built
+    /// from the same definition are the same object. Without it, a mismatch
+    /// scores every move with the wrong point table instead of failing.
+    fn require_same_lang(&self, other: &'static Language, what: &str) -> PyResult<()> {
+        if !std::ptr::eq(self.lang, other) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "board is '{}' but the {what} is '{}'",
+                self.lang.code, other.code
+            )));
+        }
+        Ok(())
+    }
+
     /// Empty board with a full bag, shuffled once from `seed`.
     fn with_seed(lang: &'static Language, seed: u64) -> Board {
         // 0 is a fixed point of xorshift64 -- it would leave the bag in
@@ -2796,9 +2878,41 @@ fn compact(arena: &Arena, root: u32) -> (Arena, u32) {
     (new_arena, 0)
 }
 
-fn serialize(arena: &Arena, root: u32) -> Vec<u8> {
+/// Magic + version identifying a lexicon binary. Version 2 added the header;
+/// version 1 files carried no identification at all, so a dictionary in the
+/// wrong language loaded silently and mis-scored every move.
+const DAWG_MAGIC: &[u8; 8] = b"SCRBDWG2";
+const DAWG_FORMAT_VERSION: u32 = 2;
+const KIND_DAWG: u8 = 0;
+const KIND_GADDAG: u8 = 1;
+
+/// The distinct letters a set of entries actually uses, ascending by codepoint,
+/// with `SEP` excluded. This is the file's identity: derived from the lexicon
+/// itself rather than declared, so it cannot be mislabelled. Codepoint order
+/// (not collation order) keeps it a property of the file — collation order
+/// belongs to the language, where it drives `first_draw_winner`.
+fn lexicon_alphabet(entries: &[&str]) -> Vec<char> {
+    let mut seen: Vec<char> = entries
+        .iter()
+        .flat_map(|w| w.chars())
+        .filter(|&c| c != SEP)
+        .collect();
+    seen.sort_unstable();
+    seen.dedup();
+    seen
+}
+
+fn serialize(arena: &Arena, root: u32, kind: u8, alphabet: &[char]) -> Vec<u8> {
     let n = arena.nodes.len();
     let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(DAWG_MAGIC);
+    buf.extend_from_slice(&DAWG_FORMAT_VERSION.to_le_bytes());
+    buf.push(kind);
+    buf.extend_from_slice(&[0u8; 3]); // reserved
+    buf.extend_from_slice(&(alphabet.len() as u32).to_le_bytes());
+    for &c in alphabet {
+        buf.extend_from_slice(&(c as u32).to_le_bytes());
+    }
     buf.extend_from_slice(&root.to_le_bytes());
     buf.extend_from_slice(&(n as u32).to_le_bytes());
     for id in 0..n as u32 {
@@ -3767,7 +3881,7 @@ fn cmd_build(words_path: &str, dawg_path: &str) -> io::Result<()> {
         arena.nodes.len()
     );
 
-    let data = serialize(&arena, root);
+    let data = serialize(&arena, root, KIND_DAWG, &lexicon_alphabet(&words));
     {
         let file = fs::File::create(dawg_path)?;
         BufWriter::new(file).write_all(&data)?;
@@ -3830,7 +3944,7 @@ fn cmd_build_gaddag(words_path: &str, gaddag_path: &str) -> io::Result<()> {
         arena.nodes.len()
     );
 
-    let data = serialize(&arena, root);
+    let data = serialize(&arena, root, KIND_GADDAG, &lexicon_alphabet(&words));
     {
         let file = fs::File::create(gaddag_path)?;
         BufWriter::new(file).write_all(&data)?;
@@ -3843,7 +3957,7 @@ fn cmd_build_gaddag(words_path: &str, gaddag_path: &str) -> io::Result<()> {
 }
 
 fn cmd_lookup(lang: &'static Language, dawg_path: &str, word: &str) -> io::Result<()> {
-    let dawg = Dawg::load(dawg_path, lang)?;
+    let dawg = Dawg::load_kind(dawg_path, lang, KIND_DAWG)?;
     let t0 = Instant::now();
     let found = dawg.contains(word);
     let elapsed = t0.elapsed();
@@ -3856,7 +3970,7 @@ fn cmd_lookup(lang: &'static Language, dawg_path: &str, word: &str) -> io::Resul
 }
 
 fn cmd_bench(lang: &'static Language, dawg_path: &str, words_path: &str) -> io::Result<()> {
-    let dawg = Dawg::load(dawg_path, lang)?;
+    let dawg = Dawg::load_kind(dawg_path, lang, KIND_DAWG)?;
     let text = fs::read_to_string(words_path)?;
     let words: Vec<&str> = text.split_whitespace().collect();
     let n = words.len();
@@ -3920,8 +4034,8 @@ fn cmd_gen_verify(
     gaddag_path: &str,
     games: usize,
 ) -> io::Result<()> {
-    let dawg = Dawg::load(dawg_path, lang)?;
-    let gaddag = Dawg::load(gaddag_path, lang)?;
+    let dawg = Dawg::load_kind(dawg_path, lang, KIND_DAWG)?;
+    let gaddag = Dawg::load_kind(gaddag_path, lang, KIND_GADDAG)?;
     let dpy = DawgPy {
         inner: dawg,
         gaddag: Some(gaddag),
@@ -4037,8 +4151,8 @@ fn cmd_gen_bench(
     gaddag_path: &str,
     games: usize,
 ) -> io::Result<()> {
-    let dawg = Dawg::load(dawg_path, lang)?;
-    let gaddag = Dawg::load(gaddag_path, lang)?;
+    let dawg = Dawg::load_kind(dawg_path, lang, KIND_DAWG)?;
+    let gaddag = Dawg::load_kind(gaddag_path, lang, KIND_GADDAG)?;
     let dpy = DawgPy {
         inner: dawg,
         gaddag: Some(gaddag),
@@ -4198,12 +4312,20 @@ mod gaddag_tests {
     /// Build a flat DAWG/GADDAG in memory from the given entries (any strings,
     /// including GADDAG entries containing `SEP`), via the real build pipeline.
     fn compile_in(lang: &'static Language, entries: &[&str]) -> Dawg {
+        // A GADDAG's entries contain SEP, which `lexicon_alphabet` filters out;
+        // the kind byte follows from that so round-trips carry a truthful header.
+        let kind = if entries.iter().any(|e| e.contains(SEP)) {
+            KIND_GADDAG
+        } else {
+            KIND_DAWG
+        };
         let mut ws: Vec<&str> = entries.to_vec();
         ws.sort_unstable();
         ws.dedup();
         let (arena, root, _) = build_dawg(&ws);
         let (arena, root) = compact(&arena, root);
-        Dawg::from_bytes(serialize(&arena, root), lang).unwrap()
+        let bytes = serialize(&arena, root, kind, &lexicon_alphabet(&ws));
+        Dawg::from_bytes(bytes, lang).unwrap()
     }
 
     fn compile_gaddag_in(lang: &'static Language, words: &[&str]) -> Dawg {
@@ -4327,6 +4449,69 @@ mod gaddag_tests {
             "expected the 'cats' hook, got {:?}",
             moves.iter().map(|m| &m.0).collect::<Vec<_>>()
         );
+    }
+
+    /// A lexicon stamps the letters it actually uses, so opening it under a
+    /// language that lacks one of them fails loudly. Before the header existed
+    /// this loaded fine and mis-scored every move.
+    #[test]
+    fn a_lexicon_is_rejected_by_the_wrong_language() {
+        let raw = |lang: &'static Language, words: &[&str]| {
+            let mut ws: Vec<&str> = words.to_vec();
+            ws.sort_unstable();
+            let (arena, root, _) = build_dawg(&ws);
+            let (arena, root) = compact(&arena, root);
+            let _ = lang;
+            serialize(&arena, root, KIND_DAWG, &lexicon_alphabet(&ws))
+        };
+
+        // "quiz" needs q and z; Polish has no q.
+        let english_bytes = raw(en(), &["quiz", "cat"]);
+        let err = Dawg::from_bytes(english_bytes.clone(), pl())
+            .err()
+            .expect("polish must reject an english lexicon");
+        assert!(err.to_string().contains("'q'"), "got: {err}");
+        assert!(Dawg::from_bytes(english_bytes, en()).is_ok());
+
+        // "kość" needs ć and ś; English has neither.
+        let polish_bytes = raw(pl(), &["kość", "kot"]);
+        let err = Dawg::from_bytes(polish_bytes.clone(), en())
+            .err()
+            .expect("english must reject a polish lexicon");
+        assert!(err.to_string().contains("different language"), "got: {err}");
+        assert!(Dawg::from_bytes(polish_bytes, pl()).is_ok());
+    }
+
+    /// A DAWG and a GADDAG are both lexicons but are not interchangeable:
+    /// swapping them finds no words / generates no moves, silently.
+    #[test]
+    fn a_gaddag_is_not_accepted_where_a_dawg_is_wanted() {
+        let lang = pl();
+        let dawg_bytes = {
+            let ws = vec!["kot", "kota"];
+            let (arena, root, _) = build_dawg(&ws);
+            let (arena, root) = compact(&arena, root);
+            serialize(&arena, root, KIND_DAWG, &lexicon_alphabet(&ws))
+        };
+        let loaded = Dawg::from_bytes(dawg_bytes, lang).unwrap();
+        assert_eq!(loaded.kind, KIND_DAWG);
+        assert_eq!(compile_gaddag_in(lang, &["kot"]).kind, KIND_GADDAG);
+    }
+
+    /// A version-1 file (no magic, no header) must be refused with a message
+    /// that says what to do, not decoded as garbage.
+    #[test]
+    fn an_unstamped_lexicon_is_refused() {
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(&0u32.to_le_bytes()); // root
+        legacy.extend_from_slice(&1u32.to_le_bytes()); // node count
+        legacy.push(1);
+        legacy.extend_from_slice(&0u32.to_le_bytes());
+        legacy.resize(64, 0);
+        let err = Dawg::from_bytes(legacy, pl())
+            .err()
+            .expect("an unstamped file must be refused");
+        assert!(err.to_string().contains("SCRBDWG2"), "got: {err}");
     }
 
     /// Two boards built from the same definition share one interned language,

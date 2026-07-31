@@ -15,7 +15,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // every "which level is this bot?" label, so fetch them before the first
   // render. A failed load is not fatal (see js/difficulty.js), hence no catch
   // beyond the one inside load().
-  Difficulty.load(api).then(() => controller.onDifficultyLevelsLoaded());
+  // Languages first: the level table depends on which one is selected (a
+  // language without a trained leave net has no levels 9-10), and the board
+  // renderer needs its point values to label tiles.
+  Languages.load(api)
+    .then(() => {
+      boardEl.setLetterValues(Languages.letterValues(Languages.default));
+      controller.onLanguagesLoaded();
+      return Difficulty.load(api, Languages.default);
+    })
+    .then(() => controller.onDifficultyLevelsLoaded());
 
   controller.init();
 });

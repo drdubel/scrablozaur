@@ -17,11 +17,12 @@ sys.path.insert(0, str(_ROOT))
 
 from scrablozaur import Board, Dawg  # noqa: E402
 
-from languages import engine_language  # noqa: E402
+from languages import engine_language, load as load_language  # noqa: E402
 
-LANG = engine_language("pl")
-DAWG_PATH = _ROOT / "words" / "dawg.bin"
-GADDAG_PATH = _ROOT / "words" / "gaddag.bin"
+SPEC = load_language("pl")
+LANG = engine_language(SPEC)
+DAWG_PATH = SPEC.dawg
+GADDAG_PATH = SPEC.gaddag
 
 
 def board_grid(board: Board) -> list[list[str]]:

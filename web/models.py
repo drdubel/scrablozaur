@@ -24,6 +24,10 @@ class NewGameRequest(BaseModel):
     players: list[NewPlayerConfig] = Field(..., min_length=1, max_length=4)
     game_mode: Literal["sandbox", "sandbox_auto", "competitive"] = "sandbox"
     difficulty: int = DifficultyLevelField
+    # A plain str, not a Literal, so adding a language stays a matter of
+    # dropping a file in `languages/`. Validated against the registry in the
+    # handler, which knows what is actually installed.
+    language: str | None = None
 
 
 class PlaceHumanWordRequest(BaseModel):
@@ -71,6 +75,7 @@ class BenchmarkPlayerConfig(BaseModel):
 class BenchmarkRequest(BaseModel):
     players: list[BenchmarkPlayerConfig] = Field(..., min_length=2, max_length=4)
     games: int = Field(20, ge=1)
+    language: str | None = None
 
 
 # ── Responses ─────────────────────────────────────────────────────────────────
@@ -108,6 +113,34 @@ class DifficultyLevelsResponse(BaseModel):
     levels: list[DifficultyLevelInfo]
 
 
+class LanguageInfo(BaseModel):
+    """One entry of the language picker, plus the tables the client needs to
+    render a board in that language. `letter_values` replaces what used to be a
+    hand-kept copy of the point table in `web/static/js/board.js`."""
+
+    code: str
+    name: str
+    flag: str
+    alphabet: str
+    blank: str
+    letter_values: dict[str, int]
+    tile_counts: dict[str, int]
+    total_tiles: int
+    #: Strongest difficulty this language can field -- capped where no leave
+    #: net has been trained yet (see web.difficulty.max_level_for).
+    max_level: int
+    #: Whether the board-photo scanner has models for this language.
+    has_ocr: bool
+    #: Whether a trained rack-leave evaluator exists. Without one there are no
+    #: levels 9-10, and the `smart`/`sim` suggestion orderings are unavailable.
+    has_leave_net: bool
+
+
+class LanguagesResponse(BaseModel):
+    default: str
+    languages: list[LanguageInfo]
+
+
 class LastComputerMove(BaseModel):
     word: str
     score: int
@@ -131,6 +164,7 @@ class Suggestion(BaseModel):
 
 
 class BoardStateResponse(BaseModel):
+    language: str = "pl"
     board: list[list[str]]
     # Which occupied squares hold a blank. The grid renders a blank as the
     # letter it stands in for, so without this the UI cannot tell a blank from

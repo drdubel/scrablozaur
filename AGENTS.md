@@ -47,10 +47,10 @@ uv run mypy .
 uv run uvicorn web.main:app --reload
 
 # Engine CLI (see README "CLI" section)
-cargo run --release -- build         words/words.txt words/dawg.bin
-cargo run --release -- build-gaddag  words/words.txt words/gaddag.bin
-cargo run --release -- gen-verify    pl words/dawg.bin words/gaddag.bin 200   # GADDAG vs legacy parity
-cargo run --release -- gen-bench     pl words/dawg.bin words/gaddag.bin 200   # speed comparison
+make dicts  LANG=pl            # rebuild both binaries (build + build-gaddag)
+make verify LANG=pl            # GADDAG vs legacy parity  (gen-verify)
+make bench  LANG=pl            # speed comparison         (gen-bench)
+#   LANG is a language code with a definition in languages/<code>.json (pl, en)
 ```
 
 ## Conventions & gotchas
@@ -83,4 +83,5 @@ cargo run --release -- gen-bench     pl words/dawg.bin words/gaddag.bin 200   # 
 
 `target/`, `.venv/`, `__pycache__/`, `.mypy_cache/`, `.ruff_cache/`, generated profile
 artifacts (`profile*.json.gz`, `profile.svg`, `*.pstats`), and the committed binaries
-`words/dawg.bin` / `words/gaddag.bin` (regenerate via the CLI instead of editing).
+`words/<code>/dawg.bin` / `words/<code>/gaddag.bin` (regenerate with `make dicts` instead
+of editing).

@@ -24,14 +24,14 @@ from scrablozaur import Board, Dawg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import SimplePlayer, StrategicPlayer  # noqa: E402
 
-from languages import engine_language  # noqa: E402
+from languages import engine_language, load as load_language  # noqa: E402
 from model import DEFAULT_WEIGHTS_PATH, LANGUAGE  # noqa: E402
 from player import SmartPlayer  # noqa: E402
 from simulate import play_game  # noqa: E402
 
-_words_dir = os.path.join(os.path.dirname(__file__), "..", "words")
-_lang = engine_language(LANGUAGE)
-_dawg = Dawg(_lang, os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
+_spec = load_language(LANGUAGE)
+_lang = engine_language(_spec)
+_dawg = Dawg(_lang, str(_spec.dawg), str(_spec.gaddag))
 
 _OPPONENTS = {"strategic": StrategicPlayer, "simple": SimplePlayer}
 

@@ -34,7 +34,9 @@ from strategy import (  # noqa: E402
 
 __all__ = [
     "MAX_LEVEL",
+    "MAX_RANKED_LEVEL",
     "MIN_LEVEL",
+    "max_level_for",
     "DEFAULT_LEVEL",
     "SMART_LEVEL",
     "SIM_LEVEL",
@@ -142,5 +144,20 @@ def describe_level(level: int) -> LevelInfo:
     )
 
 
-def all_levels() -> list[LevelInfo]:
-    return [describe_level(level) for level in range(MIN_LEVEL, MAX_LEVEL + 1)]
+def max_level_for(spec) -> int:
+    """The strongest level a language can actually field.
+
+    Levels 9 and 10 both consult a learned rack-leave evaluator, and a net is
+    only ever valid for the tile alphabet it was trained on -- a Polish net has
+    no opinion worth having about keeping a Q. A language that has not been
+    trained one therefore tops out at MAX_RANKED_LEVEL, which needs no model at
+    all. The slider picks this up for free: it reads its bounds from
+    `GET /api/game/difficulty-levels` rather than hardcoding them.
+    """
+    return MAX_LEVEL if spec.leave_net is not None else MAX_RANKED_LEVEL
+
+
+def all_levels(spec=None) -> list[LevelInfo]:
+    """Every level a game in `spec` can be played at (all of them if omitted)."""
+    ceiling = MAX_LEVEL if spec is None else max_level_for(spec)
+    return [describe_level(level) for level in range(MIN_LEVEL, ceiling + 1)]

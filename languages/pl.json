@@ -45,9 +45,9 @@
     "?": {"count": 2, "points": 0}
   },
 
-  "words": "words/words.txt",
-  "dawg": "words/dawg.bin",
-  "gaddag": "words/gaddag.bin",
+  "words": "words/pl/words.txt",
+  "dawg": "words/pl/dawg.bin",
+  "gaddag": "words/pl/gaddag.bin",
 
   "leave_net": {
     "checkpoint": "smart_player/models/leave_value.pt",

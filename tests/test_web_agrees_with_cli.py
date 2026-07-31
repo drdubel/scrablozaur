@@ -25,16 +25,16 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 sys.path.insert(0, os.path.join(_ROOT, "smart_player"))
 
-from languages import engine_language  # noqa: E402
+from languages import engine_language, load as load_language  # noqa: E402
 from player import SmartPlayer, choose_move  # noqa: E402
 from sim_player import choose_move_sim  # noqa: E402
 from strategy import StrategicPlayer  # noqa: E402
 
 from web.game import _engine_suggestions  # noqa: E402
 
-_WORDS = os.path.join(_ROOT, "words")
-_lang = engine_language("pl")
-_dawg = Dawg(_lang, os.path.join(_WORDS, "dawg.bin"), os.path.join(_WORDS, "gaddag.bin"))
+_spec = load_language("pl")
+_lang = engine_language(_spec)
+_dawg = Dawg(_lang, str(_spec.dawg), str(_spec.gaddag))
 
 
 def _positions(n_seeds: int = 12, moves: int = 8):

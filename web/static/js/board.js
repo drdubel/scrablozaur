@@ -44,15 +44,6 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-// Letter point values matching lib.rs calculate_word_points
-const LETTER_VALUES = {
-  'a':1,'e':1,'i':1,'o':1,'z':1,'w':1,'n':1,'s':1,'r':1,
-  'd':2,'y':2,'c':2,'k':2,'l':2,'m':2,'p':2,'t':2,
-  'b':3,'g':3,'h':3,'j':3,'ł':3,'u':3,
-  'ą':5,'ę':5,'f':5,'ó':5,'ś':5,'ż':5,
-  'ć':6,'ń':7,'ź':9,'?':0,
-};
-
 class BoardRenderer {
   /** @param {string} containerId */
   constructor(containerId) {
@@ -67,7 +58,18 @@ class BoardRenderer {
     this._onTypingUpdate = null;
     // { horizontal, entries:[{r,c,letter,skipped}], cursorR, cursorC }
     this._typing = null;
+    // Letter -> point value for the language in play. Served by
+    // `GET /api/game/languages` (see js/languages.js); this used to be a
+    // hardcoded table that had to be kept in step with the engine by hand.
+    // Empty until the fetch lands, which just means no corner numbers yet.
+    this._letterValues = {};
     this._buildGrid();
+  }
+
+  /** @param {Record<string, number>} values */
+  setLetterValues(values) {
+    this._letterValues = values || {};
+    this.render(this._grid, this._owners);
   }
 
   setOnCellClick(fn)     { this._onCellClickCb  = fn; }
@@ -145,7 +147,7 @@ class BoardRenderer {
    * decides whether a hook is worth playing.
    */
   _setTileLetter(cell, letter, extraClass = '', isBlank = false) {
-    const val = isBlank ? 0 : (LETTER_VALUES[letter.toLowerCase()] ?? 0);
+    const val = isBlank ? 0 : (this._letterValues[letter.toLowerCase()] ?? 0);
     cell.innerHTML =
       `<span class="tile-letter">${letter.toUpperCase()}</span>` +
       `<span class="tile-val">${val}</span>`;
