@@ -35,12 +35,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import StrategicPlayer  # noqa: E402
 
 from board_features import encode_board  # noqa: E402
-from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
+from languages import engine_language  # noqa: E402
+from model import DEFAULT_WEIGHTS_PATH, LANGUAGE  # noqa: E402
 from player import SmartPlayer  # noqa: E402
 from simulate import play_game  # noqa: E402
 
 _words_dir = os.path.join(os.path.dirname(__file__), "..", "words")
-_dawg = Dawg(os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
+_lang = engine_language(LANGUAGE)
+_dawg = Dawg(_lang, os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
 
 # (leave, unseen_tiles, board_features, score - opponent.score at that moment).
 _LogEntry = tuple[str, int, tuple[float, ...], int]
@@ -122,7 +124,7 @@ def _n_step_returns(log: list[_LogEntry], final_diff: int, lookahead: int) -> li
 def _play_one_game(parallel: bool, lookahead: int, player: str, model_path: str) -> tuple[list[_Sample], list[_Sample]]:
     """Play one self-play game to completion and return each player's
     (leave, unseen_tiles, board_features, n_step_return) samples."""
-    board = Board()
+    board = Board(_lang)
     cls = _PLAYER_CLASSES[player]
     p1 = cls(board, model_path) if player == "smart" else cls(board)
     p2 = cls(board, model_path) if player == "smart" else cls(board)

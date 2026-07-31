@@ -19,6 +19,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "maturin>=1.14.1",
+    "pytest>=8.4.2",
 ]
 
 # This pyproject.toml exists for uv's dependency management (web/ + board_reader/

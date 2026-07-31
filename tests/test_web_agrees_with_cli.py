@@ -25,6 +25,7 @@ sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 sys.path.insert(0, os.path.join(_ROOT, "smart_player"))
 
+from languages import engine_language  # noqa: E402
 from player import SmartPlayer, choose_move  # noqa: E402
 from sim_player import choose_move_sim  # noqa: E402
 from strategy import StrategicPlayer  # noqa: E402
@@ -32,13 +33,14 @@ from strategy import StrategicPlayer  # noqa: E402
 from web.game import _engine_suggestions  # noqa: E402
 
 _WORDS = os.path.join(_ROOT, "words")
-_dawg = Dawg(os.path.join(_WORDS, "dawg.bin"), os.path.join(_WORDS, "gaddag.bin"))
+_lang = engine_language("pl")
+_dawg = Dawg(_lang, os.path.join(_WORDS, "dawg.bin"), os.path.join(_WORDS, "gaddag.bin"))
 
 
 def _positions(n_seeds: int = 12, moves: int = 8):
     """Real mid-game positions, reached by letting greedy players fill a board."""
     for seed in range(n_seeds):
-        board = Board.seeded(seed)
+        board = Board.seeded(_lang, seed)
         a, b = StrategicPlayer(board), StrategicPlayer(board)
         for _ in range(moves):
             for player in (a, b):
@@ -92,7 +94,7 @@ def test_endgame_is_skipped_when_the_bag_count_contradicts_the_board():
     rack, and `solve_endgame` does not fail on that -- it simply never returns.
     It has to fall through to the static decision instead.
     """
-    board = Board.seeded(3)
+    board = Board.seeded(_lang, 3)
     rack = board.give_letters("")
     # Nothing is on the board, so ~93 tiles are unseen -- not an endgame,
     # whatever the caller claims.
@@ -107,7 +109,7 @@ def test_sim_and_static_agree_in_the_endgame():
     """With the bag empty there is nothing to sample, so the simulating path
     must defer to the same search the static path uses."""
     for seed in (11, 12, 13):
-        board = Board.seeded(seed)
+        board = Board.seeded(_lang, seed)
         a, b = StrategicPlayer(board), StrategicPlayer(board)
         while board.bag_remaining() > 0 and (a.letters or b.letters):
             a.play_word(_dawg)

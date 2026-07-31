@@ -49,8 +49,8 @@ uv run uvicorn web.main:app --reload
 # Engine CLI (see README "CLI" section)
 cargo run --release -- build         words/words.txt words/dawg.bin
 cargo run --release -- build-gaddag  words/words.txt words/gaddag.bin
-cargo run --release -- gen-verify    words/dawg.bin words/gaddag.bin 200   # GADDAG vs legacy parity
-cargo run --release -- gen-bench     words/dawg.bin words/gaddag.bin 200   # speed comparison
+cargo run --release -- gen-verify    pl words/dawg.bin words/gaddag.bin 200   # GADDAG vs legacy parity
+cargo run --release -- gen-bench     pl words/dawg.bin words/gaddag.bin 200   # speed comparison
 ```
 
 ## Conventions & gotchas
@@ -62,6 +62,13 @@ cargo run --release -- gen-bench     words/dawg.bin words/gaddag.bin 200   # spe
   can link libpython normally. Maturin turns it on via `[tool.maturin] features`.
 - `scrablozaur.pyi` is maintained by hand — **update it whenever the PyO3 API changes**,
   or type checking of `web/`, `smart_player/`, and `src/*.py` goes stale.
+- **Alphabet, point values and tile distribution live in `languages/<code>.json`** — never
+  hardcode a letter table again. `src/languages.py` parses and validates it; the engine
+  reads it too (`Language::from_file`). `tests/test_tables_agree.py` fails if any consumer
+  drifts from it, and that test is the reason a hardcoded copy can be deleted safely.
+- Every `Board`, `Dawg` and `LeaveNet` is bound to a `Language`, deliberately with no
+  default — a silent fallback to Polish is the exact bug class this design prevents.
+  CLI commands that read a `.bin` take a language code as their first argument.
 - Rayon pool is capped at `min(8, cores)`; override with `set_num_threads(n)` or
   `RAYON_NUM_THREADS`. Don't "fix" the cap — a single move is too cheap to scale past it.
 - Correctness bar for move-gen changes: `cargo run --release -- gen-verify` must show

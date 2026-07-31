@@ -20,7 +20,10 @@ from smart_player.simulate import play_game
 from rules import TurnResult
 from strategy import SimplePlayer, StrategicPlayer
 
-d = Dawg("words/dawg.bin", "words/gaddag.bin")
+from languages import engine_language  # noqa: E402
+
+LANG = engine_language("pl")
+d = Dawg(LANG, "words/dawg.bin", "words/gaddag.bin")
 
 
 def _rusage_self_now() -> float:
@@ -109,7 +112,7 @@ def graj(
         if debug:
             print(line)
 
-    b = Board()
+    b = Board(LANG)
 
     def make(kind: str) -> SimplePlayer | StrategicPlayer | SmartPlayer | SimPlayer:
         match kind:

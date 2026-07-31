@@ -12,6 +12,58 @@ def num_threads() -> int:
     """Number of threads parallel move generation will use (builds the pool on
     the first call if it does not exist yet)."""
 
+class Language:
+    """A language definition: alphabet, point table and tile distribution.
+
+    Built from the values in `languages/<code>.json`, which `src/languages.py`
+    parses and validates. Every `Board`, `Dawg` and `LeaveNet` is bound to one,
+    and pairing a board with a dictionary in another language is rejected rather
+    than silently mis-scored.
+
+    Definitions are interned by the engine, so two `Language` objects built from
+    the same values share one underlying definition.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        alphabet: str,
+        counts: dict[str, int],
+        points: dict[str, int],
+        blank: str = "?",
+    ) -> None:
+        """`counts` and `points` must each have an entry for every letter of
+        `alphabet` plus the blank.
+
+        `alphabet` is in the language's own collation order, and that order is
+        load-bearing twice: it fixes the cross-check bit indexes, and it decides
+        `Board.first_draw_winner`'s tiebreak. The bag is built in that order
+        with the blanks last, so it also fixes what a seeded board deals.
+
+        Raises `ValueError` for more than 32 letters (the cross-check bitset's
+        width), a letter above U+0190 (the engine indexes letters by codepoint),
+        a duplicate letter, or a missing count/points entry.
+        """
+
+    @property
+    def code(self) -> str: ...
+    @property
+    def alphabet(self) -> str:
+        """The letters, in collation order."""
+
+    @property
+    def blank(self) -> str: ...
+    def fresh_tile_bag(self) -> list[str]:
+        """The full tile distribution, in the order a fresh bag holds it."""
+
+    def eval_alphabet(self) -> list[str]:
+        """Tile symbols in the leave-value net's feature order (codepoint
+        order, blank first) -- derived from the distribution, not declared."""
+
+    def letter_points(self, letter: str) -> int:
+        """Face value of a single tile. The blank scores 0."""
+
+
 class Dawg:
     """DAWG (Directed Acyclic Word Graph) dictionary loaded from a binary file.
 
@@ -20,8 +72,8 @@ class Dawg:
     move generation. Word lookups (`contains`) always use the compact DAWG.
     """
 
-    def __init__(self, path: str, gaddag_path: str | None = None) -> None:
-        """Load a DAWG from a .bin file built with the `build` command.
+    def __init__(self, lang: Language, path: str, gaddag_path: str | None = None) -> None:
+        """Load a `lang` DAWG from a .bin file built with the `build` command.
 
         If `gaddag_path` is omitted, a sibling GADDAG is auto-loaded when
         present: same directory, with `dawg` replaced by `gaddag` in the
@@ -67,17 +119,17 @@ class Dawg:
         """
 
 class Board:
-    """Scrabble board with a DAWG dictionary and a bag of letters."""
+    """Scrabble board with a bag of letters, played in a given `Language`."""
 
-    def __init__(self) -> None:
-        """Initialize an empty 15x15 board with a full standard tile bag.
+    def __init__(self, lang: Language) -> None:
+        """Initialize an empty 15x15 board with a full `lang` tile bag.
 
         The bag's draw order is seeded from the clock (mixed with a
         per-process counter). Use `Board.seeded` when you need it repeatable.
         """
 
     @staticmethod
-    def seeded(seed: int) -> Board:
+    def seeded(lang: Language, seed: int) -> Board:
         """An empty board whose bag draws deterministically from `seed`.
 
         Two boards built with the same seed and driven through the same
@@ -95,7 +147,9 @@ class Board:
         """
 
     @staticmethod
-    def from_grid(board: list[list[str]], blanks: list[list[bool]] | None = None) -> Board:
+    def from_grid(
+        lang: Language, board: list[list[str]], blanks: list[list[bool]] | None = None
+    ) -> Board:
         """Construct a board pre-filled from a 15x15 grid of characters.
 
         Each cell can be:
@@ -382,14 +436,12 @@ class Board:
         tiles remain in the bag, regardless of how many tiles are exchanged.
         """
 
-    @staticmethod
-    def fresh_tile_bag() -> list[str]:
-        """The standard Polish Scrabble tile distribution (100 tiles) that
-        `Board()` and `Board.from_grid()` each start with.
+    def fresh_tile_bag(self) -> list[str]:
+        """This language's full tile distribution, as `Board()` and
+        `Board.from_grid()` each start with.
         """
 
-    @staticmethod
-    def rack_value(letters: str) -> int:
+    def rack_value(self, letters: str) -> int:
         """Sum of face point values of the given rack (blanks score 0).
 
         Used for the standard end-of-game scoring adjustment: the player who
@@ -397,8 +449,7 @@ class Board:
         loses it from their own.
         """
 
-    @staticmethod
-    def letter_points(letter: str) -> int:
+    def letter_points(self, letter: str) -> int:
         """Face point value of a single letter.
 
         `letter` must be exactly one character. Blanks ('?') score 0, the
@@ -406,12 +457,11 @@ class Board:
         `calculate_word_points`).
         """
 
-    @staticmethod
-    def first_draw_winner(draws: list[str]) -> int:
+    def first_draw_winner(self, draws: list[str]) -> int:
         """Index into `draws` of who goes first: each player draws one tile,
-        closest to 'A' in alphabet order wins, a blank ('?') beats every
-        letter, first index wins ties. Does not consume/mutate any bag —
-        the caller returns the drawn tiles before dealing real racks.
+        closest to the start of the alphabet wins, a blank beats every letter,
+        first index wins ties. Does not consume/mutate any bag — the caller
+        returns the drawn tiles before dealing real racks.
         """
 
 
@@ -425,10 +475,11 @@ class LeaveNet:
     the format loaded here; the `.pt` stays the source of truth.
     """
 
-    def __init__(self, path: str) -> None:
-        """Load an exported net. Raises `OSError` if the file is not a
-        SCRBNET1 export, is truncated, or was trained against a different
-        number of input features than the engine encodes.
+    def __init__(self, lang: Language, path: str) -> None:
+        """Load an exported net for `lang`. Raises `OSError` if the file is not
+        a SCRBNET1 export, is truncated, or takes a different number of input
+        features than `lang` encodes -- which is what catches a net trained for
+        another language.
         """
 
     def raw(self, x: list[float]) -> float:
@@ -443,9 +494,8 @@ class LeaveNet:
         whose full rack is `rack` (which fixes the unseen-tile count).
         """
 
-    @staticmethod
-    def alphabet() -> list[str]:
-        """The tile-symbol order the feature vector's first 33 slots use.
+    def alphabet(self) -> list[str]:
+        """The tile-symbol order the feature vector's leading slots use.
 
         Must equal `smart_player.model.ALPHABET`; if it ever diverges, every
         prediction is silently wrong, so it is asserted in the tests.

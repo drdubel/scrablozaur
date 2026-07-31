@@ -17,6 +17,9 @@ sys.path.insert(0, str(_ROOT))
 
 from scrablozaur import Board, Dawg  # noqa: E402
 
+from languages import engine_language  # noqa: E402
+
+LANG = engine_language("pl")
 DAWG_PATH = _ROOT / "words" / "dawg.bin"
 GADDAG_PATH = _ROOT / "words" / "gaddag.bin"
 
@@ -32,7 +35,7 @@ def check_cross_word_scoring() -> list[str]:
     a DW at (1,1): main word (c+d+f)*2=18, cross-word at row0 (b+c)=5,
     cross-word at row1 (a+d)*2=6 (also on the DW) -- total 29, not the
     buggy 26 you'd get by multiplying everything by the main word's mult."""
-    board = Board()
+    board = Board(LANG)
     board.place_word("ba", 0, 0, False)
     score = board.calculate_word_points("cdf", 0, 1, False, "cdf")
     if score != 29:
@@ -45,8 +48,8 @@ def check_first_move_covers_every_offset() -> list[str]:
     centre square, including the word's first letter landing exactly on
     it (offset 0) -- previously the search started at offset 1 and missed
     this case entirely."""
-    dawg = Dawg(str(DAWG_PATH), str(GADDAG_PATH))
-    board = Board()
+    dawg = Dawg(LANG, str(DAWG_PATH), str(GADDAG_PATH))
+    board = Board(LANG)
     letters = "yclgaup"
     _, best_score, _, _ = board.get_best_word(dawg, letters, parallel=False)
 
@@ -71,7 +74,7 @@ def check_pattern_boundaries() -> list[str]:
     grid = [["-"] * 15 for _ in range(15)]
     grid[5][10] = "c"
     grid[4][3] = "e"
-    board = Board.from_grid(grid)
+    board = Board.from_grid(LANG, grid)
 
     errors = []
     bgrid = board_grid(board)
@@ -96,8 +99,8 @@ def check_pattern_boundaries() -> list[str]:
 def check_min_word_length() -> list[str]:
     """A play must be at least 2 letters -- rejected explicitly, not just
     because the dictionary happens to have no 1-letter entries."""
-    dawg = Dawg(str(DAWG_PATH), str(GADDAG_PATH))
-    board = Board()
+    dawg = Dawg(LANG, str(DAWG_PATH), str(GADDAG_PATH))
+    board = Board(LANG)
     errors = []
     try:
         board.check_word_placement(dawg, "a", 7, 7, True)

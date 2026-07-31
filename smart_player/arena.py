@@ -42,13 +42,15 @@ from scrablozaur import Board, Dawg, set_num_threads
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import SimplePlayer, StrategicPlayer  # noqa: E402
 
-from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
+from languages import engine_language  # noqa: E402
+from model import DEFAULT_WEIGHTS_PATH, LANGUAGE  # noqa: E402
 from player import DEFAULT_LEAVE_WEIGHT, SmartPlayer  # noqa: E402
 from sim_player import DEFAULT_CANDIDATES, DEFAULT_ITERATIONS, DEFAULT_PLIES, SimPlayer  # noqa: E402
 from simulate import GamePlayer, play_game  # noqa: E402
 
 _words_dir = os.path.join(os.path.dirname(__file__), "..", "words")
-_dawg = Dawg(os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
+_lang = engine_language(LANGUAGE)
+_dawg = Dawg(_lang, os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
 
 _MASK64 = (1 << 64) - 1
 
@@ -126,14 +128,14 @@ def play_pair(spec_a: str, spec_b: str, seed: int) -> tuple[int, int]:
     """Play one seeded bag twice, swapping seats, and return A's score margin
     in each game.
 
-    Both games deal from `Board.seeded(seed)`, and players are constructed in
+    Both games deal from the same seeded board, and players are constructed in
     seat order (each draws its opening rack in its constructor) -- so seat 1
     gets the same opening rack in both games, and each player plays each side
     of the same deal.
     """
     margins = []
     for a_first in (True, False):
-        board = Board.seeded(seed)
+        board = Board.seeded(_lang, seed)
         # Same simulation seed in both games of the pair, so a simulating
         # player samples the same tile orders on each side of the deal.
         if a_first:

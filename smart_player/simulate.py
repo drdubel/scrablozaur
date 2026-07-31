@@ -70,4 +70,4 @@ def play_game(
             break
         turn += 1
 
-    apply_end_of_game_scoring(players, went_out_idx)
+    apply_end_of_game_scoring(players[0].board, players, went_out_idx)

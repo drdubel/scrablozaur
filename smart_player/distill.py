@@ -49,13 +49,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import StrategicPlayer  # noqa: E402
 
 from board_features import encode_board  # noqa: E402
-from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
+from languages import engine_language  # noqa: E402
+from model import DEFAULT_WEIGHTS_PATH, LANGUAGE  # noqa: E402
 from player import remove_used  # noqa: E402
 from sim_player import get_net  # noqa: E402
 from simulate import play_game  # noqa: E402
 
 _words_dir = os.path.join(os.path.dirname(__file__), "..", "words")
-_dawg = Dawg(os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
+_lang = engine_language(LANGUAGE)
+_dawg = Dawg(_lang, os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
 
 # (leave, unseen, board_features, target, decision_id)
 _Sample = tuple[str, int, tuple[float, ...], float, int]
@@ -119,7 +121,7 @@ class _LabellingPlayer(StrategicPlayer):
 
 def _play_one_game(args: tuple[str, int, int, int, int]) -> list[_Sample]:
     model_path, iterations, candidates, plies, seed = args
-    board = Board.seeded(seed)
+    board = Board.seeded(_lang, seed)
     players = [
         _LabellingPlayer(board, model_path, iterations, candidates, plies, seed * 2 + i)
         for i in range(2)

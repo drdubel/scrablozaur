@@ -95,19 +95,22 @@ def went_out(player: Scoring, bag_remaining: int) -> bool:
     return not player.letters and bag_remaining == 0
 
 
-def apply_end_of_game_scoring(players: list[Scoring], went_out_idx: int | None) -> None:
+def apply_end_of_game_scoring(board: Board, players: list[Scoring], went_out_idx: int | None) -> None:
     """The standard final adjustment, applied in place.
 
     Whoever goes out gains the summed rack value of everyone else and keeps
     their own score (they hold nothing). If instead the game ran out of turns,
     every player simply loses the value of what they are still holding.
+
+    `board` supplies the point table: rack values are language-specific, so the
+    adjustment has to be scored against the board the game was played on.
     """
     if went_out_idx is not None:
-        others = sum(Board.rack_value(p.letters) for i, p in enumerate(players) if i != went_out_idx)
+        others = sum(board.rack_value(p.letters) for i, p in enumerate(players) if i != went_out_idx)
         players[went_out_idx].score += others
         for i, p in enumerate(players):
             if i != went_out_idx:
-                p.score -= Board.rack_value(p.letters)
+                p.score -= board.rack_value(p.letters)
     else:
         for p in players:
-            p.score -= Board.rack_value(p.letters)
+            p.score -= board.rack_value(p.letters)

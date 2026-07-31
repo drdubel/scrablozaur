@@ -29,7 +29,8 @@ from scrablozaur import Board, Dawg, LeaveNet
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from export_weights import DEFAULT_BIN_PATH, export  # noqa: E402
-from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
+from languages import engine_language  # noqa: E402
+from model import DEFAULT_WEIGHTS_PATH, LANGUAGE  # noqa: E402
 from player import DEFAULT_ENDGAME_NODES, SmartPlayer, choose_move  # noqa: E402
 
 DEFAULT_ITERATIONS = 200
@@ -143,7 +144,7 @@ def get_net(pt_path: str = DEFAULT_WEIGHTS_PATH, bin_path: str | None = None) ->
         stale = not os.path.exists(bin_path) or os.path.getmtime(bin_path) < os.path.getmtime(pt_path)
         if stale:
             export(pt_path, bin_path)
-        _nets[bin_path] = LeaveNet(bin_path)
+        _nets[bin_path] = LeaveNet(engine_language(LANGUAGE), bin_path)
     return _nets[bin_path]
 
 

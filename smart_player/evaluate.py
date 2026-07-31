@@ -24,12 +24,14 @@ from scrablozaur import Board, Dawg
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import SimplePlayer, StrategicPlayer  # noqa: E402
 
-from model import DEFAULT_WEIGHTS_PATH  # noqa: E402
+from languages import engine_language  # noqa: E402
+from model import DEFAULT_WEIGHTS_PATH, LANGUAGE  # noqa: E402
 from player import SmartPlayer  # noqa: E402
 from simulate import play_game  # noqa: E402
 
 _words_dir = os.path.join(os.path.dirname(__file__), "..", "words")
-_dawg = Dawg(os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
+_lang = engine_language(LANGUAGE)
+_dawg = Dawg(_lang, os.path.join(_words_dir, "dawg.bin"), os.path.join(_words_dir, "gaddag.bin"))
 
 _OPPONENTS = {"strategic": StrategicPlayer, "simple": SimplePlayer}
 
@@ -38,7 +40,7 @@ def _play_vs_baseline(opponent_name: str, model_path: str) -> tuple[int, int]:
     """Play one game, SmartPlayer(model_path) vs. the named baseline
     (random seat assignment so first-move advantage evens out). Returns
     (smart_score, opponent_score)."""
-    board = Board()
+    board = Board(_lang)
     smart = SmartPlayer(board, model_path)
     other = _OPPONENTS[opponent_name](board)
     players = [smart, other] if random() < 0.5 else [other, smart]
@@ -52,7 +54,7 @@ def _play_vs_baseline(opponent_name: str, model_path: str) -> tuple[int, int]:
 def _play_candidate(champion_path: str, candidate_path: str) -> tuple[int, int]:
     """Play one game, candidate checkpoint vs. champion checkpoint (random
     seat assignment). Returns (candidate_score, champion_score)."""
-    board = Board()
+    board = Board(_lang)
     champion = SmartPlayer(board, champion_path)
     candidate = SmartPlayer(board, candidate_path)
     players = [candidate, champion] if random() < 0.5 else [champion, candidate]

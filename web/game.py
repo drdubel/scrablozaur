@@ -15,7 +15,7 @@ from pathlib import Path
 
 from scrablozaur import Board, Dawg, set_num_threads
 from web.difficulty import DEFAULT_LEVEL, EngineMode, clamp_level, engine_mode
-from web.engine import DAWG_PATH, GADDAG_PATH
+from web.engine import DAWG_PATH, GADDAG_PATH, LANG
 
 # smart_player is a standalone script-style package (like board_reader, see
 # web/scan.py), not importable as a normal module -- add its dir to sys.path
@@ -250,13 +250,14 @@ def _deal_new_game(players: list[Player], game_mode: GameMode) -> GameSession:
     # COMPETITIVE (1 human + 1 computer) and SANDBOX_AUTO (2-4 computers)
     # both play with a real bag and random racks -- only the referee-style
     # plain SANDBOX mode has no bag at all.
+    board = Board(LANG)
     if game_mode in (GameMode.COMPETITIVE, GameMode.SANDBOX_AUTO):
         tile_bag = TileBag.full()
         # Standard rule: each player draws one tile, closest to 'A'
         # (blank beats everything) goes first; drawn tiles go back to
         # the bag and get reshuffled in before dealing real racks.
         draws = tile_bag.draw(len(players))
-        first_player_idx = Board.first_draw_winner(draws)
+        first_player_idx = board.first_draw_winner(draws)
         tile_bag.tiles.extend(draws)
         random.shuffle(tile_bag.tiles)
         for p in players:
@@ -264,7 +265,7 @@ def _deal_new_game(players: list[Player], game_mode: GameMode) -> GameSession:
 
     return GameSession(
         session_id=str(uuid.uuid4()),
-        board=Board(),
+        board=board,
         players=players,
         current_player_idx=first_player_idx,
         game_mode=game_mode,
@@ -421,10 +422,10 @@ def _check_game_over(session: GameSession, just_played_idx: int) -> None:
         return
     player = session.players[just_played_idx]
     if went_out(player, session.tile_bag.remaining()):
-        apply_end_of_game_scoring(session.players, went_out_idx=just_played_idx)
+        apply_end_of_game_scoring(session.board, session.players, went_out_idx=just_played_idx)
         session.game_over = True
     elif session.streaks.exhausted:
-        apply_end_of_game_scoring(session.players, went_out_idx=None)
+        apply_end_of_game_scoring(session.board, session.players, went_out_idx=None)
         session.game_over = True
 
 
@@ -737,7 +738,7 @@ def _init_worker(dawg_path: str, gaddag_path: str, engine_threads: int) -> None:
         set_num_threads(engine_threads)
     except RuntimeError:
         pass  # pool already built -- nothing to do in a fresh worker anyway
-    _worker_dawg = Dawg(dawg_path, gaddag_path)
+    _worker_dawg = Dawg(LANG, dawg_path, gaddag_path)
 
 
 def _simulate_game(player_specs: list[tuple[str, int]]) -> _SimulatedGame:

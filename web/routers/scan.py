@@ -8,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 
-from web.engine import Board, Dawg, get_dawg
+from web.engine import LANG, Board, Dawg, get_dawg
 from web.game import SORT_MODES, rank_suggestions
 from web.models import (
     SaveTrainingResponse,
@@ -171,7 +171,7 @@ async def suggest_for_scan(
         raise HTTPException(status_code=400, detail="Najpierw zeskanuj i zatwierdź planszę.")
 
     letters = body.letters.lower()
-    board = Board.from_grid(session.board)
+    board = Board.from_grid(LANG, session.board)
     # `get_best_words` picks the opening path itself from the board's own
     # first-move flag, which `from_grid` derives from the grid.
     if body.sort not in SORT_MODES:

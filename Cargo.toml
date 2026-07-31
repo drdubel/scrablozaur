@@ -6,6 +6,14 @@ edition = "2021"
 [dependencies]
 pyo3 = { version = "0.28.3" }
 rayon = "1.12.0"
+# `languages/*.json` is the one source of truth for every alphabet, point table
+# and tile distribution. Python reads it for the web app, and the CLI
+# (lookup/bench/gen-verify/gen-bench) reads it too -- those build real Boards
+# and score real moves, so they need the same data. The alternative was a
+# second copy of the tables compiled into Rust, which is exactly what moving to
+# a data file was meant to eliminate.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [features]
 extension-module = ["pyo3/extension-module"]

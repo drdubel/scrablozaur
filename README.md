@@ -137,8 +137,8 @@ move generation transparently falls back to the legacy DAWG pattern search.
 Two commands validate and benchmark the generator against that fallback:
 
 ```bash
-cargo run --release -- gen-verify words/dawg.bin words/gaddag.bin 200  # best-move parity
-cargo run --release -- gen-bench  words/dawg.bin words/gaddag.bin 200  # single-thread speedup
+cargo run --release -- gen-verify pl words/dawg.bin words/gaddag.bin 200  # best-move parity
+cargo run --release -- gen-bench  pl words/dawg.bin words/gaddag.bin 200  # single-thread speedup
 ```
 
 `gen-verify` must report zero score mismatches; `gen-bench` reports the
@@ -421,10 +421,10 @@ The crate includes these diagnostic commands:
 ```bash
 cargo run --release -- build        words/words.txt words/dawg.bin    # compile DAWG
 cargo run --release -- build-gaddag words/words.txt words/gaddag.bin  # compile GADDAG (move gen)
-cargo run --release -- lookup       words/dawg.bin  hamulec           # single lookup
-cargo run --release -- bench        words/dawg.bin  words/words.txt   # lookup throughput
-cargo run --release -- gen-verify   words/dawg.bin  words/gaddag.bin  [games]  # GADDAG vs legacy parity
-cargo run --release -- gen-bench    words/dawg.bin  words/gaddag.bin  [games]  # GADDAG vs legacy speed
+cargo run --release -- lookup       pl words/dawg.bin  hamulec        # single lookup
+cargo run --release -- bench        pl words/dawg.bin  words/words.txt   # lookup throughput
+cargo run --release -- gen-verify   pl words/dawg.bin  words/gaddag.bin  [games]  # GADDAG vs legacy parity
+cargo run --release -- gen-bench    pl words/dawg.bin  words/gaddag.bin  [games]  # GADDAG vs legacy speed
 ```
 
 Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):

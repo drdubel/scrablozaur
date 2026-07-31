@@ -7,14 +7,17 @@ from scrablozaur import Board
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from languages import engine_language
 from strategy import (MAX_LEVEL, MAX_RANKED_LEVEL, MIN_LEVEL, StrategicPlayer, clamp_level,
                       pick_by_rank, rank_window)
 
 from web.difficulty import DEFAULT_LEVEL, EngineMode, all_levels, engine_mode
 
+_lang = engine_language("pl")
+
 
 def test_save_letters_left():
-    board = Board()
+    board = Board(_lang)
     player = StrategicPlayer(board)
     player.letters = "abc"
     tile_bag = player.board.fresh_tile_bag()
@@ -22,7 +25,7 @@ def test_save_letters_left():
 
 
 def test_save_letters_left_with_duplicates():
-    board = Board()
+    board = Board(_lang)
     player = StrategicPlayer(board)
     player.letters = "aab"
     tile_bag = player.board.fresh_tile_bag()
@@ -30,7 +33,7 @@ def test_save_letters_left_with_duplicates():
 
 
 def test_exchange_letters():
-    board = Board()
+    board = Board(_lang)
     player = StrategicPlayer(board)
     player.letters = "abcdefg"
     player.exchange_letters("abg")

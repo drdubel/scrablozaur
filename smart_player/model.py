@@ -9,16 +9,24 @@ This model instead scores the rack a candidate would actually leave behind.
 """
 
 import os
+import sys
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from scrablozaur import Board
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+from languages import engine_language  # noqa: E402
+
+# Which language this net is for. Levels 9-10 are the only consumers, and a net
+# is only ever valid for the tile alphabet it was trained on -- see the guard in
+# `load_model`.
+LANGUAGE = "pl"
 
 # Single source of truth for which tiles exist -- derived from the engine's
 # own tile distribution rather than hardcoded, so it can never drift from it.
-ALPHABET = sorted(set(Board.fresh_tile_bag()))
+ALPHABET = sorted(set(engine_language(LANGUAGE).fresh_tile_bag()))
 _INDEX = {ch: i for i, ch in enumerate(ALPHABET)}
 # + 1 scalar for game phase (unseen tiles) + 5 board-context scalars from
 # board_features.encode_board (tw/dw/tl/dl open fraction, board fill).
