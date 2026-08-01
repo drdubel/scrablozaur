@@ -69,6 +69,17 @@ make bench  LANG=pl            # speed comparison         (gen-bench)
 - Every `Board`, `Dawg` and `LeaveNet` is bound to a `Language`, deliberately with no
   default — a silent fallback to Polish is the exact bug class this design prevents.
   CLI commands that read a `.bin` take a language code as their first argument.
+- **Per-language artifacts** live under a `<code>/` directory: `words/<code>/`,
+  `smart_player/models/<code>/`, `board_reader/src/models/<code>/`. Each is declared in
+  `languages/<code>.json`; nullable entries mean "this language does not have one yet",
+  which degrades a feature rather than breaking it (no leave net → difficulty caps at 8
+  and the `smart`/`sim` orderings are refused; no OCR models → no scan tab).
+- **Never point a language at another's model to fill a gap.** A net or classifier
+  trained on a different alphabet does not fail, it returns confident nonsense. The
+  loaders refuse a mismatch (`get_model`, `_check_classes`, `LeaveNet::load`) — that is
+  a guard to keep, not an obstacle to work around.
+- `smart_player`'s pipeline picks its language from the `SCRABLOZAUR_LANGUAGE` env var,
+  not a flag, because its process-pool workers re-import `model.py`.
 - Rayon pool is capped at `min(8, cores)`; override with `set_num_threads(n)` or
   `RAYON_NUM_THREADS`. Don't "fix" the cap — a single move is too cheap to scale past it.
 - Correctness bar for move-gen changes: `cargo run --release -- gen-verify` must show

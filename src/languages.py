@@ -54,13 +54,19 @@ class LeaveNetPaths:
 
 @dataclass(frozen=True)
 class OcrPaths:
-    """Where a language's board-photo models live, plus whether the tile's
-    printed point digit is a usable signal. It is worth a lot in Polish, where
-    it separates A/Ą and Z/Ź/Ż, and little in an alphabet without diacritics."""
+    """Where a language's board-photo models live.
+
+    `digit_cnn` and `real_templates` are optional. The digit reader turns the
+    point value printed on a tile into a letter prior, which is worth a lot in
+    Polish (it separates A/Ą and Z/Ź/Ż) and little in an alphabet with no
+    diacritics -- and cannot represent a two-glyph value like English's 10 at
+    all. `real_templates` holds glyphs harvested from photos of real tiles; a
+    language trained on rendered fonts alone simply has none.
+    """
 
     letter_cnn: Path
-    digit_cnn: Path
-    real_templates: Path
+    digit_cnn: Path | None
+    real_templates: Path | None
     use_point_prior: bool
 
 
@@ -107,6 +113,25 @@ class LanguageSpec:
     def total_tiles(self) -> int:
         return sum(self.counts.values())
 
+    @property
+    def has_ocr(self) -> bool:
+        """Whether the board scanner can actually run for this language.
+
+        The config block existing is not enough -- the checkpoint has to be on
+        disk, or the UI would offer a scan tab that fails on first use.
+        """
+        return self.ocr is not None and self.ocr.letter_cnn.exists()
+
+    @property
+    def ocr_is_experimental(self) -> bool:
+        """Whether this language's scanner has ever been checked against photos.
+
+        Derived, not declared: `real_templates` holds glyphs harvested from
+        photographs of actual tiles, so a language without them was trained on
+        rendered fonts alone and its accuracy on real boards is unmeasured.
+        """
+        return self.has_ocr and self.ocr is not None and self.ocr.real_templates is None
+
     def missing_artifacts(self) -> list[Path]:
         """Declared files that are not on disk. The dictionary is committed, but
         OCR templates are harvested locally and a language may ship before its
@@ -115,7 +140,7 @@ class LanguageSpec:
         if self.leave_net is not None:
             paths += [self.leave_net.checkpoint, self.leave_net.weights]
         if self.ocr is not None:
-            paths += [self.ocr.letter_cnn, self.ocr.digit_cnn, self.ocr.real_templates]
+            paths += [p for p in (self.ocr.letter_cnn, self.ocr.digit_cnn) if p is not None]
         return [p for p in paths if not p.exists()]
 
 
@@ -199,8 +224,8 @@ def _parse(code: str, raw: dict) -> LanguageSpec:
         if ocr is None
         else OcrPaths(
             _ROOT / ocr["letter_cnn"],
-            _ROOT / ocr["digit_cnn"],
-            _ROOT / ocr["real_templates"],
+            _ROOT / ocr["digit_cnn"] if ocr.get("digit_cnn") else None,
+            _ROOT / ocr["real_templates"] if ocr.get("real_templates") else None,
             bool(ocr.get("use_point_prior", True)),
         ),
         definitions=tuple(raw.get("definitions", ())),

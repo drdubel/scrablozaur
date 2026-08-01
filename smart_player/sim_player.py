@@ -50,7 +50,7 @@ SIM_LEAVE_WEIGHT = 1.0
 # candidate concedes.
 DEFAULT_PLIES = 1
 
-_nets: dict[str, LeaveNet] = {}
+_nets: dict[tuple[str, str], LeaveNet] = {}
 
 
 class SimChoice(NamedTuple):
@@ -116,7 +116,7 @@ def choose_move_sim(
 
     results = board.simulate(
         dawg,
-        get_net(model_path),
+        get_net(model_path, lang=board.lang),
         rack,
         candidates=candidates,
         iterations=iterations,
@@ -130,22 +130,31 @@ def choose_move_sim(
     return SimChoice(word, score, position, used, equity, stderr)
 
 
-def get_net(pt_path: str = DEFAULT_WEIGHTS_PATH, bin_path: str | None = None) -> LeaveNet:
+def get_net(pt_path: str = DEFAULT_WEIGHTS_PATH, bin_path: str | None = None, lang=None) -> LeaveNet:
     """Load the engine-side net for a checkpoint, exporting it first if the
     binary is missing or older than the `.pt` it came from.
 
     The `.pt` stays the source of truth, so a freshly trained checkpoint can
     never be silently simulated with the previous run's weights.
+
+    `lang` is the engine `Language` the net will be run against -- pass the
+    board's, since one process can hold nets for several languages (the web
+    app does). It defaults to this process's own language, which is only the
+    right answer for the single-language CLI tools.
     """
     bin_path = bin_path or (
         DEFAULT_BIN_PATH if pt_path == DEFAULT_WEIGHTS_PATH else os.path.splitext(pt_path)[0] + ".bin"
     )
-    if bin_path not in _nets:
+    lang = lang if lang is not None else engine_language(LANGUAGE)
+    # Keyed by both: the same file must not be handed back bound to the wrong
+    # language, and `LeaveNet` checks the feature width against the one it gets.
+    key = (bin_path, lang.code)
+    if key not in _nets:
         stale = not os.path.exists(bin_path) or os.path.getmtime(bin_path) < os.path.getmtime(pt_path)
         if stale:
             export(pt_path, bin_path)
-        _nets[bin_path] = LeaveNet(engine_language(LANGUAGE), bin_path)
-    return _nets[bin_path]
+        _nets[key] = LeaveNet(lang, bin_path)
+    return _nets[key]
 
 
 class SimPlayer(SmartPlayer):
@@ -168,7 +177,7 @@ class SimPlayer(SmartPlayer):
         seed: int = 0,
     ) -> None:
         super().__init__(board, model_path, leave_weight, use_endgame)
-        self.net = get_net(model_path)
+        self.net = get_net(model_path, lang=board.lang)
         self.iterations = iterations
         self.candidates = candidates
         self.plies = plies

@@ -1,6 +1,6 @@
 'use strict';
 
-// Reuses BONUS_GRID / BONUS_LABELS / LETTER_VALUES from board.js (loaded
+// Reuses BONUS_GRID / BONUS_LABELS from board.js (loaded
 // earlier, same global script scope).
 
 class ScanBoardGrid {
@@ -13,10 +13,22 @@ class ScanBoardGrid {
     this._selC = null;
     this._highlighted = [];
     this._onSelect = null;
+    // Letter -> point value for the language being scanned. Served by
+    // `GET /api/game/languages`; empty until that lands, which just means the
+    // corner numbers are absent rather than wrong.
+    this._letterValues = {};
     this._buildGrid();
   }
 
   setOnSelect(fn) { this._onSelect = fn; }
+
+  /** @param {Record<string, number>} values */
+  setLetterValues(values) {
+    this._letterValues = values || {};
+    if (this._data) {
+      for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) this._renderCell(r, c);
+    }
+  }
 
   _buildGrid() {
     this._container.innerHTML = '';
@@ -48,7 +60,7 @@ class ScanBoardGrid {
     const data = this._data[r][c];
     const selected = r === this._selR && c === this._selC;
     if (data.letter && data.letter !== '-') {
-      const val = LETTER_VALUES[data.letter.toLowerCase()] ?? 0;
+      const val = this._letterValues[data.letter.toLowerCase()] ?? 0;
       cell.className = 'cell placed'
         + (data.flagged ? ' scan-flagged' : '')
         + (data.carried_over ? ' scan-carried' : '')
@@ -241,6 +253,7 @@ class ScanController {
     try {
       const state = await this._api.getScanState();
       if (state.has_session) {
+        this._grid.setLetterValues(Languages.letterValues(this._gameController._language));
         this._grid.load(_cellsFromPlainBoard(state.board));
         this._hasScanSession = true;
         this._showStep('assistant');
@@ -287,6 +300,7 @@ class ScanController {
         this._showError(this._elUploadError, res.error);
         return;
       }
+      this._grid.setLetterValues(Languages.letterValues(this._gameController._language));
       this._grid.load(res.cells);
       this._elEditor.hidden = true;
       this._hideError(this._elReviewError);
@@ -333,7 +347,7 @@ class ScanController {
     const ch = this._elEditorInput.value;
     if (ch === '') {
       this._clearSelectedCell();
-    } else if (/^[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]$/.test(ch)) {
+    } else if (Languages.isLetter(ch, { code: this._gameController._language })) {
       this._applyLetter(ch.toLowerCase());
       this._moveSelection(1);
     } else {

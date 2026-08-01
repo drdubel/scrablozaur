@@ -25,7 +25,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from model import ALPHABET, INPUT_DIM, LeaveValueNet, encode_leaves
+from model import ALPHABET, DEFAULT_WEIGHTS_PATH, INPUT_DIM, LANGUAGE, LeaveValueNet, encode_leaves
 
 
 def _pick_device() -> str:
@@ -166,6 +166,9 @@ def train(
             torch.save(
                 {
                     "state_dict": state_dict,
+                    # Which language this net is for. `alphabet` already pins
+                    # the tile set; the code makes a mismatch say so by name.
+                    "language": LANGUAGE,
                     "alphabet": ALPHABET,
                     "hidden1": hidden1,
                     "hidden2": hidden2,
@@ -181,7 +184,9 @@ def train(
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", default=os.path.join(os.path.dirname(__file__), "_leave_dataset.npz"))
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "models", "leave_value.pt"))
+    # Per-language, from `languages/<code>.json` via model.py -- a flat default
+    # would have every language overwrite the same checkpoint.
+    ap.add_argument("--out", default=DEFAULT_WEIGHTS_PATH)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=8192)
     ap.add_argument("--lr", type=float, default=1e-3)

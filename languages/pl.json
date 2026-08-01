@@ -50,14 +50,14 @@
   "gaddag": "words/pl/gaddag.bin",
 
   "leave_net": {
-    "checkpoint": "smart_player/models/leave_value.pt",
-    "weights": "smart_player/models/leave_value.bin"
+    "checkpoint": "smart_player/models/pl/leave_value.pt",
+    "weights": "smart_player/models/pl/leave_value.bin"
   },
 
   "ocr": {
-    "letter_cnn": "board_reader/src/models/letter_cnn.pt",
-    "digit_cnn": "board_reader/src/models/digit_cnn.pt",
-    "real_templates": "board_reader/src/data/real_templates",
+    "letter_cnn": "board_reader/src/models/pl/letter_cnn.pt",
+    "digit_cnn": "board_reader/src/models/pl/digit_cnn.pt",
+    "real_templates": "board_reader/src/data/pl/real_templates",
     "use_point_prior": true
   },
 

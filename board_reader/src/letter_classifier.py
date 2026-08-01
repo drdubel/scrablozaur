@@ -19,6 +19,7 @@ lazily-initialised module-level singletons instead.
 
 import glob
 import os
+import sys
 import unicodedata
 
 import cv2
@@ -41,38 +42,102 @@ try:
 except ImportError:
     _HAS_PIL = False
 
-# No Q/V/X on the physical Polish Scrabble tile set.
-POLISH_ALPHABET = "AĄBCĆDEĘFGHIJKLŁMNŃOÓPRSŚTUWYZŹŻ"
-
-# Every tile also prints its point value in the bottom-right corner, and the
-# point scale is a fixed, known mapping -- matching src/lib.rs's
-# calculate_word_points (the actual game engine's scoring table, so this is
-# guaranteed consistent with real gameplay). Several point values are shared
-# by many letters (e.g. every 1-point letter), so reading the digit alone
-# rarely identifies a letter outright, but it's a strong exclusionary signal
-# for the specific confusions the CNN/templates actually make: A/A-ogonek,
-# Z/Z-acute/Z-dot and the other unaccented-vs-accented pairs all have
-# different point values (see points_distribution()).
-POINT_GROUPS = {
-    1: "AEINORSWZ",
-    2: "CDKLMPTY",
-    3: "BGHJŁU",
-    5: "ĄĘFÓŚŻ",
-    6: "Ć",
-    7: "Ń",
-    9: "Ź",
-}
-LETTER_POINTS = {ch: pts for pts, letters in POINT_GROUPS.items() for ch in letters}
-# The physical tile set only ever prints these point values -- 0 (no blank
-# tiles in this set), 4, and 8 never appear, so training/matching the digit
-# reader against them would only waste model capacity and confidence mass
-# on classes that can never be the right answer.
-VALID_DIGITS = "".join(str(p) for p in sorted(POINT_GROUPS))
+# ---------------------------------------------------------------------------
+# Active language
+#
+# Which letters exist, what each is worth, and where this language's models
+# live all come from `languages/<code>.json` (see src/languages.py) -- the same
+# file the engine reads. These used to be hardcoded Polish tables that had to
+# be kept in step with src/lib.rs by hand.
+#
+# The language is process-global rather than a per-call argument because every
+# expensive thing here is a lazily-built module-level singleton (see the module
+# docstring); the caches below are keyed by language code so switching back and
+# forth costs nothing after the first use of each.
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
-CNN_WEIGHTS = os.path.join(_PKG_DIR, "models", "letter_cnn.pt")
-DIGIT_CNN_WEIGHTS = os.path.join(_PKG_DIR, "models", "digit_cnn.pt")
-REAL_TEMPLATES_DIR = os.path.join(_PKG_DIR, "data", "real_templates")
+sys.path.insert(0, os.path.join(_PKG_DIR, "..", "..", "src"))
+
+import languages  # noqa: E402
+
+DEFAULT_LANGUAGE = "pl"
+_spec = languages.load(DEFAULT_LANGUAGE)
+
+
+def set_language(spec):
+    """Point the classifier at a language, by code or `LanguageSpec`."""
+    global _spec
+    _spec = spec if hasattr(spec, "code") else languages.load(spec)
+    return _spec
+
+
+def language():
+    return _spec
+
+
+def alphabet():
+    """The letters this language's tiles can show, uppercase -- tiles are
+    printed in capitals, while the engine works in lowercase."""
+    return _spec.alphabet.upper()
+
+
+def letter_points():
+    """{LETTER: points}, blank excluded (a blank prints no digit)."""
+    return {ch.upper(): pts for ch, pts in _spec.points.items() if ch != _spec.blank}
+
+
+def point_groups():
+    """{points: "LETTERS"} -- the inverse of letter_points().
+
+    Every tile prints its point value in a corner, and several letters share
+    each value, so the digit alone rarely identifies a letter. It is a strong
+    *exclusionary* signal for the confusions this classifier actually makes:
+    in Polish, A/Ą and Z/Ź/Ż differ in points as well as in a diacritic.
+    """
+    groups = {}
+    for ch, pts in letter_points().items():
+        groups.setdefault(pts, []).append(ch)
+    return {pts: "".join(sorted(chars)) for pts, chars in groups.items()}
+
+
+def valid_digits():
+    """The point values that can actually be printed on a tile of this set.
+
+    Training or matching the digit reader against values that never appear
+    would only spend model capacity and confidence mass on impossible answers.
+
+    A tuple rather than a concatenated string, because a value above 9 is two
+    characters -- English's 10 -- and joining them would silently produce the
+    classes "1" and "0". The single-glyph digit reader cannot represent such a
+    value at all, which is why those languages turn the channel off entirely
+    (see `use_point_prior()`).
+    """
+    return tuple(str(p) for p in sorted(point_groups()))
+
+
+def use_point_prior():
+    """Whether the printed point digit is worth reading for this language.
+
+    It earns its keep where it separates letters the shape-based sources
+    confuse -- Polish's diacritic pairs. In an alphabet without diacritics it
+    buys much less, and where a value needs two glyphs the reader cannot read
+    it at all.
+    """
+    return _spec.ocr is not None and _spec.ocr.use_point_prior
+
+
+def _ocr_paths():
+    if _spec.ocr is None:
+        raise ValueError(
+            f"language '{_spec.code}' has no OCR models configured "
+            f"(\"ocr\" is null in languages/{_spec.code}.json)"
+        )
+    return _spec.ocr
+
+
+def has_models():
+    """Whether this language has a board scanner at all."""
+    return _spec.ocr is not None and os.path.isfile(str(_spec.ocr.letter_cnn))
 # Candidate font files for synthetic templates -- first ones found are used.
 TEMPLATE_FONTS = (
     "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf",
@@ -130,33 +195,54 @@ if _HAS_TORCH:
             return self.head(self.features(x))
 
 
-_cnn_model = None
-_cnn_classes: list[str] = []
+# Keyed by language code: loading a ~5 MB checkpoint and moving it to the
+# device is expensive, and a process that scans two languages should pay it
+# once each rather than on every switch.
+_cnn_cache: dict = {}
 _cnn_device = "cpu"
-_cnn_loaded = False
+
+
+def _check_classes(code, classes, kind):
+    """Refuse a checkpoint trained for a different alphabet.
+
+    Without this a Polish model loaded under English produces confident
+    predictions drawn entirely from the wrong letter set -- garbage that looks
+    like a working scanner. Mirrors the guard `smart_player/model.py` applies
+    to the leave net.
+    """
+    expected = set(alphabet()) if kind == "letter" else set(valid_digits())
+    got = set(classes)
+    if not got <= expected:
+        raise ValueError(
+            f"{kind} model for '{code}' predicts {sorted(got - expected)!r}, "
+            f"which are not in that language -- is this checkpoint from another language?"
+        )
 
 
 def _get_cnn():
-    """Lazily load the CNN checkpoint once per process. Returns (model,
+    """Lazily load the active language's CNN checkpoint. Returns (model,
     classes) or (None, []) if torch or the weights file is unavailable --
     callers degrade gracefully rather than crash."""
-    global _cnn_model, _cnn_classes, _cnn_device, _cnn_loaded
-    if _cnn_loaded:
-        return _cnn_model, _cnn_classes
-    _cnn_loaded = True
-    if not (_HAS_TORCH and os.path.isfile(CNN_WEIGHTS)):
-        return None, []
-    ckpt = torch.load(CNN_WEIGHTS, map_location="cpu", weights_only=True)
-    _cnn_classes = list(ckpt["classes"])
-    model = LetterCNN(len(_cnn_classes))
+    global _cnn_device
+    code = _spec.code
+    if code in _cnn_cache:
+        return _cnn_cache[code]
+    weights = str(_spec.ocr.letter_cnn) if _spec.ocr else ""
+    if not (_HAS_TORCH and weights and os.path.isfile(weights)):
+        _cnn_cache[code] = (None, [])
+        return _cnn_cache[code]
+    ckpt = torch.load(weights, map_location="cpu", weights_only=True)
+    classes = list(ckpt["classes"])
+    _check_classes(code, classes, "letter")
+    model = LetterCNN(len(classes))
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     # Apple-GPU inference roughly halves the per-batch latency; tiny
     # transfer sizes (N x 64 x 64) make the copies negligible.
     _cnn_device = "mps" if torch.backends.mps.is_available() else "cpu"
     model.to(_cnn_device)
-    _cnn_model = model
-    return _cnn_model, _cnn_classes
+    _cnn_cache[code] = (model, classes)
+    return _cnn_cache[code]
 
 
 def classify_cnn_batch(glyphs):
@@ -174,7 +260,8 @@ def classify_cnn_batch(glyphs):
     with torch.no_grad():
         probs = torch.softmax(model(x), dim=1).cpu().numpy()
     for row, i in enumerate(idx):
-        out[i] = {ch: float(p) for ch, p in zip(classes, probs[row]) if ch in POLISH_ALPHABET}
+        letters = alphabet()
+        out[i] = {ch: float(p) for ch, p in zip(classes, probs[row]) if ch in letters}
     return out
 
 
@@ -205,7 +292,9 @@ def normalize_template(mask, out_size=GLYPH_SIZE, margin=0.12):
     return canvas
 
 
-_templates = None  # {letter: [(mask, is_real), ...]}
+# Keyed by language code, like the model caches -- building several hundred
+# template images is the other expensive one-time cost in this module.
+_templates_cache: dict = {}  # code -> {letter: [(mask, is_real), ...]}
 
 
 def _build_synthetic(templates):
@@ -217,7 +306,7 @@ def _build_synthetic(templates):
             font = ImageFont.truetype(path, 160)
         except OSError:
             continue
-        for ch in POLISH_ALPHABET:
+        for ch in alphabet():
             img = Image.new("L", (260, 260), 0)
             d = ImageDraw.Draw(img)
             d.text((130, 130), ch, fill=255, font=font, anchor="mm")
@@ -234,9 +323,10 @@ def _build_synthetic(templates):
 
 
 def _load_real(templates):
-    if not os.path.isdir(REAL_TEMPLATES_DIR):
+    real_dir = str(_spec.ocr.real_templates) if _spec.ocr and _spec.ocr.real_templates else ""
+    if not real_dir or not os.path.isdir(real_dir):
         return
-    for letter_dir in sorted(glob.glob(os.path.join(REAL_TEMPLATES_DIR, "*"))):
+    for letter_dir in sorted(glob.glob(os.path.join(real_dir, "*"))):
         ch = unicodedata.normalize("NFC", os.path.basename(letter_dir))
         if ch not in templates:
             continue
@@ -257,14 +347,14 @@ def _load_real(templates):
 
 
 def _get_templates():
-    """Lazily build the full synthetic+real template set once per process."""
-    global _templates
-    if _templates is None:
-        templates = {ch: [] for ch in POLISH_ALPHABET}
+    """Lazily build the active language's synthetic+real template set."""
+    code = _spec.code
+    if code not in _templates_cache:
+        templates = {ch: [] for ch in alphabet()}
         _build_synthetic(templates)
         _load_real(templates)
-        _templates = templates
-    return _templates
+        _templates_cache[code] = templates
+    return _templates_cache[code]
 
 
 def _pair_score(glyph_mask, tmpl):
@@ -330,30 +420,32 @@ def classify_templates(glyph):
 # template matching stays as the fallback for when the digit CNN weights
 # are missing or torch isn't available.
 
-_digit_cnn_model = None
-_digit_cnn_classes: list[str] = []
+_digit_cnn_cache: dict = {}
 _digit_cnn_device = "cpu"
-_digit_cnn_loaded = False
 
 
 def _get_digit_cnn():
-    """Lazily load the digit CNN checkpoint once per process. Returns
-    (model, classes) or (None, []) if unavailable -- mirrors _get_cnn()."""
-    global _digit_cnn_model, _digit_cnn_classes, _digit_cnn_device, _digit_cnn_loaded
-    if _digit_cnn_loaded:
-        return _digit_cnn_model, _digit_cnn_classes
-    _digit_cnn_loaded = True
-    if not (_HAS_TORCH and os.path.isfile(DIGIT_CNN_WEIGHTS)):
-        return None, []
-    ckpt = torch.load(DIGIT_CNN_WEIGHTS, map_location="cpu", weights_only=True)
-    _digit_cnn_classes = list(ckpt["classes"])
-    model = LetterCNN(len(_digit_cnn_classes))
+    """Lazily load the active language's digit CNN. Returns (model, classes)
+    or (None, []) if unavailable or if this language does not use the printed
+    point value at all -- mirrors _get_cnn()."""
+    global _digit_cnn_device
+    code = _spec.code
+    if code in _digit_cnn_cache:
+        return _digit_cnn_cache[code]
+    weights = str(_spec.ocr.digit_cnn) if _spec.ocr and _spec.ocr.digit_cnn else ""
+    if not (use_point_prior() and _HAS_TORCH and weights and os.path.isfile(weights)):
+        _digit_cnn_cache[code] = (None, [])
+        return _digit_cnn_cache[code]
+    ckpt = torch.load(weights, map_location="cpu", weights_only=True)
+    classes = list(ckpt["classes"])
+    _check_classes(code, classes, "digit")
+    model = LetterCNN(len(classes))
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     _digit_cnn_device = "mps" if torch.backends.mps.is_available() else "cpu"
     model.to(_digit_cnn_device)
-    _digit_cnn_model = model
-    return _digit_cnn_model, _digit_cnn_classes
+    _digit_cnn_cache[code] = (model, classes)
+    return _digit_cnn_cache[code]
 
 
 def classify_digit_cnn_batch(glyphs):
@@ -377,16 +469,18 @@ def classify_digit_cnn_batch(glyphs):
     return out
 
 
-_digit_templates = None  # {digit_str: [mask, ...]}
+_digit_templates_cache: dict = {}  # code -> {digit_str: [mask, ...]}
 
 
 def _get_digit_templates():
-    """Lazily build synthetic digit templates (VALID_DIGITS only) once per
-    process."""
-    global _digit_templates
-    if _digit_templates is not None:
-        return _digit_templates
-    templates = {d: [] for d in VALID_DIGITS}
+    """Lazily build the active language's synthetic digit templates (only the
+    point values its tiles can actually print)."""
+    code = _spec.code
+    if code in _digit_templates_cache:
+        return _digit_templates_cache[code]
+    # A value needing two glyphs cannot be matched by a single-glyph template,
+    # so those languages get no digit templates at all.
+    templates = {d: [] for d in valid_digits() if len(d) == 1} if use_point_prior() else {}
     if _HAS_PIL:
         fonts = [p for p in TEMPLATE_FONTS if os.path.isfile(p)]
         for path in fonts:
@@ -401,7 +495,7 @@ def _get_digit_templates():
                 t = normalize_template((mask > 127).astype(np.uint8) * 255, out_size=DIGIT_SIZE)
                 if t is not None and t.any():
                     templates[d].append(t)
-    _digit_templates = templates
+    _digit_templates_cache[code] = templates
     return templates
 
 
@@ -440,7 +534,7 @@ def points_distribution(digit_dist):
     or a misread digit outside the real 1-9 range this game uses)."""
     out = {}
     for digit_str, p in digit_dist.items():
-        letters = POINT_GROUPS.get(int(digit_str), "")
+        letters = point_groups().get(int(digit_str), "")
         if not letters:
             continue
         share = p / len(letters)

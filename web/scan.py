@@ -33,14 +33,22 @@ BOARD_READER_SRC = PROJECT_ROOT / "board_reader" / "src"
 if str(BOARD_READER_SRC) not in sys.path:
     sys.path.insert(0, str(BOARD_READER_SRC))
 
-from letter_classifier import POLISH_ALPHABET  # noqa: E402
+from letter_classifier import alphabet as ocr_alphabet, set_language as set_ocr_language  # noqa: E402
 from premium_layout import GRID  # noqa: E402
 from read_board import read_board  # noqa: E402
 from read_letters import classify_tiles  # noqa: E402
 
 from web.engine import DEFAULT_LANGUAGE, Dawg, get_pack  # noqa: E402
 
-POLISH_LOWER = set(POLISH_ALPHABET.lower())
+def _use_language(language: str):
+    """Point the classifier at `language` and return its spec.
+
+    The classifier keeps its models and templates in per-language caches, so
+    this is cheap after the first scan in each language.
+    """
+    spec = get_pack(language).spec
+    set_ocr_language(spec)
+    return spec
 
 # How many rounds of single-letter correction to run: fixing one word can
 # change a crossing word's letter too, so a couple of extra rounds lets
@@ -128,7 +136,7 @@ def scan_board_image(
     if not readings:
         return {"error": "Nie wykryto żadnych kafelków na planszy."}
 
-    spec = get_pack(language).spec
+    spec = _use_language(language)
     letters = set(spec.alphabet)
     grid = empty_board()
     confidence = [[0.0] * GRID for _ in range(GRID)]
@@ -194,7 +202,9 @@ _IMG_ID_RE = re.compile(r"img(\d+)_[emh]\.jpg$")
 _BOARD_ID_RE = re.compile(r"board(\d+)\.txt$")
 
 
-def evaluate_raw_recognition(path: str, confirmed_board: list[list[str]]) -> tuple[str, dict]:
+def evaluate_raw_recognition(
+    path: str, confirmed_board: list[list[str]], language: str = DEFAULT_LANGUAGE
+) -> tuple[str, dict]:
     """Compare this photo's *unassisted* OCR reading (no dictionary
     correction, no prior-state help -- just what the classifier alone says)
     against the user's final confirmed board, and bucket the result into a
@@ -203,14 +213,16 @@ def evaluate_raw_recognition(path: str, confirmed_board: list[list[str]]) -> tup
     wrong, 'h' if a majority were wrong. Only cells the confirmed board
     actually has a tile in count -- there's nothing to grade where both
     agree on empty."""
+    _use_language(language)
     rotated, mesh, _cells, verdicts, shift = read_board(path, show=False)
     if verdicts is None:
         raise ValueError("Nie udało się znaleźć planszy na zdjęciu.")
 
     readings = classify_tiles(rotated, mesh, verdicts, global_shift=shift)
+    letters = ocr_alphabet()
     raw = empty_board()
     for (r, c), (letter, _conf, _alts) in readings.items():
-        raw[r][c] = letter.lower() if letter and letter in POLISH_ALPHABET else "?"
+        raw[r][c] = letter.lower() if letter and letter in letters else "?"
 
     total = matched = 0
     for r in range(GRID):

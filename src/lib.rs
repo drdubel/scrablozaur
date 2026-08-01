@@ -1890,7 +1890,11 @@ impl Board {
     /// It is only *correct* because the board remembers which squares hold
     /// blanks.
     fn unseen_tile_counts(&self, rack: &str) -> Vec<u8> {
-        self.unseen_counts(rack).to_vec()
+        // Only the prefix this language actually uses: the buffer is sized for
+        // the widest alphabet, and callers index it positionally against their
+        // own tile list (see `smart_player/player.py`'s opponent-rack
+        // reconstruction), so trailing slots would read past the end of it.
+        self.unseen_counts(rack)[..self.lang.eval_size()].to_vec()
     }
 
     /// Rank this rack's plays by Monte-Carlo simulation.
@@ -3489,7 +3493,9 @@ impl Board {
         // The pool a rollout deals from: every tile neither on the board nor in
         // our own rack.
         let mut pool: Vec<char> = Vec::with_capacity(unseen_total);
-        for (i, &count) in unseen.iter().enumerate() {
+        // Only this language's slots: `unseen_counts` returns a buffer sized for
+        // the widest alphabet, and the tail is not addressable in a narrower one.
+        for (i, &count) in unseen.iter().take(self.lang.eval_size()).enumerate() {
             let ch = self.lang.eval_letters[i];
             for _ in 0..count {
                 pool.push(ch);
@@ -4512,6 +4518,50 @@ mod gaddag_tests {
             .err()
             .expect("an unstamped file must be refused");
         assert!(err.to_string().contains("SCRBDWG2"), "got: {err}");
+    }
+
+    /// `unseen_counts` writes into a buffer sized for the widest alphabet, but
+    /// callers index the result positionally against their own tile list -- so
+    /// a language with fewer tile types must get a correspondingly shorter one.
+    #[test]
+    fn unseen_counts_are_sized_to_the_language() {
+        for lang in [pl(), en()] {
+            let board = Board::with_seed(lang, 5);
+            let counts = board.unseen_counts("");
+            let used = &counts[..lang.eval_size()];
+            // Nothing may be recorded past the language's own tile types.
+            assert!(
+                counts[lang.eval_size()..].iter().all(|&c| c == 0),
+                "{}: counts spill past {} slots",
+                lang.code,
+                lang.eval_size()
+            );
+            // A fresh board with no rack leaves the whole bag unseen.
+            assert_eq!(
+                used.iter().map(|&c| c as usize).sum::<usize>(),
+                lang.bag.len(),
+                "{}",
+                lang.code
+            );
+        }
+    }
+
+    /// The rollout pool is built by walking `unseen_counts` positionally against
+    /// the language's tile list. That buffer is sized for the widest alphabet,
+    /// so a narrower language panicked here until the walk was bounded.
+    #[test]
+    fn rollout_pool_is_bounded_by_the_language() {
+        for lang in [pl(), en()] {
+            let board = Board::with_seed(lang, 11);
+            let unseen = board.unseen_counts("");
+            let mut pool = 0usize;
+            for (i, &count) in unseen.iter().take(lang.eval_size()).enumerate() {
+                // The indexing the simulator does; out of range would panic.
+                let _ = lang.eval_letters[i];
+                pool += count as usize;
+            }
+            assert_eq!(pool, lang.bag.len(), "{}", lang.code);
+        }
     }
 
     /// Two boards built from the same definition share one interned language,

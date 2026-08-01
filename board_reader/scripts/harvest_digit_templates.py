@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 
 import glyph_normalizer as gn  # noqa: E402
 from ground_truth import DIFFICULTY, GROUND_TRUTH, IMAGE_PATHS  # noqa: E402
-from letter_classifier import LETTER_POINTS  # noqa: E402
+from letter_classifier import letter_points  # noqa: E402
 from read_board import extract_tile_patches, read_board  # noqa: E402
 
 STAGING_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "data", "real_digit_templates_staging")
@@ -44,7 +44,7 @@ def harvest_one(idx, path, gt):
     for v in verdicts:
         if not v.is_tile or (v.row, v.col) not in gt:
             continue
-        pts = LETTER_POINTS.get(gt[(v.row, v.col)])
+        pts = letter_points().get(gt[(v.row, v.col)])
         if pts is None:
             continue
         glyph = gn.normalize(patches[(v.row, v.col)])

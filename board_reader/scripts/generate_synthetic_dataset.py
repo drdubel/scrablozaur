@@ -31,7 +31,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from letter_classifier import POLISH_ALPHABET, normalize_template  # noqa: E402
+from letter_classifier import alphabet, normalize_template, set_language  # noqa: E402
 
 SIZE = 64
 
@@ -127,13 +127,29 @@ def augment(mask, rng):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "..", "src", "data_train"))
+    ap.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
+    ap.add_argument("--out", default=None, help="defaults to src/data_train/<lang>")
     ap.add_argument("--per-letter", type=int, default=400)
     ap.add_argument(
-        "--real-templates", default=os.path.join(os.path.dirname(__file__), "..", "src", "data", "real_templates")
+        "--real-templates",
+        default=None,
+        help="defaults to the language's own real_templates directory, if it has one",
     )
     ap.add_argument("--seed", type=int, default=7)
     args = ap.parse_args()
+
+    spec = set_language(args.lang)
+    # Per-language output directories: `train_classifier.py` derives its class
+    # list from the directory listing, so mixing two alphabets in one tree
+    # would silently train a model that predicts both.
+    src_dir = os.path.join(os.path.dirname(__file__), "..", "src")
+    out_root = args.out or os.path.join(src_dir, "data_train", spec.code)
+    # A language may have no harvested real glyphs yet -- English ships trained
+    # purely on rendered fonts, which is the honest state of it.
+    real_root = args.real_templates or (str(spec.ocr.real_templates) if spec.ocr else "")
+    print(f"language {spec.code}: {len(alphabet())} letters -> {out_root}")
+    if not real_root or not os.path.isdir(real_root):
+        print("  no real templates: training on rendered fonts alone")
 
     rng = random.Random(args.seed)
 
@@ -149,8 +165,8 @@ def main():
     print(f"{len(fonts)} fonts")
 
     total = 0
-    for ch in POLISH_ALPHABET:
-        out_dir = os.path.join(args.out, ch)
+    for ch in alphabet():
+        out_dir = os.path.join(out_root, ch)
         os.makedirs(out_dir, exist_ok=True)
 
         bases = []
@@ -159,8 +175,8 @@ def main():
                 m = render_letter(ch, font, squeeze)
                 if m is not None:
                     bases.append((f"f{fi}s{int(squeeze * 100)}", m))
-        real_dir = os.path.join(args.real_templates, ch)
-        if os.path.isdir(real_dir):
+        real_dir = os.path.join(real_root, ch) if real_root else ""
+        if real_dir and os.path.isdir(real_dir):
             for f in sorted(glob.glob(os.path.join(real_dir, "*.png"))):
                 img = cv2.imread(f, cv2.IMREAD_GRAYSCALE)
                 if img is not None and img.max() > 0:
@@ -178,7 +194,7 @@ def main():
             name = unicodedata.normalize("NFC", f"{tag}_{i:04d}.png")
             cv2.imwrite(os.path.join(out_dir, name), sample)
             total += 1
-    print(f"wrote {total} samples to {args.out}")
+    print(f"wrote {total} samples to {out_root}")
 
 
 if __name__ == "__main__":

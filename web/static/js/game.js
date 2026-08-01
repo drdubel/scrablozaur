@@ -677,7 +677,7 @@ class GameController {
       if (isBlank) {
         tile.textContent = '★';
       } else {
-        const val = LETTER_VALUES[ch.toLowerCase()] ?? 0;
+        const val = Languages.letterValues(this._language)[ch.toLowerCase()] ?? 0;
         tile.innerHTML =
           `<span class="tile-letter">${ch.toUpperCase()}</span>` +
           `<span class="tile-val">${val}</span>`;

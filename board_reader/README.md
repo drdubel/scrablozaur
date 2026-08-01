@@ -117,6 +117,12 @@ manually reviewed before they're trusted -- a tile only needs to be correctly
 *detected* to be harvested, not correctly *classified*, and glyph extraction
 can still crop badly even when detection and position are right.
 
+Everything below is per language: `--lang <code>` picks a definition from
+`languages/<code>.json`, models live in `src/models/<code>/`, and training data
+in `src/data_train/<code>/`. The classifier refuses a checkpoint whose classes
+are not letters of the language being loaded, so a mixed-up model fails loudly
+instead of predicting confidently from the wrong alphabet.
+
 ```bash
 cd board_reader
 
@@ -124,14 +130,46 @@ cd board_reader
 python scripts/harvest_templates.py                 # crop real glyphs at their ground-truth position -> staging/
 python scripts/review_templates.py                  # manually accept/reject each crop
 python scripts/clean_templates.py                    # auto-strip stray noise components from accepted crops
-python scripts/generate_synthetic_dataset.py --out src/data_train --per-letter 400
-python scripts/train_classifier.py --data src/data_train --out src/models/letter_cnn.pt
+python scripts/generate_synthetic_dataset.py --lang pl --per-letter 400
+python scripts/train_classifier.py --lang pl
 
 # point-value digits (helps disambiguate accented/unaccented pairs, e.g. A vs A-ogonek)
 python scripts/harvest_digit_templates.py
 python scripts/review_templates.py --digits
 python scripts/train_digit_classifier.py --epochs 12
 ```
+
+### Language support, honestly
+
+| | Polish | English |
+|---|---|---|
+| Letter CNN | 32 classes, real + synthetic glyphs | 26 classes, **synthetic only** |
+| Digit reader | yes | **off** |
+| Validated against photos | 89 fixtures, 98.9% letter accuracy | **never** |
+
+**English OCR is unvalidated and should be treated as experimental.** Its model
+was trained purely on letters rendered from system fonts, because every photo
+fixture in `test/` is of a Polish board and there is no English one to measure
+against. That is not a gap you can close with code — it needs photographs.
+
+Two things make it less bad than it sounds. The review UI already flags
+low-confidence cells, so a weaker classifier degrades into "more cells to fix by
+hand" rather than a silently wrong board; and the dictionary-correction pass in
+`web/scan.py` fixes many misreads regardless of how they arose.
+
+The digit channel is off for English because it cannot work there. Every tile
+prints its point value, and reading it is a strong prior *in Polish*, where it
+separates A/Ą and Z/Ź/Ż — pairs that differ by a diacritic and by points.
+English has no diacritics, so the prior buys much less; and its 10-point tiles
+(Q, Z) print a **two-glyph** value that `glyph_normalizer`'s single-component
+digit extraction cannot represent at all. Enabling it would need either a `"10"`
+class with two-component extraction (touching the most delicate CV code here) or
+a width heuristic on the digit band. Neither is worth doing before there is a
+photo set to measure the result against.
+
+Board detection is a separate matter and orthogonal to language: `premium_layout.py`
+and `hsv_config.json` are tuned to one *physical board edition*, so a differently
+coloured board needs `tuner.py` regardless of which language is printed on it.
 
 The digit flow has no `generate_synthetic_dataset.py` step of its own: unlike the
 letter CNN, `train_digit_classifier.py` synthesises its training set in memory

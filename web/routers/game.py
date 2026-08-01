@@ -198,7 +198,8 @@ async def list_languages() -> LanguagesResponse:
                 tile_counts=spec.counts,
                 total_tiles=spec.total_tiles,
                 max_level=max_level_for(spec),
-                has_ocr=spec.ocr is not None,
+                has_ocr=spec.has_ocr,
+                ocr_experimental=spec.ocr_is_experimental,
                 has_leave_net=spec.leave_net is not None,
             )
         )

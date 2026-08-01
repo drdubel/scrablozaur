@@ -131,6 +131,9 @@ class LanguageInfo(BaseModel):
     max_level: int
     #: Whether the board-photo scanner has models for this language.
     has_ocr: bool
+    #: True where those models were trained on rendered fonts alone, never
+    #: checked against photographs of real tiles.
+    ocr_experimental: bool
     #: Whether a trained rack-leave evaluator exists. Without one there are no
     #: levels 9-10, and the `smart`/`sim` suggestion orderings are unavailable.
     has_leave_net: bool

@@ -43,8 +43,17 @@
   "dawg": "words/en/dawg.bin",
   "gaddag": "words/en/gaddag.bin",
 
-  "leave_net": null,
-  "ocr": null,
+  "leave_net": {
+    "checkpoint": "smart_player/models/en/leave_value.pt",
+    "weights": "smart_player/models/en/leave_value.bin"
+  },
+
+  "ocr": {
+    "letter_cnn": "board_reader/src/models/en/letter_cnn.pt",
+    "digit_cnn": null,
+    "real_templates": null,
+    "use_point_prior": false
+  },
 
   "definitions": ["wiktionary", "dictionaryapi"]
 }

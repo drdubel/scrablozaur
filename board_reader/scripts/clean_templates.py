@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from letter_classifier import POLISH_ALPHABET  # noqa: E402
+from letter_classifier import alphabet  # noqa: E402
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LIVE_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_templates")
@@ -121,7 +121,7 @@ def main():
 
     tot_total = tot_changed = tot_flagged = 0
     for letter in letters:
-        if letter not in POLISH_ALPHABET:
+        if letter not in alphabet():
             continue
         n_total, n_changed, n_flagged = clean_letter(letter)
         if n_changed:

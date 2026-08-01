@@ -419,14 +419,28 @@ def _pick_engine_move(session: GameSession, dawg: Dawg, mode: EngineMode) -> dic
     """
     rack = session.current_player.letters
     bag_remaining = session.tile_bag.remaining() if session.tile_bag else 0
+    # Explicitly this language's net. `smart_player`'s own default comes from a
+    # process-global language, which is meaningless here: one server process
+    # serves games in every installed language.
+    model_path = _leave_net_path(session.language)
 
     if mode is EngineMode.SIM:
         choice = choose_move_sim(
-            session.board, dawg, rack, bag_remaining, endgame_max_nodes=WEB_ENDGAME_NODES
+            session.board,
+            dawg,
+            rack,
+            bag_remaining,
+            model_path=model_path,
+            endgame_max_nodes=WEB_ENDGAME_NODES,
         )
     else:
         choice = choose_move(
-            session.board, dawg, rack, bag_remaining, endgame_max_nodes=WEB_ENDGAME_NODES
+            session.board,
+            dawg,
+            rack,
+            bag_remaining,
+            model_path=model_path,
+            endgame_max_nodes=WEB_ENDGAME_NODES,
         )
     if not choice.word:
         return None
@@ -527,6 +541,16 @@ SORT_MODES = ("score", "smart", "sim")
 LEAVE_NET_SORTS = ("smart", "sim")
 
 
+def _leave_net_path(language: str) -> str:
+    """This language's trained checkpoint. Callers must have checked
+    `has_leave_net` first -- there is deliberately no fallback to another
+    language's net, which would read the wrong features."""
+    spec = get_pack(language).spec
+    if spec.leave_net is None:
+        raise ValueError(f"language '{language}' has no trained leave net")
+    return str(spec.leave_net.checkpoint)
+
+
 def has_leave_net(language: str) -> bool:
     """Whether `language` has a trained rack-leave evaluator.
 
@@ -569,7 +593,7 @@ def rank_suggestions(
         # candidate rather than only the survivors of pruning.
         results = board.simulate(
             dawg,
-            get_net(),
+            get_net(_leave_net_path(board.lang.code), lang=board.lang),
             letters,
             candidates=max(n, 1),
             iterations=SUGGEST_SIM_ITERATIONS,
@@ -607,7 +631,7 @@ def rank_suggestions(
         )
         for s in suggestions
     ]
-    values = leave_values(leaves, unseen, board_features)
+    values = leave_values(leaves, unseen, board_features, _leave_net_path(board.lang.code))
     for s, leave_value in zip(suggestions, values):
         s["value"] = round(s["score"] + DEFAULT_LEAVE_WEIGHT * leave_value, 1)
     suggestions.sort(key=lambda s: -s["value"])

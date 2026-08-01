@@ -31,10 +31,17 @@ import struct
 
 import torch
 
-from model import ALPHABET, INPUT_DIM, DEFAULT_WEIGHTS_PATH, get_model
+from model import ALPHABET, DEFAULT_WEIGHTS_PATH, INPUT_DIM, LANGUAGE, _SPEC, get_model
 
 MAGIC = b"SCRBNET1"
-DEFAULT_BIN_PATH = os.path.join(os.path.dirname(__file__), "models", "leave_value.bin")
+# Per-language, alongside the `.pt` it is exported from. The engine checks the
+# feature width when it loads one, so a `.bin` from another language is caught
+# rather than run against the wrong tile alphabet.
+DEFAULT_BIN_PATH = (
+    str(_SPEC.leave_net.weights)
+    if _SPEC.leave_net
+    else os.path.join(os.path.dirname(__file__), "models", LANGUAGE, "leave_value.bin")
+)
 
 
 def export(model_path: str = DEFAULT_WEIGHTS_PATH, out_path: str = DEFAULT_BIN_PATH) -> str:

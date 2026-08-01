@@ -23,7 +23,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, random_split
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from letter_classifier import LetterCNN  # noqa: E402
+from letter_classifier import LetterCNN, alphabet, set_language  # noqa: E402
 
 
 class GlyphDataset(Dataset):
@@ -50,14 +50,34 @@ class GlyphDataset(Dataset):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default=os.path.join(os.path.dirname(__file__), "..", "src", "data_train"))
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "..", "src", "models", "letter_cnn.pt"))
+    ap.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
+    ap.add_argument("--data", default=None, help="defaults to src/data_train/<lang>")
+    ap.add_argument("--out", default=None, help="defaults to the language's own letter_cnn.pt")
     ap.add_argument("--epochs", type=int, default=12)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=2e-3)
     args = ap.parse_args()
 
-    ds = GlyphDataset(args.data)
+    spec = set_language(args.lang)
+    src_dir = os.path.join(os.path.dirname(__file__), "..", "src")
+    data_dir = args.data or os.path.join(src_dir, "data_train", spec.code)
+    out_path = args.out or (
+        str(spec.ocr.letter_cnn)
+        if spec.ocr
+        else os.path.join(src_dir, "models", spec.code, "letter_cnn.pt")
+    )
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    ds = GlyphDataset(data_dir)
+    # The checkpoint's class list is what the classifier loads and filters by,
+    # so a dataset holding letters this language does not have would produce a
+    # model that predicts them. Caught here rather than at inference time.
+    unexpected = sorted(set(ds.classes) - set(alphabet()))
+    if unexpected:
+        raise SystemExit(
+            f"{data_dir} has classes {unexpected!r} that are not letters of '{spec.code}' "
+            f"-- regenerate it with `generate_synthetic_dataset.py --lang {spec.code}`"
+        )
     n_val = max(1, int(0.1 * len(ds)))
     train_ds, val_ds = random_split(ds, [len(ds) - n_val, n_val], generator=torch.Generator().manual_seed(0))
     train = DataLoader(train_ds, batch_size=args.batch, shuffle=True, num_workers=0)
@@ -71,7 +91,6 @@ def main():
     loss_fn = nn.CrossEntropyLoss(label_smoothing=0.05)
 
     best_acc = 0.0
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
     for epoch in range(args.epochs):
         model.train()
         t0, seen, loss_sum = time.time(), 0, 0.0
@@ -99,9 +118,15 @@ def main():
         if acc >= best_acc:
             best_acc = acc
             torch.save(
-                {"state_dict": {k: v.cpu() for k, v in model.state_dict().items()}, "classes": ds.classes}, args.out
+                {
+                    "state_dict": {k: v.cpu() for k, v in model.state_dict().items()},
+                    "classes": ds.classes,
+                    # Stamped so a checkpoint can say which language it is for.
+                    "language": spec.code,
+                },
+                out_path,
             )
-    print(f"best val acc {best_acc:.4f} -> {args.out}")
+    print(f"best val acc {best_acc:.4f} -> {out_path}")
 
 
 if __name__ == "__main__":

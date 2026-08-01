@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from strategy import StrategicPlayer  # noqa: E402
 
 from board_features import encode_board  # noqa: E402
-from model import ALPHABET, DEFAULT_WEIGHTS_PATH, encode_leave, encode_leaves, get_model  # noqa: E402
+from model import DEFAULT_WEIGHTS_PATH, encode_leave, encode_leaves, get_model, model_alphabet  # noqa: E402
 
 
 def remove_used(letters: str, used: list[str]) -> str:
@@ -105,7 +105,9 @@ def leave_values(
         return []
     unseen = np.full(len(leaves), unseen_tiles, dtype=np.float32)
     board_feats = np.tile(np.asarray(board_features, dtype=np.float32), (len(leaves), 1))
-    x = encode_leaves(np.asarray(leaves), unseen, board_feats)
+    # Encode against the checkpoint's own tile order, not a module global: one
+    # process can hold nets for several languages at once (the web app does).
+    x = encode_leaves(np.asarray(leaves), unseen, board_feats, model_alphabet(model_path))
     with torch.inference_mode():
         return get_model(model_path)(x).tolist()
 
@@ -140,7 +142,10 @@ def choose_move(
     # rather than estimating. Only correct because the board tracks blanks.
     if use_endgame and bag_remaining == 0:
         counts = board.unseen_tile_counts(rack)
-        opponent_rack = "".join(ALPHABET[i] * n for i, n in enumerate(counts))
+        # `unseen_tile_counts` is positional against the board's own language,
+        # which is what this net must also be for.
+        tiles = board.lang.eval_alphabet()
+        opponent_rack = "".join(tiles[i] * n for i, n in enumerate(counts))
         # A real endgame leaves the opponent at most a rack. Anything larger
         # means `bag_remaining` disagrees with the board -- which the web app
         # can produce, since it tracks its bag separately from the engine's
@@ -264,7 +269,9 @@ class SmartPlayer(StrategicPlayer):
         the kept subset is the best available signal for ranking exchanges,
         same as it ranks candidate moves."""
         with torch.inference_mode():
-            x = encode_leave(leave, self._unseen_tiles, self._board_features)
+            x = encode_leave(
+                leave, self._unseen_tiles, self._board_features, model_alphabet(self.model_path)
+            )
             return get_model(self.model_path)(x.unsqueeze(0)).item()
 
     def _leave_values(self, leaves: list[str]) -> list[float]:

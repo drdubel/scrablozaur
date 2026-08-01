@@ -97,10 +97,68 @@ identical games.
 
 ```
 python smart_player/generate_data.py 200000  # self-play -> _leave_dataset.npz (~20-40 min)
-python smart_player/train.py                 # -> models/leave_value.pt
+python smart_player/train.py                 # -> models/<lang>/leave_value.pt
 python smart_player/arena.py --a smart --b strategic --pairs 1000   # paired benchmark
 python smart_player/evaluate.py 2000         # older unpaired benchmark
 ```
+
+### Languages
+
+A net encodes one input slot per tile type, so it is only ever valid for the
+alphabet it was trained on -- a Polish net fed an English rack does not fail, it
+drops the letters Polish lacks and scores the rest against the wrong
+distribution. Models therefore live in `models/<lang>/`, checkpoints are stamped
+with their language, and `get_model` refuses one that disagrees.
+
+Pick the language with an environment variable, not a flag: every stage fans out
+across process pools whose workers re-import `model.py`, and an env var is
+inherited by them for free.
+
+```bash
+# 2M games is ~50M samples. generate_data.py keeps them all in memory and then
+# concatenates, so its peak is roughly twice the finished array -- enough to get
+# the process killed on a machine that handles the result fine. A kill leaves no
+# traceback, so it looks like a silent stall at ~90%. Generate in batches and
+# merge; the peak is then one batch.
+for i in 1 2 3 4; do
+  SCRABLOZAUR_LANGUAGE=en python smart_player/generate_data.py 500000 \
+    --lookahead 4 --out smart_player/_en_part$i.npz          # ~9 min each
+done
+python smart_player/merge_datasets.py smart_player/_en_part*.npz \
+    --out smart_player/_en_leave_dataset.npz
+
+SCRABLOZAUR_LANGUAGE=en python smart_player/train.py --data smart_player/_en_leave_dataset.npz
+SCRABLOZAUR_LANGUAGE=en python smart_player/export_weights.py
+```
+
+**A language with no net is not broken, just capped.** `web/difficulty.py` reads
+`languages/<code>.json`; where `leave_net` is null the difficulty slider stops at
+8 (the strongest level needing no model) and the `smart`/`sim` suggestion
+orderings are refused rather than answered with nonsense. Do not point a
+language at another's checkpoint to fill the gap -- that is the exact failure the
+guard exists to prevent.
+
+**Gate for enabling levels 9-10 in a new language:** a paired-seed `arena.py`
+run of that language's level 8 against level 9 using the new net. Raise the cap
+only on a win beyond the error bar. This repo's own history is the reason to
+insist: `leave_k4`, trained on 200k games, lost to the incumbent at every weight
+tested, while the 2M-game `leave_v2` won by +5.4 +/- 1.6 points/game.
+
+`strategic` is the right stand-in for level 8: at that level `rank_window` is
+`(1, 1)`, so the bot always plays the highest-scoring move, and
+`StrategicPlayer`'s leave heuristic is constant within a decision (see
+`model.py`'s docstring) -- both are the greedy score maximiser.
+
+English cleared the gate on a 2M-game net, at parity with the mature Polish one
+on the same measurement (400 paired seeds, 800 games each):
+
+| Language | net | `strategic` vs `smart` | win rate for `smart` |
+|---|---|---|---|
+| Polish | `leave_v2`, 2M games | **+44.8 +/- 3.1** pts/game | 66.9% |
+| English | 2M games, lookahead 4 | **+42.4 +/- 3.1** pts/game | 64.9% |
+
+Both intervals clear zero by more than ten standard errors, so English levels
+9-10 are enabled (`leave_net` set in `languages/en.json`).
 
 - **generate_data.py** plays `StrategicPlayer` vs `StrategicPlayer` games to
   completion (via `simulate.play_game`, which applies the standard

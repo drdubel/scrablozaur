@@ -42,7 +42,7 @@ const Languages = {
     return this._byCode.get(code) ?? {
       code, name: code, flag: '', alphabet: '', blank: '?',
       letter_values: {}, tile_counts: {}, total_tiles: 0,
-      max_level: 10, has_ocr: false, has_leave_net: false,
+      max_level: 10, has_ocr: false, ocr_experimental: false, has_leave_net: false,
     };
   },
 
@@ -59,8 +59,8 @@ const Languages = {
 
   /** Whether a single character is a playable letter in `code`.
    *
-   * Replaces the hardcoded `/^[a-ząćęłńóśźż]$/` character classes that were
-   * scattered through the blank-assignment and rack-entry handlers.
+   * Replaces the fixed Polish character classes that used to be scattered
+   * through the blank-assignment, rack-entry and scan-editor handlers.
    *
    * @param {string} ch
    * @param {{code?: string, lowerOnly?: boolean}} opts
@@ -109,6 +109,7 @@ const Languages = {
       // offer the top levels, and a silently shorter slider looks like a bug.
       if (info.max_level < 10) parts.push(`maks. poziom ${info.max_level}`);
       if (!info.has_ocr) parts.push('bez skanowania zdjęć');
+      else if (info.ocr_experimental) parts.push('skanowanie eksperymentalne');
       note.textContent = parts.join(' · ');
     };
     describe();
