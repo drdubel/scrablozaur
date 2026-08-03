@@ -77,12 +77,17 @@ class Dawg:
 
         If `gaddag_path` is omitted, a sibling GADDAG is auto-loaded when
         present: same directory, with `dawg` replaced by `gaddag` in the
-        filename (e.g. `words/dawg.bin` -> `words/gaddag.bin`, built with the
+        filename (e.g. `words/pl/dawg.bin` -> `words/pl/gaddag.bin`, built with the
         `build-gaddag` command). When a GADDAG is loaded, `Board.get_best_words`
         uses fast anchor-based generation; otherwise it falls back to the legacy
         DAWG pattern search. Pass an explicit `gaddag_path` to override, or leave
         both absent to run purely on the DAWG.
         """
+
+    @property
+    def lang(self) -> Language:
+        """The language this lexicon was loaded under. Its edge letters were
+        decoded into symbol indexes at load, so it is bound to that alphabet."""
 
     def contains(self, word: str) -> bool:
         """Return True if the word exists in the dictionary."""
@@ -136,6 +141,16 @@ class Board:
         sequence of draws and exchanges deal identical tiles. This is what
         lets a benchmark play one bag twice with the seats swapped and compare
         the two results as a matched pair.
+        """
+
+    @property
+    def lang(self) -> Language:
+        """The language this position is played under -- its alphabet, point
+        table and tile distribution.
+
+        Pairing a board with a dictionary or leave net in another language is
+        rejected rather than silently mis-scored, so callers that need to build
+        one of those for a given board should take the language from here.
         """
 
     def copy(self) -> Board:
@@ -332,7 +347,7 @@ class Board:
     def blank_mask(self) -> list[list[bool]]:
         """15x15 mask of which occupied squares hold a blank tile.
 
-        Pairs with `from_grid(grid, blanks)` to round-trip a position.
+        Pairs with `from_grid(lang, grid, blanks)` to round-trip a position.
         """
 
     def board_feature_scalars(self) -> tuple[float, float, float, float, float]:
@@ -394,6 +409,7 @@ class Board:
         plies: int = 1,
         batch: int = 25,
         root_eval_cap: int = 150,
+        leave_weight: float = 1.0,
         seed: int = 0,
     ) -> list[tuple[str, int, tuple[int, int, bool], list[str], float, float, int]]:
         """Rank this rack's plays by Monte-Carlo simulation.
@@ -437,8 +453,8 @@ class Board:
         """
 
     def fresh_tile_bag(self) -> list[str]:
-        """This language's full tile distribution, as `Board()` and
-        `Board.from_grid()` each start with.
+        """This language's full tile distribution, as `Board(lang)` and
+        `Board.from_grid(lang, ...)` each start with.
         """
 
     def rack_value(self, letters: str) -> int:

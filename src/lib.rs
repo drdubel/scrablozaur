@@ -1186,11 +1186,14 @@ impl Board {
 
     /// Construct a board pre-filled from a 15x15 grid of single-character
     /// cells (e.g. loaded from a saved game or a scanned photo), each cell
-    /// either a letter or `'-'` for empty. Starts with a full standard
-    /// tile bag, same as `Board()` -- letters already on the grid are not
-    /// subtracted from it, since callers that load a grid this way manage
-    /// their own separate tile-bag bookkeeping rather than relying on this
-    /// board's.
+    /// either a letter or `'-'` for empty.
+    ///
+    /// Starts from `lang`'s full tile bag and **removes every tile already on
+    /// the grid**, so the remaining bag is what could still be drawn. A grid
+    /// holding more copies of a letter than the distribution allows is an
+    /// error rather than a silently over-drawn bag -- which is why a played
+    /// blank must be declared in `blanks`: it consumes a blank from the bag,
+    /// not a copy of the letter it stands in for.
     #[staticmethod]
     #[pyo3(signature = (lang, board, blanks=None))]
     fn from_grid(
