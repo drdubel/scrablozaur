@@ -2,7 +2,7 @@
 
     python smart_player/distill.py 5000 --iterations 100 --candidates 12
     python smart_player/train.py --data smart_player/_distill.npz \\
-        --out smart_player/models/leave_v3.pt --warm-start smart_player/models/leave_value.pt
+        --out smart_player/models/pl/leave_v3.pt --warm-start smart_player/models/pl/leave_value.pt
 
 Why this and not more self-play. `generate_data.py` labels a leave with an
 n-step score-differential return, and that target is mostly noise: measured on

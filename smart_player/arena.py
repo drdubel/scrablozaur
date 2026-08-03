@@ -1,7 +1,7 @@
 """Paired-seed benchmark: play the same bag twice with the seats swapped.
 
     python smart_player/arena.py --a smart --b strategic --pairs 1500
-    python smart_player/arena.py --a smart:models/cand.pt --b smart --pairs 1500
+    python smart_player/arena.py --a smart:models/pl/cand.pt --b smart --pairs 1500
 
 Why pairs. The dominant variance in a Scrabble result is which tiles came out
 of the bag, not which player is better -- so `evaluate.py`'s independent games

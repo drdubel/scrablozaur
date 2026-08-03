@@ -1,7 +1,7 @@
 # board_reader
 
-Computer-vision pipeline that turns a photo of a physical Polish Scrabble
-board into a 15x15 board state (letters + confidence + ranked alternatives).
+Computer-vision pipeline that turns a photo of a physical Scrabble board into a
+15x15 board state (letters + confidence + ranked alternatives).
 It's a standalone, script-style package (no `__init__.py`, no package build) --
 `web/scan.py` imports directly from `board_reader/src` by inserting it onto
 `sys.path`, wraps it with a dictionary-driven correction pass, and exposes it
@@ -127,16 +127,18 @@ instead of predicting confidently from the wrong alphabet.
 cd board_reader
 
 # letters
-python scripts/harvest_templates.py                 # crop real glyphs at their ground-truth position -> staging/
-python scripts/review_templates.py                  # manually accept/reject each crop
-python scripts/clean_templates.py                    # auto-strip stray noise components from accepted crops
+python scripts/harvest_templates.py --lang pl        # crop real glyphs at their ground-truth position -> staging/
+python scripts/review_templates.py --lang pl        # manually accept/reject each crop
+python scripts/clean_templates.py --lang pl          # auto-strip stray noise components from accepted crops
 python scripts/generate_synthetic_dataset.py --lang pl --per-letter 400
 python scripts/train_classifier.py --lang pl
 
-# point-value digits (helps disambiguate accented/unaccented pairs, e.g. A vs A-ogonek)
-python scripts/harvest_digit_templates.py
-python scripts/review_templates.py --digits
-python scripts/train_digit_classifier.py --epochs 12
+# point-value digits (helps disambiguate accented/unaccented pairs, e.g. A vs A-ogonek).
+# Only for a language whose tiles print a readable value -- `train_digit_classifier.py`
+# refuses one with "use_point_prior": false, such as English.
+python scripts/harvest_digit_templates.py --lang pl
+python scripts/review_templates.py --lang pl --digits
+python scripts/train_digit_classifier.py --lang pl --epochs 12
 ```
 
 ### Language support, honestly
@@ -173,7 +175,8 @@ coloured board needs `tuner.py` regardless of which language is printed on it.
 
 The digit flow has no `generate_synthetic_dataset.py` step of its own: unlike the
 letter CNN, `train_digit_classifier.py` synthesises its training set in memory
-each run, mixing it with the reviewed real crops in `src/data/real_digit_templates/`.
+each run, mixing it with the reviewed real crops in
+`src/data/<code>/real_digit_templates/`.
 
 Both CNNs are optional at inference time: if `torch` or the `.pt` weights
 aren't available, `letter_classifier.py` degrades to template matching alone
@@ -184,9 +187,11 @@ aren't available, `letter_classifier.py` degrades to template matching alone
 ```
 board_reader/
 ├── src/                  # the pipeline itself (flat modules, no package/__init__.py)
-│   ├── data/             # harvested real glyph/digit crops (staging/accepted/rejected)  [not in git]
-│   ├── data_train/       # generated CNN training set, letters                           [not in git]
-│   ├── models/           # trained CNN weights (letter_cnn.pt, digit_cnn.pt)             [in git]
+│   ├── data/<code>/      # harvested real glyph/digit crops (staging/accepted/rejected) [not in git]
+│   ├── data_train/<code>/         # generated CNN training set, letters                  [not in git]
+│   ├── data_train_digits/<code>/  # generated CNN training set, point digits             [not in git]
+│   ├── models/<code>/    # trained CNN weights (letter_cnn.pt, digit_cnn.pt)             [in git]
+│   ├── data_paths.py     # where all of the above live -- one definition, see below
 │   └── hsv_config.json   # tuned parameter presets, see Tuning                           [in git]
 ├── scripts/              # offline tooling: harvest -> review -> clean -> generate -> train,
 │                         #   plus benchmark_pipeline.py (stage-by-stage timing)
@@ -198,15 +203,22 @@ board_reader/
 Note the two similarly-named directories: `tests/` holds runnable eval
 *scripts*; `test/` holds the *data* they evaluate against.
 
+Every path above is derived in `src/data_paths.py` rather than spelled out in
+each script. That matters because these directories are handed between five tools
+in sequence (harvest → review → clean → generate → train), and a disagreement
+between any two of them is silent: the producer writes somewhere the consumer
+never looks, so the workflow appears to run and simply has no effect.
+
 **What a fresh clone does and doesn't get.** The repo root's `.gitignore` is a
 strict whitelist, and it does include `*.pt` and `*.json` -- so both trained CNN
-checkpoints (`src/models/letter_cnn.pt`, `src/models/digit_cnn.pt`) and the tuned
+checkpoints (`src/models/<code>/letter_cnn.pt`, plus `digit_cnn.pt` where the
+language uses one) and the tuned
 `src/hsv_config.json` *are* committed. A fresh clone can therefore run the
 pipeline at full accuracy with no training step.
 
-What is *not* committed is the training and evaluation material: `src/data/`
-(harvested glyph crops), `src/data_train/` (the generated training set), and all
-of `test/` (the photos and ground truth). So a fresh clone can *run* the reader
+What is *not* committed is the training and evaluation material:
+`src/data/<code>/` (harvested glyph crops), `src/data_train/<code>/` (the
+generated training set), and all of `test/` (the photos and ground truth). So a fresh clone can *run* the reader
 but cannot reproduce the [accuracy](#accuracy) numbers above or retrain the CNNs
 without a copy of those local files.
 

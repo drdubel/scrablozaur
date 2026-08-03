@@ -1,6 +1,6 @@
 # Scrablozaur — agent guide
 
-Polish Scrabble engine: **Rust core** (DAWG + GADDAG + Rayon move search) exposed to
+Multi-language Scrabble engine (Polish + English): **Rust core** (DAWG + GADDAG + Rayon move search) exposed to
 **Python** via PyO3, plus a FastAPI web app, a CV board scanner, and a learned
 rack-leave evaluator.
 
@@ -16,8 +16,9 @@ Sub-projects have their own READMEs: `board_reader/README.md`, `smart_player/REA
 | `src/main.py`, `src/strategy.py`, `src/verify_engine.py` | Self-play benchmark, bot classes, sanity checks |
 | `web/` | FastAPI app (`web.main:app`), routes under `web/routers/`, vanilla-JS frontend in `web/static/` |
 | `board_reader/` | Photo → board-state OpenCV/torch pipeline |
-| `smart_player/` | Leave-value model (`models/leave_value.pt`, exported to `.bin`) |
-| `words/` | `words.txt` (2.58M words), pre-built `dawg.bin` (~3 MiB), `gaddag.bin` (~36 MiB) |
+| `smart_player/` | Leave-value model, per language (`models/<code>/leave_value.pt`, exported to `.bin`) |
+| `words/<code>/` | Per language: `words.txt`, pre-built `dawg.bin` + `gaddag.bin` (pl ~3/36 MiB, en ~1/8 MiB) |
+| `languages/` | One JSON per language — alphabet, points, distribution, artifact paths. **The source of truth.** |
 | `tests/cli_build.rs` | `cargo test` integration test for the CLI |
 | `tests/test_strategy.py` | Player-logic tests |
 | `test/*.in` | Sample board states for manual testing |

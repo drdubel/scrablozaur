@@ -1,6 +1,6 @@
 # Scrablozaur
 
-A high-performance Polish-language Scrabble engine written in Rust, exposed to Python via [PyO3](https://pyo3.rs). Scrablozaur combines a minimized DAWG dictionary, a GADDAG move generator, and Rayon-parallel search to find the highest-scoring legal play from any board position in milliseconds.
+A high-performance multi-language Scrabble engine written in Rust, exposed to Python via [PyO3](https://pyo3.rs). Polish and English ship; a language is one JSON file (see [Languages](#languages)). Scrablozaur combines a minimized DAWG dictionary, a GADDAG move generator, and Rayon-parallel search to find the highest-scoring legal play from any board position in milliseconds.
 
 ---
 
@@ -19,7 +19,7 @@ A high-performance Polish-language Scrabble engine written in Rust, exposed to P
 
 ## Board
 
-Standard 15 × 15 Polish Scrabble layout. The first word must cover the centre square (⭐).
+Standard 15 × 15 Scrabble layout, the same in every language. The first word must cover the centre square (⭐).
 
 ```
 🟥⬜⬜🟩⬜⬜⬜🟥⬜⬜⬜🟩⬜⬜🟥
@@ -54,7 +54,13 @@ Multipliers apply only to tiles placed on that square during the current move; t
 
 ## Tile Distribution
 
-The bag contains **100 tiles**: 98 lettered tiles across the 32 letters of the Polish alphabet, plus 2 blanks.
+Each language declares its own bag in `languages/<code>.json`, and that file is
+the single source of truth — the engine, the web app, the board renderer, the OCR
+classifier and the leave model all read it.
+
+Polish, shown below, is **100 tiles**: 98 lettered tiles across the 32 letters of
+the alphabet, plus 2 blanks. English is also 100 tiles, over 26 letters, with a
+different point scale (its Q and Z are worth 10).
 
 | Letter | Count | Points | &nbsp; | Letter | Count | Points | &nbsp; | Letter | Count | Points |
 |:------:|------:|-------:|--------|:------:|------:|-------:|--------|:------:|------:|-------:|
@@ -71,7 +77,7 @@ The bag contains **100 tiles**: 98 lettered tiles across the 32 letters of the P
 | H      |     2 |      3 |        | R      |     4 |      1 |        |        |       |        |
 | I      |     8 |      1 |        |        |       |        |        |        |       |        |
 
-A blank tile (`?`) may substitute for any letter during a search but scores 0 points. `Board.fresh_tile_bag()` returns this exact 100-tile distribution.
+A blank tile (`?`) may substitute for any letter during a search but scores 0 points. `board.fresh_tile_bag()` returns whichever distribution that board's language declares.
 
 ---
 
@@ -181,6 +187,19 @@ single-threaded speedup. Both take an optional trailing game count (default 200)
 
 ## Python API
 
+Every `Board`, `Dawg` and `LeaveNet` is bound to a `Language` — there is no
+default, because silently falling back to one language's point table is exactly
+the bug this prevents. Build one first; every snippet below reuses it.
+
+```python
+import sys
+sys.path.insert(0, "src")            # `languages` is a script-style module
+from languages import engine_language, load
+
+spec = load("pl")                    # parsed + validated languages/pl.json
+lang = engine_language(spec)         # the engine-side Language
+```
+
 ### `Dawg`
 
 ```python
@@ -209,8 +228,8 @@ d.has_gaddag()               # True when the sibling gaddag.bin was auto-loaded
 from scrablozaur import Board, Dawg
 
 d = Dawg(lang, "words/pl/dawg.bin")
-b = Board()                            # empty 15x15 board + full 100-tile bag
-# Board.from_grid([["-"] * 15 for _ in range(15)])  # or start from a given grid
+b = Board(lang)                        # empty 15x15 board + full 100-tile bag
+# Board.from_grid(lang, [["-"] * 15 for _ in range(15)])  # or start from a grid
 
 # draw letters from the bag (fills hand up to 7 tiles)
 hand = b.give_letters("")              # e.g. "aeimnrt"
@@ -273,7 +292,7 @@ class Player:
         return word
 
 
-b = Board()
+b = Board(lang)
 players = [Player(b), Player(b)]
 
 # A game ends when both players fail to play in a row, or when someone goes
@@ -290,7 +309,7 @@ while no_play_streak < len(players):
 # Standard end-of-game rack adjustment: everyone loses their own rack's value,
 # and a player who went out also gains every opponent's.
 for p in players:
-    penalty = Board.rack_value(p.letters)
+    penalty = b.rack_value(p.letters)
     p.score -= penalty
     if not p.letters:
         continue
@@ -555,7 +574,11 @@ scrablozaur/
 │   ├── main.py          # Python self-play benchmark script (`graj()`, `benchmark()`)
 │   ├── strategy.py      # SimplePlayer / StrategicPlayer / RankedPlayer bot classes
 │   ├── rules.py         # when a game ends and how it is finally scored (one definition)
+│   ├── languages.py     # loads + validates languages/*.json (the source of truth)
 │   └── verify_engine.py # engine sanity checks
+├── languages/           # one JSON per language: alphabet, points, distribution, paths
+│   ├── pl.json
+│   └── en.json
 ├── web/                 # FastAPI web app (game UI + board scanner + benchmark UI)
 │   ├── main.py          # app entry point (`uvicorn web.main:app`)
 │   ├── game.py, scan.py, engine.py, models.py
@@ -564,16 +587,16 @@ scrablozaur/
 │   └── static/          # HTML/CSS/vanilla-JS frontend
 ├── board_reader/        # photo -> board-state CV pipeline (see its own README)
 ├── smart_player/        # learned rack-leave evaluator / SmartPlayer (see its own README)
-├── words/
-│   ├── words.txt        # 2.58 M-word Polish dictionary (source)
-│   ├── dawg.bin         # compiled DAWG, ~3 MiB (pre-built, committed)
-│   └── gaddag.bin       # compiled GADDAG, ~36 MiB (pre-built, committed)
+├── words/               # one directory per language, all pre-built and committed
+│   ├── pl/              # words.txt (2.58 M), dawg.bin ~3 MiB, gaddag.bin ~36 MiB
+│   └── en/              # words.txt (168 k, ENABLE), dawg.bin ~1 MiB, gaddag.bin ~8 MiB
 ├── test/                # sample board states (.in files) for manual testing
 ├── tests/
 │   ├── cli_build.rs     # `cargo test` integration test for the CLI
 │   ├── test_strategy.py # player-logic tests
 │   └── test_web_agrees_with_cli.py  # the web app and the CLI must choose the same move
 ├── scrablozaur.pyi      # Python type stubs (installed as scrablozaur/__init__.pyi)
+├── Makefile             # dictionary builds + verification, per language
 ├── pyproject.toml       # uv-managed Python dependencies (web/ + board_reader/ + smart_player/)
 ├── uv.lock
 └── Cargo.toml           # Rust package manifest

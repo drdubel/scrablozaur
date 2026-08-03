@@ -312,7 +312,7 @@ it affordable:
   stop being sampled. In practice 20 candidates collapse to 3 within a couple of
   hundred iterations, so the nominal cost is rarely paid.
 
-The leave net runs *in Rust* (`export_weights.py` -> `models/leave_value.bin`,
+The leave net runs *in Rust* (`export_weights.py` -> `models/<lang>/leave_value.bin`,
 `LeaveNet` in `src/lib.rs`). At hundreds of thousands of evaluations per move,
 calling back into PyTorch for a 13k-parameter MLP would cost far more in FFI and
 GIL traffic than its ~10k multiply-adds. The `.pt` stays the source of truth and
@@ -358,7 +358,7 @@ engine's 8-thread pool turns a one-minute run into ten minutes of thrashing.
 
 ## Checkpoints, and the weight that goes with them
 
-`models/leave_value.pt` is the champion. The rest are the named sources behind
+`models/<lang>/leave_value.pt` is that language's champion. The rest are the named sources behind
 the results below, kept because they are the controls any future comparison
 needs.
 
@@ -603,7 +603,7 @@ layout isn't exposed to Python by the engine (`BONUS_TABLE` in
 `src/lib.rs`), so it's ported from the already-validated copy at
 `web/static/js/board.js:4-32` rather than re-transcribed from Rust.
 
-Input width: 33 letter counts + `unseen_tiles` + these 5 = **39 dims**
+Input width: one count per tile type + `unseen_tiles` + these 5 (`INPUT_DIM = len(ALPHABET) + 1 + N_BOARD_FEATURES`) — **39 dims for Polish's 33 tile types, 33 for English's 27**
 (was 34). Old datasets/checkpoints are incompatible with the new encoding
 -- `model.get_model()` now stores and validates `input_dim` in the
 checkpoint and fails loudly on a mismatch rather than silently loading a
@@ -761,4 +761,4 @@ proven necessary yet.
 | `arena.py` | Paired-seed benchmark CLI: same bag twice, seats swapped |
 | `evaluate.py` | Older unpaired win-rate benchmark: vs. baselines, or candidate vs. champion |
 | `iterate.py` | Policy-iteration orchestrator (generate -> train -> gate -> promote) |
-| `models/leave_value.pt` | Trained checkpoint (committed, like `board_reader`'s CNN weights) |
+| `models/<lang>/leave_value.pt` | Trained checkpoint (committed, like `board_reader`'s CNN weights) |

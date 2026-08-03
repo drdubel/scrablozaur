@@ -43,7 +43,7 @@ def remove_used(letters: str, used: list[str]) -> str:
 # **Retune this whenever the checkpoint changes.** The optimum is a property of
 # the model, not a constant: it measures how far the estimate deserves to be
 # trusted, and a better-trained net earns a higher weight. Measured at 1500
-# seeded pairs per point, against the previous champion (`models/leave_v1.pt`):
+# seeded pairs per point, against the previous champion (`models/pl/leave_v1.pt`):
 #
 #   w                      0.80    0.90    1.00    1.10    1.25    1.50
 #   leave_v2 (2M games)    +0.7    +3.8    +5.4    +4.9    +1.2   -13.6

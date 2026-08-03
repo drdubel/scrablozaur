@@ -47,8 +47,11 @@ Move generation has a legacy pattern-search implementation kept specifically as 
 oracle. Any change to the GADDAG generator must stay move-for-move identical:
 
 ```bash
-cargo run --release -- gen-verify words/dawg.bin words/gaddag.bin 200
+make verify LANG=pl && make verify LANG=en
 ```
+
+Both languages: the alphabet, point table and tile distribution are runtime data
+now, so a change can be correct for one and wrong for the other.
 
 Also run:
 
@@ -64,8 +67,8 @@ sample positions in `test/*.in` too — those are the fixtures for hand-checking
 ## 4. Only then measure
 
 ```bash
-cargo run --release -- gen-bench words/dawg.bin words/gaddag.bin 200
-cargo run --release -- bench     words/dawg.bin words/words.txt
+make bench LANG=pl
+cargo run --release -- bench pl words/pl/dawg.bin words/pl/words.txt
 ```
 
 Pin `RAYON_NUM_THREADS` when comparing runs; the pool defaults to `min(8, cores)`
@@ -74,13 +77,18 @@ runs. The `/bench` prompt template in `.pi/prompts/bench.md` spells out the full
 
 ## 5. Dictionary binaries
 
-`words/dawg.bin` and `words/gaddag.bin` are committed build artifacts. Never edit them;
-regenerate if the binary format or the lexicon changes:
+`words/<code>/dawg.bin` and `words/<code>/gaddag.bin` are committed build artifacts,
+one pair per language in `languages/`. Never edit them; regenerate if the binary
+format or a lexicon changes:
 
 ```bash
-cargo run --release -- build        words/words.txt words/dawg.bin
-cargo run --release -- build-gaddag words/words.txt words/gaddag.bin
+make dicts LANG=pl
+make dicts LANG=en
 ```
+
+Each file's header stamps the letters its lexicon actually uses, and the engine
+refuses to load one whose letters the language does not have — so a rebuild that
+misses a language fails loudly rather than mis-scoring.
 
 Changing the on-disk format means both files must be rebuilt together, and
 `gen-verify` must pass afterwards.

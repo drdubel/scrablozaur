@@ -1,7 +1,7 @@
 """Export a trained LeaveValueNet checkpoint to a flat binary the Rust engine
 can load.
 
-    python smart_player/export_weights.py                     # -> models/leave_value.bin
+    python smart_player/export_weights.py                     # -> models/<lang>/leave_value.bin
     python smart_player/export_weights.py --out other.bin --model-path other.pt
 
 Why. The simulation player evaluates a leave at every rollout ply -- hundreds
