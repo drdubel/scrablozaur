@@ -22,6 +22,10 @@ dev = [
     "pytest>=8.4.2",
     # fastapi.testclient needs httpx (tests/test_api_languages.py).
     "httpx>=0.28.1",
+    # tests/test_ui_smoke.py drives the real UI in a browser -- the only layer
+    # that catches a JS ReferenceError. Needs `playwright install chromium`;
+    # the test skips itself when the browser is absent.
+    "playwright>=1.62.0",
 ]
 
 # This pyproject.toml exists for uv's dependency management (web/ + board_reader/

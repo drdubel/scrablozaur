@@ -137,21 +137,49 @@ def test_difficulty_levels_stop_where_a_language_has_no_leave_net(client):
         assert [lvl["level"] for lvl in data["levels"]] == list(range(1, expected + 1))
 
 
-def test_leave_net_orderings_are_refused_without_a_net(client):
-    """`smart` and `sim` both consult the learned leave evaluator. Fed a rack
-    in another language, a net does not fail -- it drops the letters its own
-    alphabet lacks and scores the rest against the wrong distribution. So the
-    orderings are refused outright rather than answered with nonsense."""
+def test_leave_net_orderings_work_where_a_net_exists(client):
+    """`smart` and `sim` both consult the learned leave evaluator."""
     for code in languages.available():
         spec = languages.load(code)
+        if spec.leave_net is None:
+            continue
         _new_game(client, language=code)
         client.post("/api/board/set-letters", json={"letters": "aeiorst"})
         for sort in ("smart", "sim"):
             response = client.post(f"/api/board/suggest?sort={sort}")
-            if spec.leave_net is None:
-                assert response.status_code == 400, f"{code}/{sort} should be refused"
-            else:
-                assert response.status_code == 200, f"{code}/{sort}: {response.text}"
+            assert response.status_code == 200, f"{code}/{sort}: {response.text}"
+
+
+def test_leave_net_orderings_are_refused_without_a_net(client, monkeypatch):
+    """Fed another language's rack, a net does not fail -- it drops the letters
+    its own alphabet lacks and scores the rest against the wrong distribution.
+    So the orderings are refused outright rather than answered with nonsense.
+
+    Every installed language currently has a net, which would make this
+    vacuous, so the refusal path is driven from a spec with `leave_net=None`
+    rather than from whichever language happens to lack one.
+    """
+    import dataclasses
+
+    from web import engine, game
+
+    code = languages.available()[0]
+    _new_game(client, language=code)
+    client.post("/api/board/set-letters", json={"letters": "aeiorst"})
+
+    real = engine.get_pack(code)
+    stripped = dataclasses.replace(real, spec=dataclasses.replace(real.spec, leave_net=None))
+    monkeypatch.setitem(engine._packs, code, stripped)
+    # `has_leave_net` reads through the same registry the routes do.
+    assert not game.has_leave_net(code)
+
+    for sort in ("smart", "sim"):
+        response = client.post(f"/api/board/suggest?sort={sort}")
+        assert response.status_code == 400, f"{sort} should be refused: {response.text}"
+        assert "modelu" in response.json()["detail"]
+
+    # Plain score order must remain available regardless.
+    assert client.post("/api/board/suggest?sort=score").status_code == 200
 
 
 def test_score_ordering_always_works(client):

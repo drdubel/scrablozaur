@@ -20,11 +20,13 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from ground_truth import DIFFICULTY, GROUND_TRUTH, IMAGE_PATHS  # noqa: E402
+from letter_classifier import set_language  # noqa: E402
 from read_board import read_board  # noqa: E402
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
     parser.add_argument("ids", nargs="*", type=int, help="specific image indices to evaluate (overrides --difficulty)")
     parser.add_argument(
         "-d",
@@ -33,6 +35,7 @@ def main():
         help="difficulty suffixes to include: any of 'e' (easy), 'm' (medium), 'h' (hard), e.g. -d emh (default: em)",
     )
     args = parser.parse_args()
+    set_language(args.lang)
 
     ids = args.ids or [i for i in sorted(GROUND_TRUTH) if DIFFICULTY[i] in args.difficulty]
 

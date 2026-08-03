@@ -22,7 +22,13 @@ from strategy import SimplePlayer, StrategicPlayer
 
 from languages import engine_language, load as load_language  # noqa: E402
 
-_spec = load_language("pl")
+# Same mechanism as smart_player/model.py, which this module imports from: the
+# self-play benchmark fans out across a process pool whose workers re-import
+# this file, and an env var is inherited by them while a flag would have to be
+# threaded through every worker entry point.
+#
+#     SCRABLOZAUR_LANGUAGE=en uv run python src/main.py 100 2 3
+_spec = load_language(os.environ.get("SCRABLOZAUR_LANGUAGE", "pl"))
 LANG = engine_language(_spec)
 d = Dawg(LANG, str(_spec.dawg), str(_spec.gaddag))
 

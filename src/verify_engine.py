@@ -9,6 +9,7 @@ combined word once placed on the board).
 Run: uv run python src/verify_engine.py
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -19,10 +20,20 @@ from scrablozaur import Board, Dawg  # noqa: E402
 
 from languages import engine_language, load as load_language  # noqa: E402
 
+# Rebound by main() from --lang. The checks below derive their expectations
+# from the language rather than hardcoding Polish's point table, so each one is
+# a real assertion about the engine in whatever language it is run for.
 SPEC = load_language("pl")
 LANG = engine_language(SPEC)
 DAWG_PATH = SPEC.dawg
 GADDAG_PATH = SPEC.gaddag
+
+
+def _use_language(code: str) -> None:
+    global SPEC, LANG, DAWG_PATH, GADDAG_PATH
+    SPEC = load_language(code)
+    LANG = engine_language(SPEC)
+    DAWG_PATH, GADDAG_PATH = SPEC.dawg, SPEC.gaddag
 
 
 def board_grid(board: Board) -> list[list[str]]:
@@ -34,13 +45,22 @@ def check_cross_word_scoring() -> list[str]:
     own word multiplier, not the main word's accumulated one. 'ba' placed
     vertically at (0,0), then 'cdf' placed vertically at column 1 crossing
     a DW at (1,1): main word (c+d+f)*2=18, cross-word at row0 (b+c)=5,
-    cross-word at row1 (a+d)*2=6 (also on the DW) -- total 29, not the
-    buggy 26 you'd get by multiplying everything by the main word's mult."""
+    cross-word at row1 (a+d)*2 (also on the DW) -- not the smaller total you
+    would get by multiplying everything by the main word's multiplier.
+
+    The expected value is computed from the language's own point table, since
+    the same placement scores differently in each."""
     board = Board(LANG)
     board.place_word("ba", 0, 0, False)
     score = board.calculate_word_points("cdf", 0, 1, False, "cdf")
-    if score != 29:
-        return [f"expected cross-word-aware score 29, got {score}"]
+
+    pts = board.letter_points
+    main = (pts("c") + pts("d") + pts("f")) * 2   # column 1 crosses the DW at (1,1)
+    cross_row0 = pts("b") + pts("c")
+    cross_row1 = (pts("a") + pts("d")) * 2        # this cross-word sits on the DW too
+    expected = main + cross_row0 + cross_row1
+    if score != expected:
+        return [f"expected cross-word-aware score {expected}, got {score}"]
     return []
 
 
@@ -104,18 +124,31 @@ def check_min_word_length() -> list[str]:
     board = Board(LANG)
     errors = []
     try:
-        board.check_word_placement(dawg, "a", 7, 7, True)
+        board.check_word_placement(dawg, SPEC.alphabet[0], 7, 7, True)
         errors.append("expected a 1-letter word to be rejected")
     except Exception:
         pass
+
+    # Taken from this language's own lexicon rather than hardcoded, so the
+    # check tests the length rule and not whether some fixed word happens to
+    # exist here.
+    two = next((w for w in dawg.search("--", SPEC.alphabet) if len(w) == 2), None)
+    if two is None:
+        return errors + ["no 2-letter word in this lexicon to test with"]
     try:
-        board.check_word_placement(dawg, "ok", 7, 7, True)
+        board.check_word_placement(dawg, two, 7, 7, True)
     except Exception as e:
-        errors.append(f"expected a 2-letter word to be accepted, got: {e}")
+        errors.append(f"expected the 2-letter word {two!r} to be accepted, got: {e}")
     return errors
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
+    args = ap.parse_args()
+    _use_language(args.lang)
+    print(f"engine checks for '{SPEC.code}':")
+
     checks = [
         ("cross-word scoring uses its own word multiplier", check_cross_word_scoring),
         ("first-move search covers offset 0 (word starting exactly on centre)", check_first_move_covers_every_offset),

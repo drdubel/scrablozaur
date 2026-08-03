@@ -17,7 +17,7 @@ DAWG  := words/$(LANG)/dawg.bin
 GADDAG := words/$(LANG)/gaddag.bin
 GAMES ?= 200
 
-.PHONY: dicts dawg gaddag verify bench test
+.PHONY: dicts dawg gaddag verify verify-all bench test
 
 dicts: dawg gaddag
 
@@ -36,7 +36,19 @@ verify: $(DAWG) $(GADDAG)
 bench: $(DAWG) $(GADDAG)
 	$(CARGO) gen-bench $(LANG) $(DAWG) $(GADDAG) $(GAMES)
 
+# Every installed language, from the definition files themselves -- adding one
+# should not require editing this.
+LANGS := $(basename $(notdir $(wildcard languages/*.json)))
+
 test:
 	cargo test --release
 	uv run pytest tests/
-	uv run python src/verify_engine.py
+	@for l in $(LANGS); do \
+		echo "--- verify_engine: $$l ---"; \
+		uv run python src/verify_engine.py --lang $$l || exit 1; \
+	done
+
+# Move-for-move parity in every language. The alphabet and point table are
+# runtime data, so a change can be correct for one language and wrong for another.
+verify-all:
+	@for l in $(LANGS); do $(MAKE) --no-print-directory verify LANG=$$l || exit 1; done
