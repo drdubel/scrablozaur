@@ -42,18 +42,25 @@ Usage:
 import argparse
 import os
 import shutil
+import sys
 import unicodedata
 
 import cv2
 import numpy as np
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-STAGING_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_templates_staging")
-ACCEPTED_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_templates")
-REJECTED_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_templates_rejected")
-DIGIT_STAGING_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_digit_templates_staging")
-DIGIT_ACCEPTED_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_digit_templates")
-DIGIT_REJECTED_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_digit_templates_rejected")
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "src"))
+from data_paths import digit_dirs, letter_dirs  # noqa: E402
+
+# Bound in main() once --lang and --digits are known. The accepted directory in
+# particular must be the one the classifier reads, or reviewing does nothing.
+STAGING_DIR = ACCEPTED_DIR = REJECTED_DIR = ""
+
+
+def _bind_dirs(lang: str, digits: bool) -> None:
+    global STAGING_DIR, ACCEPTED_DIR, REJECTED_DIR
+    dirs = digit_dirs(lang) if digits else letter_dirs(lang)
+    STAGING_DIR, ACCEPTED_DIR, REJECTED_DIR = dirs["staging"], dirs["accepted"], dirs["rejected"]
 
 THUMB = 96  # displayed size per glyph cell (source glyphs are already 64x64)
 PAD = 8
@@ -387,11 +394,10 @@ def _handle_click(sess, x, y, sidebar_rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--digits", action="store_true", help="review point-value digit crops instead of letter glyphs")
+    parser.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
     args = parser.parse_args()
 
-    if args.digits:
-        global STAGING_DIR, ACCEPTED_DIR, REJECTED_DIR
-        STAGING_DIR, ACCEPTED_DIR, REJECTED_DIR = DIGIT_STAGING_DIR, DIGIT_ACCEPTED_DIR, DIGIT_REJECTED_DIR
+    _bind_dirs(args.lang, args.digits)
 
     sess = ReviewSession()
     if sess.cur_letter is None:

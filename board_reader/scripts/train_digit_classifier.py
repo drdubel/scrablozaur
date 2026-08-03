@@ -38,9 +38,18 @@ from torch.utils.data import DataLoader, Dataset, random_split
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import glyph_normalizer as gn  # noqa: E402
-from letter_classifier import LetterCNN, normalize_template, valid_digits  # noqa: E402
+from data_paths import digit_cnn_path, digit_dirs, digit_train_dir  # noqa: E402
+from letter_classifier import (  # noqa: E402
+    LetterCNN,
+    normalize_template,
+    set_language,
+    use_point_prior,
+    valid_digits,
+)
 
-DIGITS = tuple(d for d in valid_digits() if len(d) == 1)
+# Bound in main() once --lang is known: which point values a tile can print is
+# a property of the language (see letter_classifier.valid_digits).
+DIGITS: tuple[str, ...] = ()
 SIZE = gn.DIGIT_SIZE  # 32 -- much smaller than letters' 64, digits are simpler shapes
 
 FONT_CANDIDATES = [
@@ -54,9 +63,10 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
 ]
 
-REAL_DIGITS_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "data", "real_digit_templates")
-DATASET_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "data_train_digits")
-MODEL_OUT = os.path.join(os.path.dirname(__file__), "..", "src", "models", "digit_cnn.pt")
+# Bound in main(). MODEL_OUT in particular comes from the language definition,
+# so a retrain lands exactly where the classifier loads from -- writing anywhere
+# else is a retrain that silently never takes effect.
+REAL_DIGITS_DIR = DATASET_DIR = MODEL_OUT = ""
 
 
 def render_digit(d, font, squeeze):
@@ -226,7 +236,8 @@ def train(epochs, batch, lr):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--real-digits", default=REAL_DIGITS_DIR, help="reviewed real digit crops (default: %(default)s)")
+    ap.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
+    ap.add_argument("--real-digits", default=None, help="reviewed real digit crops (default: this language's)")
     ap.add_argument("--per-digit", type=int, default=400)
     ap.add_argument("--epochs", type=int, default=12)
     ap.add_argument("--batch", type=int, default=128)
@@ -234,7 +245,22 @@ def main():
     ap.add_argument("--seed", type=int, default=7)
     args = ap.parse_args()
 
-    build_dataset(args.per_digit, args.seed, args.real_digits)
+    global DIGITS, REAL_DIGITS_DIR, DATASET_DIR, MODEL_OUT
+    spec = set_language(args.lang)
+    DIGITS = tuple(d for d in valid_digits() if len(d) == 1)
+    if not DIGITS:
+        raise SystemExit(f"'{spec.code}' has no single-glyph point values to train on")
+    if not use_point_prior():
+        raise SystemExit(
+            f"'{spec.code}' does not use the printed point value "
+            f'(\"use_point_prior\": false in languages/{spec.code}.json)'
+        )
+    REAL_DIGITS_DIR = args.real_digits or digit_dirs(spec)["accepted"]
+    DATASET_DIR = digit_train_dir(spec)
+    MODEL_OUT = digit_cnn_path(spec)
+    print(f"language {spec.code}: digits {''.join(DIGITS)} -> {MODEL_OUT}")
+
+    build_dataset(args.per_digit, args.seed, args.real_digits or REAL_DIGITS_DIR)
     train(args.epochs, args.batch, args.lr)
 
 

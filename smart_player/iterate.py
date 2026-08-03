@@ -37,7 +37,7 @@ import time
 
 from arena import run as arena_run
 from generate_data import generate
-from model import DEFAULT_WEIGHTS_PATH
+from model import DEFAULT_WEIGHTS_PATH, LANGUAGE
 from train import train as train_model
 
 _SCRATCH_DIR = os.path.dirname(__file__)
@@ -54,14 +54,14 @@ def iterate(
     n_workers: int | None = None,
 ) -> None:
     champion_path = DEFAULT_WEIGHTS_PATH
-    candidate_path = os.path.join(_SCRATCH_DIR, "models", "_candidate.pt")
+    candidate_path = os.path.join(_SCRATCH_DIR, "models", LANGUAGE, "_candidate.pt")
     history: list[dict[str, object]] = []
 
     for r in range(1, rounds + 1):
         round_start = time.perf_counter()
         print(f"\n=== Round {r}/{rounds} (champion: {champion_path}) ===")
 
-        dataset_path = os.path.join(_SCRATCH_DIR, f"_iter_round{r}.npz")
+        dataset_path = os.path.join(_SCRATCH_DIR, f"_iter_{LANGUAGE}_round{r}.npz")
         print(f"[{r}] generating {games} self-play games with the current champion...")
         generate(
             games,

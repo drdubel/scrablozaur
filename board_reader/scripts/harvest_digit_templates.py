@@ -28,10 +28,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 
 import glyph_normalizer as gn  # noqa: E402
 from ground_truth import DIFFICULTY, GROUND_TRUTH, IMAGE_PATHS  # noqa: E402
-from letter_classifier import letter_points  # noqa: E402
+from letter_classifier import letter_points, set_language  # noqa: E402
 from read_board import extract_tile_patches, read_board  # noqa: E402
 
-STAGING_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "data", "real_digit_templates_staging")
+from data_paths import digit_dirs  # noqa: E402
+
+# Bound in main() from --lang; review_templates.py --digits reads this one.
+STAGING_DIR = ""
 
 
 def harvest_one(idx, path, gt):
@@ -59,6 +62,7 @@ def harvest_one(idx, path, gt):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
     parser.add_argument("ids", nargs="*", type=int, help="specific image indices to harvest (overrides --difficulty)")
     parser.add_argument(
         "-d",
@@ -67,6 +71,11 @@ def main():
         help="difficulty suffixes to include: any of 'e' (easy), 'm' (medium), 'h' (hard), e.g. -d emh (default: em)",
     )
     args = parser.parse_args()
+
+    # `letter_points` follows set_language, so bind both from one flag.
+    global STAGING_DIR
+    set_language(args.lang)
+    STAGING_DIR = digit_dirs(args.lang)["staging"]
 
     ids = args.ids or [i for i in sorted(GROUND_TRUTH) if DIFFICULTY[i] in args.difficulty]
 

@@ -1,8 +1,7 @@
 """Train letter_classifier.py's CNN on a dataset produced by
 generate_synthetic_dataset.py.
 
-    python scripts/train_classifier.py --data src/data_train \
-        --out src/models/letter_cnn.pt --epochs 12
+    python scripts/train_classifier.py --lang pl --epochs 12
 
 The checkpoint stores the class list next to the weights, so the
 classifier can never mis-map indices to letters.

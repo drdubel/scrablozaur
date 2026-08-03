@@ -5,7 +5,7 @@ Two sources, both normalised exactly like glyph_normalizer.py's extractor
 
 1. font renderings -- every alphabet letter drawn with all usable system
    fonts (bold + regular), then augmented;
-2. real harvested glyphs -- masks under src/data/real_templates/ (reviewed
+2. real harvested glyphs -- masks under src/data/<lang>/real_templates/ (reviewed
    crops from actual photos, see harvest_templates.py + review_templates.py),
    heavily augmented.
 
@@ -14,7 +14,7 @@ shears, stroke thickness changes (erode/dilate), blur, sensor noise, partial
 strokes, and occasional grid-line bar artefacts near the canvas border.
 
 Usage:
-    python scripts/generate_synthetic_dataset.py --out src/data_train --per-letter 400
+    python scripts/generate_synthetic_dataset.py --lang pl --per-letter 400
 
 Ported from ocr/scripts/generate_synthetic_dataset.py.
 """

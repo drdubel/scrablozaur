@@ -1,5 +1,5 @@
 """Automatically strip stray dot/line artifacts from harvested real
-templates in src/data/real_templates/.
+templates in src/data/<lang>/real_templates/.
 
 glyph_normalizer.py's component selection doesn't know which letter it's
 looking at, so a stray fragment (a bit of grid line, a bevel shadow corner)
@@ -27,6 +27,7 @@ Usage:
     python scripts/clean_templates.py
 """
 
+import argparse
 import os
 import shutil
 import sys
@@ -36,12 +37,13 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from letter_classifier import alphabet  # noqa: E402
+from data_paths import letter_dirs  # noqa: E402
+from letter_classifier import alphabet, set_language  # noqa: E402
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-LIVE_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_templates")
-BACKUP_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_templates_before_cleanup")
-STAGING_DIR = os.path.join(SCRIPT_DIR, "..", "src", "data", "real_templates_staging")
+# Bound in main() from --lang. `alphabet()` follows `set_language`, so binding
+# these together keeps the directory and the letter set describing one language.
+LIVE_DIR = BACKUP_DIR = STAGING_DIR = ""
 
 DIACRITIC_LETTERS = set("ĄĆĘŁŃÓŚŹŻ")
 
@@ -112,6 +114,14 @@ def clean_letter(letter):
 
 
 def main():
+    global LIVE_DIR, BACKUP_DIR, STAGING_DIR
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
+    args = ap.parse_args()
+    set_language(args.lang)
+    dirs = letter_dirs(args.lang)
+    LIVE_DIR, BACKUP_DIR, STAGING_DIR = dirs["accepted"], dirs["backup"], dirs["staging"]
+
     if not os.path.isdir(LIVE_DIR):
         print(f"Nothing to clean: {LIVE_DIR} does not exist.")
         return
