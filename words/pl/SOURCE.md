@@ -6,7 +6,6 @@
 | **Words** | 2,584,336 |
 | **sha256** | `ff70a8807fc98c3db579b5832da74c4f188674650204111afa80f935848b0737` |
 | **Source** | Combined from multiple sources (close to osps)  |
-| **Scraper** | `_scraper.py` at the repo root — git-ignored by the `_*` rule, so it is not part of the tree |
 
 ## Invariants
 
