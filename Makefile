@@ -20,6 +20,7 @@ GAMES ?= 200
 .PHONY: dicts dawg gaddag verify verify-all bench test
 
 dicts: dawg gaddag
+build-all: scrablozaur dicts
 
 dawg: $(DAWG)
 $(DAWG): $(WORDS)
@@ -29,6 +30,9 @@ $(DAWG): $(WORDS)
 gaddag: $(GADDAG)
 $(GADDAG): $(WORDS)
 	$(CARGO) build-gaddag $(WORDS) $(GADDAG)
+
+scrablozaur:
+	uv run maturin build --release
 
 verify: $(DAWG) $(GADDAG)
 	$(CARGO) gen-verify $(LANG) $(DAWG) $(GADDAG) $(GAMES)
