@@ -120,8 +120,8 @@ the paths to its dictionary and models. It is the **single source of truth**:
 the engine, the web app, the board renderer, the OCR classifier and the leave
 model all read it, and `tests/test_tables_agree.py` fails if any of them drifts.
 
-Two ship: **Polish** (`pl`, 2.58M words) and **English** (`en`, ENABLE, 168k
-words). The picker is on the new-game screen; each game stores its own language,
+Two ship: **Polish** (`pl`, 2.58M words) and **English** (`en`, 281k words).
+The picker is on the new-game screen; each game stores its own language,
 so two sessions can run different ones side by side.
 
 To add a third: drop in `languages/xx.json`, put a word list at
@@ -589,7 +589,7 @@ scrablozaur/
 ├── smart_player/        # learned rack-leave evaluator / SmartPlayer (see its own README)
 ├── words/               # one directory per language, all pre-built and committed
 │   ├── pl/              # words.txt (2.58 M), dawg.bin ~3 MiB, gaddag.bin ~36 MiB
-│   └── en/              # words.txt (168 k, ENABLE), dawg.bin ~1 MiB, gaddag.bin ~8 MiB
+│   └── en/              # words.txt (281 k), dawg.bin ~2 MiB, gaddag.bin ~13 MiB
 ├── test/                # sample board states (.in files) for manual testing
 ├── tests/
 │   ├── cli_build.rs     # `cargo test` integration test for the CLI
