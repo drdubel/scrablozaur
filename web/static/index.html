@@ -17,13 +17,6 @@
       <option value="sandbox">sandbox</option>
       <option value="competitive" selected>competitive</option>
     </select>
-    <select id="setup-difficulty" hidden>
-      <option value="easy">easy</option>
-      <option value="medium">medium</option>
-      <option value="hard" selected>hard</option>
-      <option value="impossible">impossible</option>
-      <option value="smart">smart</option>
-    </select>
 
     <!-- Mode picker cards -->
     <p class="setup-section-label">Tryb gry</p>
@@ -44,6 +37,12 @@
         <span class="mode-card-desc">Zdjęcie prawdziwej planszy</span>
       </button>
     </div>
+
+    <!-- Language picker. Placed above the mode-specific blocks because it
+         applies to all of them: sandbox, automatic sandbox, competitive and
+         scanning all play in one language. Filled by js/languages.js, and
+         hidden entirely when only one language is installed. -->
+    <div id="setup-language-slot" class="setup-language-slot"></div>
 
     <!-- Sandbox: multi-player config -->
     <div id="setup-sandbox-config" hidden>
@@ -82,28 +81,10 @@
       </label>
 
       <p class="setup-section-label">Poziom trudności</p>
-      <div class="setup-difficulty-cards">
-        <button type="button" class="diff-card" data-diff="easy">
-          <span class="diff-card-icon">🌱</span>
-          <span class="diff-card-name">Łatwy</span>
-        </button>
-        <button type="button" class="diff-card" data-diff="medium">
-          <span class="diff-card-icon">🎯</span>
-          <span class="diff-card-name">Średni</span>
-        </button>
-        <button type="button" class="diff-card diff-card--active" data-diff="hard">
-          <span class="diff-card-icon">🔥</span>
-          <span class="diff-card-name">Trudny</span>
-        </button>
-        <button type="button" class="diff-card" data-diff="impossible">
-          <span class="diff-card-icon">💀</span>
-          <span class="diff-card-name">Niemożliwy</span>
-        </button>
-        <button type="button" class="diff-card" data-diff="smart">
-          <span class="diff-card-icon">🧠</span>
-          <span class="diff-card-name">Sprytny</span>
-        </button>
-      </div>
+      <!-- One custom-difficulty dial instead of fixed tiers; the slider and
+           its feedback text are built by js/difficulty.js from the level
+           table the server serves. -->
+      <div id="setup-difficulty-slot" class="setup-difficulty-slot"></div>
     </div>
 
     <p id="setup-error" class="error" hidden></p>
@@ -169,7 +150,7 @@
             <!-- Human turn -->
             <section id="panel-human" class="panel" hidden>
               <h2 id="panel-human-title">Ruch gracza</h2>
-              <p class="typing-hint">Kliknij pole startowe · pisz litery · spacja zmienia kierunek · Enter zatwierdza</p>
+              <p class="typing-hint">Kliknij pole startowe · pisz litery lub klikaj kafelki na stojaku · spacja zmienia kierunek · Enter zatwierdza · „Anuluj układanie” (Escape) zwalnia planszę</p>
               <div class="form-row">
                 <label>
                   Kierunek <small>(spacja)</small>
@@ -189,13 +170,25 @@
               </div>
               <div class="btn-row">
                 <button id="btn-place-human" class="btn btn-primary">Zatwierdź ↵</button>
+                <!-- The only way off the board on a phone: there is no Escape
+                     key there, and while a square is selected every rack tap
+                     places a tile instead of picking it for exchange. -->
+                <button id="btn-cancel-typing" class="btn btn-secondary" hidden>✕ Anuluj układanie</button>
                 <button id="btn-hints" class="btn btn-ghost">Pokaż podpowiedzi</button>
                 <button id="btn-exchange-human" class="btn btn-ghost">Wymień litery</button>
                 <button id="btn-skip-human" class="btn btn-ghost">Pomiń ruch</button>
                 <button id="btn-pass-human" class="btn btn-danger">Poddaj się</button>
               </div>
-              <p id="exchange-hint" class="typing-hint">Aby wymienić litery: kliknij je na stojaku, potem naciśnij „Wymień litery”.</p>
+              <p id="exchange-hint" class="typing-hint">Aby wymienić litery: zakończ układanie słowa („Anuluj układanie”), kliknij litery na stojaku, potem naciśnij „Wymień litery”.</p>
               <p id="human-error" class="error" hidden></p>
+              <div id="hint-toolbar" class="list-toolbar" hidden>
+                <span class="list-toolbar-label">Sortuj</span>
+                <div id="hint-sort" class="segmented" role="group" aria-label="Sortuj podpowiedzi">
+                  <button type="button" class="seg-btn seg-btn--active" data-value="score">🏆 Punkty</button>
+                  <button type="button" class="seg-btn" data-value="smart">🧠 Strateg</button>
+                  <button type="button" class="seg-btn" data-value="sim">🔮 Analityk</button>
+                </div>
+              </div>
               <ol id="hint-list" class="hint-list" hidden></ol>
             </section>
 
@@ -212,6 +205,14 @@
                 <button id="btn-skip-computer" class="btn btn-ghost">Pomiń ruch</button>
               </div>
               <p id="suggest-error" class="error" hidden></p>
+              <div id="suggestion-toolbar" class="list-toolbar" hidden>
+                <span class="list-toolbar-label">Sortuj</span>
+                <div id="suggestion-sort" class="segmented" role="group" aria-label="Sortuj propozycje">
+                  <button type="button" class="seg-btn seg-btn--active" data-value="score">🏆 Punkty</button>
+                  <button type="button" class="seg-btn" data-value="smart">🧠 Strateg</button>
+                  <button type="button" class="seg-btn" data-value="sim">🔮 Analityk</button>
+                </div>
+              </div>
               <ol id="suggestion-list" class="suggestion-list" hidden></ol>
             </section>
 
@@ -321,6 +322,14 @@
         <button id="btn-scan-suggest" class="btn btn-primary">Znajdź słowa</button>
       </div>
       <p id="scan-suggest-error" class="error" hidden></p>
+      <div id="scan-suggestion-toolbar" class="list-toolbar" hidden>
+        <span class="list-toolbar-label">Sortuj</span>
+        <div id="scan-suggestion-sort" class="segmented" role="group" aria-label="Sortuj propozycje">
+          <button type="button" class="seg-btn seg-btn--active" data-value="score">🏆 Punkty</button>
+          <button type="button" class="seg-btn" data-value="smart">🧠 Strateg</button>
+          <button type="button" class="seg-btn" data-value="sim">🔮 Analityk</button>
+        </div>
+      </div>
       <ol id="scan-suggestion-list" class="hint-list scan-suggestion-list" hidden></ol>
 
       <div class="btn-row setup-btn-row">
@@ -395,6 +404,7 @@
       <span class="sug-rank"></span>
       <span class="sug-word"></span>
       <span class="sug-score"></span>
+      <span class="sug-value"></span>
       <span class="sug-pos"></span>
       <div class="sug-actions">
         <button class="btn btn-ghost btn-sm btn-preview">Podgląd</button>
@@ -410,11 +420,15 @@
       <span class="hint-rank"></span>
       <span class="hint-word"></span>
       <span class="hint-score"></span>
+      <span class="hint-value"></span>
       <span class="hint-pos"></span>
     </li>
   </template>
 
+  <script src="/static/js/ui.js"></script>
   <script src="/static/js/api.js"></script>
+  <script src="/static/js/difficulty.js"></script>
+  <script src="/static/js/languages.js"></script>
   <script src="/static/js/board.js"></script>
   <script src="/static/js/game.js"></script>
   <script src="/static/js/scan.js"></script>

@@ -44,15 +44,6 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-// Letter point values matching lib.rs calculate_word_points
-const LETTER_VALUES = {
-  'a':1,'e':1,'i':1,'o':1,'z':1,'w':1,'n':1,'s':1,'r':1,
-  'd':2,'y':2,'c':2,'k':2,'l':2,'m':2,'p':2,'t':2,
-  'b':3,'g':3,'h':3,'j':3,'ł':3,'u':3,
-  'ą':5,'ę':5,'f':5,'ó':5,'ś':5,'ż':5,
-  'ć':6,'ń':7,'ź':9,'?':0,
-};
-
 class BoardRenderer {
   /** @param {string} containerId */
   constructor(containerId) {
@@ -65,22 +56,24 @@ class BoardRenderer {
     this._hintSuggestions = [];
     this._onCellClickCb  = null;
     this._onTypingUpdate = null;
-    this._onTileDropCb   = null;
-    this._dragTargetCoords = null;
     // { horizontal, entries:[{r,c,letter,skipped}], cursorR, cursorC }
     this._typing = null;
+    // Letter -> point value for the language in play. Served by
+    // `GET /api/game/languages` (see js/languages.js); this used to be a
+    // hardcoded table that had to be kept in step with the engine by hand.
+    // Empty until the fetch lands, which just means no corner numbers yet.
+    this._letterValues = {};
     this._buildGrid();
+  }
+
+  /** @param {Record<string, number>} values */
+  setLetterValues(values) {
+    this._letterValues = values || {};
+    this.render(this._grid, this._owners);
   }
 
   setOnCellClick(fn)     { this._onCellClickCb  = fn; }
   setOnTypingUpdate(fn)  { this._onTypingUpdate  = fn; }
-  /** fn(r, c, payload) -- payload is whatever string the drag source (a
-   * rack tile, see game.js) put on the dataTransfer. Only wired for mouse
-   * drag-and-drop (native HTML5 DnD); touch dragging has no such native
-   * event stream and instead drives the same callback directly through
-   * game.js's own touch handlers (see setDragTarget/clearDragTarget below,
-   * used to mirror the same hover highlight for both input types). */
-  setOnTileDrop(fn)      { this._onTileDropCb   = fn; }
   isTyping()             { return this._typing !== null; }
 
   /** Letters newly placed onto the board in the current typing session, in
@@ -90,31 +83,6 @@ class BoardRenderer {
   getTypedLetters() {
     if (!this._typing) return [];
     return this._typing.entries.filter(e => e.letter !== null).map(e => e.letter);
-  }
-
-  /** Resolve a viewport point (from a touchmove/touchend) to a board cell,
-   * or null if it's outside this board -- used by game.js's custom touch
-   * drag (native HTML5 DnD doesn't fire from touch input on mobile). */
-  cellAt(clientX, clientY) {
-    const el = document.elementFromPoint(clientX, clientY);
-    const cellEl = el?.closest('.cell');
-    if (!cellEl || !this._container.contains(cellEl)) return null;
-    const row = Number(cellEl.dataset.row), col = Number(cellEl.dataset.col);
-    if (Number.isNaN(row) || Number.isNaN(col)) return null;
-    return { row, col };
-  }
-
-  setDragTarget(r, c) {
-    this.clearDragTarget();
-    this._cells[r][c].classList.add('drag-target');
-    this._dragTargetCoords = [r, c];
-  }
-
-  clearDragTarget() {
-    if (!this._dragTargetCoords) return;
-    const [r, c] = this._dragTargetCoords;
-    this._cells[r][c].classList.remove('drag-target');
-    this._dragTargetCoords = null;
   }
 
   _buildGrid() {
@@ -130,26 +98,6 @@ class BoardRenderer {
         cell.dataset.col = c;
         cell.textContent = BONUS_LABELS[BONUS_GRID[r][c]] ?? '';
         cell.addEventListener('click', () => { if (this._onCellClickCb) this._onCellClickCb(r, c); });
-        cell.addEventListener('dragover', e => {
-          if (!this._onTileDropCb) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'move';
-        });
-        cell.addEventListener('dragenter', e => {
-          if (!this._onTileDropCb) return;
-          e.preventDefault();
-          this.setDragTarget(r, c);
-        });
-        cell.addEventListener('dragleave', () => {
-          if (this._dragTargetCoords?.[0] === r && this._dragTargetCoords?.[1] === c) this.clearDragTarget();
-        });
-        cell.addEventListener('drop', e => {
-          if (!this._onTileDropCb) return;
-          e.preventDefault();
-          this.clearDragTarget();
-          const payload = e.dataTransfer.getData('text/plain');
-          if (payload) this._onTileDropCb(r, c, payload);
-        });
         this._container.appendChild(cell);
         row.push(cell);
       }
@@ -162,10 +110,15 @@ class BoardRenderer {
    * @param {(number|null)[][]} owners  15×15 player-index ownership (null = empty) --
    *   tinted by seat index (0-3) so each player's tiles are visually distinct,
    *   regardless of how many players or whether they're human/computer.
+   * @param {boolean[][]} blanks   15×15 mask of squares holding a blank tile.
+   *   The grid stores a blank as the letter it stands in for, so this is the
+   *   only way to tell them apart -- and they differ where it matters: a blank
+   *   scores 0 for every word played through it, forever.
    */
-  render(grid, owners = null) {
+  render(grid, owners = null, blanks = null) {
     this._grid   = grid;
     this._owners = owners ?? Array.from({ length: 15 }, () => Array(15).fill(null));
+    this._blanks = blanks ?? Array.from({ length: 15 }, () => Array(15).fill(false));
     this.clearHighlights();
     this._typing = null;
     this._onTypingUpdate?.(null);
@@ -177,7 +130,7 @@ class BoardRenderer {
         if (letter !== '-') {
           const ownerIdx = this._owners[r][c];
           cell.className = 'cell placed' + (ownerIdx !== null ? ` placed-owner-${ownerIdx}` : '');
-          this._setTileLetter(cell, letter);
+          this._setTileLetter(cell, letter, '', this._blanks[r][c]);
         } else {
           const bonus = BONUS_GRID[r][c];
           cell.className   = 'cell ' + bonus;
@@ -187,12 +140,18 @@ class BoardRenderer {
     }
   }
 
-  /** Render a letter + its point value into a cell. */
-  _setTileLetter(cell, letter, extraClass = '') {
-    const val = LETTER_VALUES[letter.toLowerCase()] ?? 0;
+  /** Render a letter + its point value into a cell.
+   *
+   * A blank keeps showing the letter it was played as -- you need to read the
+   * board -- but scores 0 and is marked, because "which of these is the blank"
+   * decides whether a hook is worth playing.
+   */
+  _setTileLetter(cell, letter, extraClass = '', isBlank = false) {
+    const val = isBlank ? 0 : (this._letterValues[letter.toLowerCase()] ?? 0);
     cell.innerHTML =
       `<span class="tile-letter">${letter.toUpperCase()}</span>` +
       `<span class="tile-val">${val}</span>`;
+    if (isBlank) cell.classList.add('tile-blank');
     if (extraClass) cell.classList.add(extraClass);
   }
 

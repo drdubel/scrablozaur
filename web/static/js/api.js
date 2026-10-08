@@ -1,5 +1,27 @@
 'use strict';
 
+/** Turn an error body into something a human can read.
+ *
+ * Our own handlers raise HTTPException with a plain string, but FastAPI's
+ * request validation returns `detail` as an array of error objects. Those
+ * stringify to "[object Object]", which is how a difficulty level the server
+ * rejected showed up as an unreadable error instead of naming the field.
+ */
+function formatDetail(detail) {
+  if (detail == null) return '';
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map(e => {
+        const field = Array.isArray(e.loc) ? e.loc.filter(x => x !== 'body').join('.') : '';
+        return field ? `${field}: ${e.msg}` : e.msg;
+      })
+      .filter(Boolean)
+      .join('; ');
+  }
+  return String(detail.msg ?? JSON.stringify(detail));
+}
+
 class ApiError extends Error {
   /** @param {number} status @param {string} detail */
   constructor(status, detail) {
@@ -23,7 +45,7 @@ class ApiClient {
     const res = await fetch('/api' + path, opts);
     if (!res.ok) {
       const payload = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new ApiError(res.status, payload.detail ?? res.statusText);
+      throw new ApiError(res.status, formatDetail(payload.detail) || res.statusText);
     }
     return res.json();
   }
@@ -32,6 +54,16 @@ class ApiClient {
   newGame(body)   { return this._request('POST', '/game/new',   body); }
   resetGame(body) { return this._request('POST', '/game/reset', body); }
   getState()        { return this._request('GET',  '/game/state'); }
+
+  /** The custom-difficulty slider's notches + their descriptions. Takes the
+   * language because a language with no trained leave net has fewer of them. */
+  getDifficultyLevels(language = null) {
+    const q = language ? `?language=${encodeURIComponent(language)}` : '';
+    return this._request('GET', `/game/difficulty-levels${q}`);
+  }
+
+  /** Installed languages, with each one's alphabet and point/count tables. */
+  getLanguages() { return this._request('GET', '/game/languages'); }
 
   placeHumanWord(word, row, col, horizontal) {
     return this._request('POST', '/board/human-move', { word, row, col, horizontal });
@@ -57,8 +89,8 @@ class ApiClient {
     return this._request('POST', '/board/set-letters', { letters });
   }
 
-  getSuggestions() {
-    return this._request('POST', '/board/suggest');
+  getSuggestions(sort = 'score') {
+    return this._request('POST', `/board/suggest?sort=${encodeURIComponent(sort)}`);
   }
 
   placeComputerWord(word, row, col, horizontal, score) {
@@ -73,17 +105,17 @@ class ApiClient {
     return this._request('GET', `/board/definition/${encodeURIComponent(word)}`);
   }
 
-  getHints() {
-    return this._request('GET', '/board/hints');
+  getHints(sort = 'score') {
+    return this._request('GET', `/board/hints?sort=${encodeURIComponent(sort)}`);
   }
 
   nextAutoMove() {
     return this._request('POST', '/board/next-move');
   }
 
-  /** @param {{name:string,difficulty:string}[]} players */
-  startBenchmark(players, games) {
-    return this._request('POST', '/benchmark/start', { players, games });
+  /** @param {{name:string,difficulty:number}[]} players */
+  startBenchmark(players, games, language = null) {
+    return this._request('POST', '/benchmark/start', { players, games, language });
   }
 
   getBenchmarkStatus(jobId) {
@@ -122,8 +154,8 @@ class ApiClient {
     return this._request('POST', '/scan/recheck', { board, locked });
   }
 
-  suggestForScan(letters) {
-    return this._request('POST', '/scan/suggest', { letters });
+  suggestForScan(letters, sort = 'score') {
+    return this._request('POST', '/scan/suggest', { letters, sort });
   }
 
   saveTrainingExample(file, board) {

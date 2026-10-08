@@ -1,6 +1,6 @@
 'use strict';
 
-// Reuses BONUS_GRID / BONUS_LABELS / LETTER_VALUES from board.js (loaded
+// Reuses BONUS_GRID / BONUS_LABELS from board.js (loaded
 // earlier, same global script scope).
 
 class ScanBoardGrid {
@@ -13,10 +13,22 @@ class ScanBoardGrid {
     this._selC = null;
     this._highlighted = [];
     this._onSelect = null;
+    // Letter -> point value for the language being scanned. Served by
+    // `GET /api/game/languages`; empty until that lands, which just means the
+    // corner numbers are absent rather than wrong.
+    this._letterValues = {};
     this._buildGrid();
   }
 
   setOnSelect(fn) { this._onSelect = fn; }
+
+  /** @param {Record<string, number>} values */
+  setLetterValues(values) {
+    this._letterValues = values || {};
+    if (this._data) {
+      for (let r = 0; r < 15; r++) for (let c = 0; c < 15; c++) this._renderCell(r, c);
+    }
+  }
 
   _buildGrid() {
     this._container.innerHTML = '';
@@ -48,7 +60,7 @@ class ScanBoardGrid {
     const data = this._data[r][c];
     const selected = r === this._selR && c === this._selC;
     if (data.letter && data.letter !== '-') {
-      const val = LETTER_VALUES[data.letter.toLowerCase()] ?? 0;
+      const val = this._letterValues[data.letter.toLowerCase()] ?? 0;
       cell.className = 'cell placed'
         + (data.flagged ? ' scan-flagged' : '')
         + (data.carried_over ? ' scan-carried' : '')
@@ -177,6 +189,8 @@ class ScanController {
     this._btnSuggest        = document.getElementById('btn-scan-suggest');
     this._elSuggestError     = document.getElementById('scan-suggest-error');
     this._elSuggestionList    = document.getElementById('scan-suggestion-list');
+    this._elSuggestionSort    = document.getElementById('scan-suggestion-sort');
+    this._elSuggestionBar     = document.getElementById('scan-suggestion-toolbar');
     this._tplScanSuggestion   = document.getElementById('tpl-scan-suggestion');
     this._btnNextPhoto       = document.getElementById('btn-scan-next-photo');
     this._btnNewSession      = document.getElementById('btn-scan-new-session');
@@ -212,6 +226,9 @@ class ScanController {
     this._btnConfirm.addEventListener('click', () => this._confirmBoard());
 
     this._btnSuggest.addEventListener('click', () => this._loadSuggestions());
+    this._elSuggestionSort?.addEventListener('change', () => {
+      if (!this._elSuggestionList.hidden) this._loadSuggestions();
+    });
     this._rackInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') this._loadSuggestions();
     });
@@ -236,6 +253,7 @@ class ScanController {
     try {
       const state = await this._api.getScanState();
       if (state.has_session) {
+        this._grid.setLetterValues(Languages.letterValues(this._gameController._language));
         this._grid.load(_cellsFromPlainBoard(state.board));
         this._hasScanSession = true;
         this._showStep('assistant');
@@ -282,6 +300,7 @@ class ScanController {
         this._showError(this._elUploadError, res.error);
         return;
       }
+      this._grid.setLetterValues(Languages.letterValues(this._gameController._language));
       this._grid.load(res.cells);
       this._elEditor.hidden = true;
       this._hideError(this._elReviewError);
@@ -328,7 +347,7 @@ class ScanController {
     const ch = this._elEditorInput.value;
     if (ch === '') {
       this._clearSelectedCell();
-    } else if (/^[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]$/.test(ch)) {
+    } else if (Languages.isLetter(ch, { code: this._gameController._language })) {
       this._applyLetter(ch.toLowerCase());
       this._moveSelection(1);
     } else {
@@ -446,6 +465,7 @@ class ScanController {
     this._rackInput.value = '';
     this._elSuggestionList.hidden = true;
     this._elSuggestionList.innerHTML = '';
+    this._elSuggestionBar.hidden = true;
     this._hideError(this._elSuggestError);
     this._grid.clearHighlight();
     this._showStep('upload');
@@ -458,10 +478,11 @@ class ScanController {
     if (!letters) return;
     this._hideError(this._elSuggestError);
     this._elSuggestionList.hidden = true;
+    this._elSuggestionBar.hidden = true;
     this._grid.clearHighlight();
     this._setLoading(this._btnSuggest, true);
     try {
-      const res = await this._api.suggestForScan(letters);
+      const res = await this._api.suggestForScan(letters, this._elSuggestionSort?.value ?? 'score');
       this._scanSuggestions = res.suggestions;
       this._renderScanSuggestions();
     } catch (err) {
@@ -473,6 +494,7 @@ class ScanController {
 
   _renderScanSuggestions() {
     this._elSuggestionList.innerHTML = '';
+    this._elSuggestionBar.hidden = this._scanSuggestions.length === 0;
     if (this._scanSuggestions.length === 0) {
       this._showError(this._elSuggestError, 'Brak możliwych słów dla podanych liter.');
       return;
@@ -483,6 +505,10 @@ class ScanController {
       li.querySelector('.hint-rank').textContent = `${i + 1}.`;
       li.querySelector('.hint-word').textContent = sug.word.toUpperCase();
       li.querySelector('.hint-score').textContent = `${sug.score} pkt`;
+      const valueEl = li.querySelector('.hint-value');
+      if (valueEl && sug.value != null && (this._elSuggestionSort?.value ?? 'score') !== 'score') {
+        valueEl.textContent = `${sug.value > 0 ? '+' : ''}${sug.value}`;
+      }
       li.querySelector('.hint-pos').textContent = `w${sug.row} k${sug.col} ${sug.horizontal ? '→' : '↓'}`;
       li.addEventListener('click', () => this._selectScanSuggestion(i, li));
       this._elSuggestionList.appendChild(li);

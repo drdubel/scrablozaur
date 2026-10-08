@@ -7,7 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from web.game import BenchmarkResult, Difficulty, run_benchmark
+from web.deps import resolve_language
+from web.game import BenchmarkResult, run_benchmark
 from web.models import (BenchmarkBestGame, BenchmarkJobStartResponse, BenchmarkJobStatusResponse,
                         BenchmarkMoveRecord, BenchmarkPlayerStats, BenchmarkRequest,
                         BenchmarkResultResponse, PlayerState)
@@ -17,19 +18,21 @@ router = APIRouter(prefix="/benchmark")
 # In-memory job store -- benchmarks run in a background thread (not
 # request-scoped) so the client can poll progress instead of blocking on one
 # long request. Bounded to the most recent jobs since this is a single-process
-# dev-scale tool, not a multi-tenant service.
-_MAX_JOBS = 20
+# dev-scale tool, not a multi-tenant service. Keep the bound small: a finished
+# job holds its best game's full move-by-move detail (a board + tile-owner grid
+# per move), so every retained job is megabytes that are never handed back.
+_MAX_JOBS = 5
 _jobs: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 _jobs_lock = threading.Lock()
 
 
-def _run_job(job_id: str, player_specs: list[tuple[str, Difficulty]], games: int) -> None:
+def _run_job(job_id: str, player_specs: list[tuple[str, int]], games: int, language: str) -> None:
     def on_game_done(done: int) -> None:
         with _jobs_lock:
             _jobs[job_id]["games_done"] = done
 
     try:
-        result = run_benchmark(player_specs, games, on_game_done=on_game_done)
+        result = run_benchmark(player_specs, games, on_game_done=on_game_done, language=language)
         with _jobs_lock:
             _jobs[job_id]["status"] = "done"
             _jobs[job_id]["result"] = result
@@ -41,7 +44,8 @@ def _run_job(job_id: str, player_specs: list[tuple[str, Difficulty]], games: int
 
 @router.post("/start", response_model=BenchmarkJobStartResponse)
 async def start_benchmark(body: BenchmarkRequest) -> BenchmarkJobStartResponse:
-    player_specs = [(p.name, Difficulty(p.difficulty)) for p in body.players]
+    pack = resolve_language(body.language)
+    player_specs = [(p.name, p.difficulty) for p in body.players]
     job_id = str(uuid.uuid4())
     with _jobs_lock:
         _jobs[job_id] = {
@@ -55,7 +59,7 @@ async def start_benchmark(body: BenchmarkRequest) -> BenchmarkJobStartResponse:
             _jobs.popitem(last=False)
 
     threading.Thread(
-        target=_run_job, args=(job_id, player_specs, body.games), daemon=True
+        target=_run_job, args=(job_id, player_specs, body.games, pack.code), daemon=True
     ).start()
     return BenchmarkJobStartResponse(job_id=job_id)
 
@@ -73,7 +77,7 @@ def _to_response(result: BenchmarkResult) -> BenchmarkResultResponse:
                     is_computer=p.is_computer,
                     score=p.score,
                     letters=p.letters,
-                    difficulty=p.difficulty.value,
+                    difficulty=p.difficulty,
                 )
                 for p in bg.final_players
             ],

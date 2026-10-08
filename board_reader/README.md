@@ -1,7 +1,7 @@
 # board_reader
 
-Computer-vision pipeline that turns a photo of a physical Polish Scrabble
-board into a 15x15 board state (letters + confidence + ranked alternatives).
+Computer-vision pipeline that turns a photo of a physical Scrabble board into a
+15x15 board state (letters + confidence + ranked alternatives).
 It's a standalone, script-style package (no `__init__.py`, no package build) --
 `web/scan.py` imports directly from `board_reader/src` by inserting it onto
 `sys.path`, wraps it with a dictionary-driven correction pass, and exposes it
@@ -117,25 +117,66 @@ manually reviewed before they're trusted -- a tile only needs to be correctly
 *detected* to be harvested, not correctly *classified*, and glyph extraction
 can still crop badly even when detection and position are right.
 
+Everything below is per language: `--lang <code>` picks a definition from
+`languages/<code>.json`, models live in `src/models/<code>/`, and training data
+in `src/data_train/<code>/`. The classifier refuses a checkpoint whose classes
+are not letters of the language being loaded, so a mixed-up model fails loudly
+instead of predicting confidently from the wrong alphabet.
+
 ```bash
 cd board_reader
 
 # letters
-python scripts/harvest_templates.py                 # crop real glyphs at their ground-truth position -> staging/
-python scripts/review_templates.py                  # manually accept/reject each crop
-python scripts/clean_templates.py                    # auto-strip stray noise components from accepted crops
-python scripts/generate_synthetic_dataset.py --out src/data_train --per-letter 400
-python scripts/train_classifier.py --data src/data_train --out src/models/letter_cnn.pt
+python scripts/harvest_templates.py --lang pl        # crop real glyphs at their ground-truth position -> staging/
+python scripts/review_templates.py --lang pl        # manually accept/reject each crop
+python scripts/clean_templates.py --lang pl          # auto-strip stray noise components from accepted crops
+python scripts/generate_synthetic_dataset.py --lang pl --per-letter 400
+python scripts/train_classifier.py --lang pl
 
-# point-value digits (helps disambiguate accented/unaccented pairs, e.g. A vs A-ogonek)
-python scripts/harvest_digit_templates.py
-python scripts/review_templates.py --digits
-python scripts/train_digit_classifier.py --epochs 12
+# point-value digits (helps disambiguate accented/unaccented pairs, e.g. A vs A-ogonek).
+# Only for a language whose tiles print a readable value -- `train_digit_classifier.py`
+# refuses one with "use_point_prior": false, such as English.
+python scripts/harvest_digit_templates.py --lang pl
+python scripts/review_templates.py --lang pl --digits
+python scripts/train_digit_classifier.py --lang pl --epochs 12
 ```
+
+### Language support, honestly
+
+| | Polish | English |
+|---|---|---|
+| Letter CNN | 32 classes, real + synthetic glyphs | 26 classes, **synthetic only** |
+| Digit reader | yes | **off** |
+| Validated against photos | 89 fixtures, 98.9% letter accuracy | **never** |
+
+**English OCR is unvalidated and should be treated as experimental.** Its model
+was trained purely on letters rendered from system fonts, because every photo
+fixture in `test/` is of a Polish board and there is no English one to measure
+against. That is not a gap you can close with code — it needs photographs.
+
+Two things make it less bad than it sounds. The review UI already flags
+low-confidence cells, so a weaker classifier degrades into "more cells to fix by
+hand" rather than a silently wrong board; and the dictionary-correction pass in
+`web/scan.py` fixes many misreads regardless of how they arose.
+
+The digit channel is off for English because it cannot work there. Every tile
+prints its point value, and reading it is a strong prior *in Polish*, where it
+separates A/Ą and Z/Ź/Ż — pairs that differ by a diacritic and by points.
+English has no diacritics, so the prior buys much less; and its 10-point tiles
+(Q, Z) print a **two-glyph** value that `glyph_normalizer`'s single-component
+digit extraction cannot represent at all. Enabling it would need either a `"10"`
+class with two-component extraction (touching the most delicate CV code here) or
+a width heuristic on the digit band. Neither is worth doing before there is a
+photo set to measure the result against.
+
+Board detection is a separate matter and orthogonal to language: `premium_layout.py`
+and `hsv_config.json` are tuned to one *physical board edition*, so a differently
+coloured board needs `tuner.py` regardless of which language is printed on it.
 
 The digit flow has no `generate_synthetic_dataset.py` step of its own: unlike the
 letter CNN, `train_digit_classifier.py` synthesises its training set in memory
-each run, mixing it with the reviewed real crops in `src/data/real_digit_templates/`.
+each run, mixing it with the reviewed real crops in
+`src/data/<code>/real_digit_templates/`.
 
 Both CNNs are optional at inference time: if `torch` or the `.pt` weights
 aren't available, `letter_classifier.py` degrades to template matching alone
@@ -146,9 +187,11 @@ aren't available, `letter_classifier.py` degrades to template matching alone
 ```
 board_reader/
 ├── src/                  # the pipeline itself (flat modules, no package/__init__.py)
-│   ├── data/             # harvested real glyph/digit crops (staging/accepted/rejected)  [not in git]
-│   ├── data_train/       # generated CNN training set, letters                           [not in git]
-│   ├── models/           # trained CNN weights (letter_cnn.pt, digit_cnn.pt)             [in git]
+│   ├── data/<code>/      # harvested real glyph/digit crops (staging/accepted/rejected) [not in git]
+│   ├── data_train/<code>/         # generated CNN training set, letters                  [not in git]
+│   ├── data_train_digits/<code>/  # generated CNN training set, point digits             [not in git]
+│   ├── models/<code>/    # trained CNN weights (letter_cnn.pt, digit_cnn.pt)             [in git]
+│   ├── data_paths.py     # where all of the above live -- one definition, see below
 │   └── hsv_config.json   # tuned parameter presets, see Tuning                           [in git]
 ├── scripts/              # offline tooling: harvest -> review -> clean -> generate -> train,
 │                         #   plus benchmark_pipeline.py (stage-by-stage timing)
@@ -160,15 +203,22 @@ board_reader/
 Note the two similarly-named directories: `tests/` holds runnable eval
 *scripts*; `test/` holds the *data* they evaluate against.
 
+Every path above is derived in `src/data_paths.py` rather than spelled out in
+each script. That matters because these directories are handed between five tools
+in sequence (harvest → review → clean → generate → train), and a disagreement
+between any two of them is silent: the producer writes somewhere the consumer
+never looks, so the workflow appears to run and simply has no effect.
+
 **What a fresh clone does and doesn't get.** The repo root's `.gitignore` is a
 strict whitelist, and it does include `*.pt` and `*.json` -- so both trained CNN
-checkpoints (`src/models/letter_cnn.pt`, `src/models/digit_cnn.pt`) and the tuned
+checkpoints (`src/models/<code>/letter_cnn.pt`, plus `digit_cnn.pt` where the
+language uses one) and the tuned
 `src/hsv_config.json` *are* committed. A fresh clone can therefore run the
 pipeline at full accuracy with no training step.
 
-What is *not* committed is the training and evaluation material: `src/data/`
-(harvested glyph crops), `src/data_train/` (the generated training set), and all
-of `test/` (the photos and ground truth). So a fresh clone can *run* the reader
+What is *not* committed is the training and evaluation material:
+`src/data/<code>/` (harvested glyph crops), `src/data_train/<code>/` (the
+generated training set), and all of `test/` (the photos and ground truth). So a fresh clone can *run* the reader
 but cannot reproduce the [accuracy](#accuracy) numbers above or retrain the CNNs
 without a copy of those local files.
 

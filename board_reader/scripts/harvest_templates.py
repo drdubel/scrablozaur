@@ -1,6 +1,6 @@
 """Harvest candidate real-tile glyph templates from board_reader's own test
 photos, into a staging directory for manual review (review_templates.py)
-before they're promoted into src/data/real_templates/ -- the directory the
+before they're promoted into src/data/<lang>/real_templates/ -- the directory the
 template matcher reads live, and generate_synthetic_dataset.py mixes into
 CNN training data.
 
@@ -33,7 +33,10 @@ from read_board import extract_tile_patches, read_board  # noqa: E402
 
 import glyph_normalizer as gn  # noqa: E402
 
-STAGING_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "data", "real_templates_staging")
+from data_paths import letter_dirs  # noqa: E402
+
+# Bound in main() from --lang; review_templates.py reads this same directory.
+STAGING_DIR = ""
 # A tile with almost no ink is probably a failed extraction (blank crop);
 # one with very heavy ink is probably a mis-crop that grabbed a neighbour
 # or a tile edge, not a clean single glyph -- same bounds ocr/'s own
@@ -65,6 +68,7 @@ def harvest_one(idx, path, gt):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
     parser.add_argument("ids", nargs="*", type=int, help="specific image indices to harvest (overrides --difficulty)")
     parser.add_argument(
         "-d",
@@ -73,6 +77,9 @@ def main():
         help="difficulty suffixes to include: any of 'e' (easy), 'm' (medium), 'h' (hard), e.g. -d emh (default: em)",
     )
     args = parser.parse_args()
+
+    global STAGING_DIR
+    STAGING_DIR = letter_dirs(args.lang)["staging"]
 
     ids = args.ids or [i for i in sorted(GROUND_TRUTH) if DIFFICULTY[i] in args.difficulty]
 

@@ -26,13 +26,139 @@ generating moves differently (the existing Rust DAWG engine already finds
 every legal play and its exact score, fast), but from evaluating the
 already-enumerated candidates by more than just their immediate score.
 
+## Re-baselined: every number below this line predates two engine fixes
+
+**All win rates further down were measured on a bag that was not being
+shuffled fairly, and against a baseline that is not doing what its name
+suggests.** They are kept for continuity, but the current numbers are here.
+
+`give_letters` used to re-seed from the wall clock on every call and index the
+bag with `% bag.len()`. Over 60000 opening racks that came out at
+chi-square/dof = **9.06** against the true tile distribution (a fair draw
+gives ~1.0), systematically under-dealing the *rare, high-value* Polish
+letters -- `ź` -8.5%, `ę` -8.5%, `ó` -8.1%, `ł` -7.2%, `ć` -6.7%, each worth
+5-9 points. The bag is now shuffled once with Fisher-Yates and drawn from the
+end: chi-square/dof = 0.93. Separately, a blank played onto the board used to
+keep scoring at the face value of the letter it stood in for, for the rest of
+the game.
+
+Rebuilding the old commits and re-running `evaluate.py` at n=2000 separates
+the two (the checkpoint is identical throughout -- nothing was retrained):
+
+| Build | vs `StrategicPlayer` | Avg scores |
+|---|---|---|
+| before both fixes | 63.3% | 427.3 / 390.4 |
+| + fair draw | 66.6% | 430.7 / 387.8 |
+| + blank scoring fix | **65.7%** | 426.5 / 387.6 |
+
+So the biased bag was *understating* `SmartPlayer`'s edge -- unsurprisingly,
+since it suppressed exactly the tiles that reward leave management. Nothing
+got stronger here; the measurement got fairer. Read the plateau discussion
+below with that in mind: it was a plateau at ~62-63% *on a biased bag*.
+
+Current ladder, via `arena.py`:
+
+| A | B | Pairs | A's match score | Elo | Mean margin |
+|---|---|---|---|---|---|
+| `sim` | `strategic` | 250 | 71.10% +/- 2.05pp | +156 | +52.7 +/- 3.8 |
+| `smart` | `strategic` | 2000 | 66.86% +/- 0.70pp | +122 | +44.0 +/- 1.4 |
+| `strategic` | `simple` | 1000 | 50.00% +/- 0.00pp | +0 | **+0.1 +/- 0.1** |
+
+What each piece contributes, measured against the same player without it:
+
+| Change | Pairs | Match score | Mean margin | Elo |
+|---|---|---|---|---|
+| simulation (`sim` vs `smart`) | 150 | 53.33% +/- 2.74pp | +10.7 +/- 4.8 | +23 |
+| 2M-game checkpoint at its own weight | 1200 | 51.67% +/- 0.94pp | +4.8 +/- 1.7 | +12 |
+| endgame search (`smart` vs `smart!noeg`) | 1200 | 51.08% +/- 0.24pp | +2.7 +/- 0.2 | +8 |
+
+The checkpoint upgrade shows up cleanly in the static player: `smart` vs
+`strategic` moved from 66.07% (+41.2 pts) to 66.86% (+44.0 pts). It does *not*
+show up in `sim` vs `strategic` — 71.10% +/- 2.05 against 72.00% +/- 1.95
+before, with the margin up from +51.2 to +52.7. Those are the same number at
+250 pairs, so simulation neither gained nor lost from the better evaluator as
+far as this sample can tell; resolving a 5-point effect there needs roughly
+1200 pairs, which at ~9 minutes per 250 is a much longer run than it is worth
+right now.
+
+The `strategic` vs `simple` row in the first table is the one to read carefully.
+The two differ only in when they exchange, and across 2000 games that difference
+is worth **a tenth of a point per game** — they are the same player to within
+measurement error.
+The README already said `StrategicPlayer` is "in effect, greedy"; this puts a
+number on it. So the headline "vs `StrategicPlayer`" has always meant "vs a
+greedy player", and `smart` beating `strategic` and `simple` by the same margin
+is one fact stated twice, not two results.
+
+The pairing cancels 24x on that row precisely *because* the two play nearly
+identical games.
+
 ## Pipeline
 
 ```
 python smart_player/generate_data.py 200000  # self-play -> _leave_dataset.npz (~20-40 min)
-python smart_player/train.py                 # -> models/leave_value.pt
-python smart_player/evaluate.py 2000         # SmartPlayer vs StrategicPlayer win rate
+python smart_player/train.py                 # -> models/<lang>/leave_value.pt
+python smart_player/arena.py --a smart --b strategic --pairs 1000   # paired benchmark
+python smart_player/evaluate.py 2000         # older unpaired benchmark
 ```
+
+### Languages
+
+A net encodes one input slot per tile type, so it is only ever valid for the
+alphabet it was trained on -- a Polish net fed an English rack does not fail, it
+drops the letters Polish lacks and scores the rest against the wrong
+distribution. Models therefore live in `models/<lang>/`, checkpoints are stamped
+with their language, and `get_model` refuses one that disagrees.
+
+Pick the language with an environment variable, not a flag: every stage fans out
+across process pools whose workers re-import `model.py`, and an env var is
+inherited by them for free.
+
+```bash
+# 2M games is ~50M samples. generate_data.py keeps them all in memory and then
+# concatenates, so its peak is roughly twice the finished array -- enough to get
+# the process killed on a machine that handles the result fine. A kill leaves no
+# traceback, so it looks like a silent stall at ~90%. Generate in batches and
+# merge; the peak is then one batch.
+for i in 1 2 3 4; do
+  SCRABLOZAUR_LANGUAGE=en python smart_player/generate_data.py 500000 \
+    --lookahead 4 --out smart_player/_en_part$i.npz          # ~9 min each
+done
+python smart_player/merge_datasets.py smart_player/_en_part*.npz \
+    --out smart_player/_en_leave_dataset.npz
+
+SCRABLOZAUR_LANGUAGE=en python smart_player/train.py --data smart_player/_en_leave_dataset.npz
+SCRABLOZAUR_LANGUAGE=en python smart_player/export_weights.py
+```
+
+**A language with no net is not broken, just capped.** `web/difficulty.py` reads
+`languages/<code>.json`; where `leave_net` is null the difficulty slider stops at
+8 (the strongest level needing no model) and the `smart`/`sim` suggestion
+orderings are refused rather than answered with nonsense. Do not point a
+language at another's checkpoint to fill the gap -- that is the exact failure the
+guard exists to prevent.
+
+**Gate for enabling levels 9-10 in a new language:** a paired-seed `arena.py`
+run of that language's level 8 against level 9 using the new net. Raise the cap
+only on a win beyond the error bar. This repo's own history is the reason to
+insist: `leave_k4`, trained on 200k games, lost to the incumbent at every weight
+tested, while the 2M-game `leave_v2` won by +5.4 +/- 1.6 points/game.
+
+`strategic` is the right stand-in for level 8: at that level `rank_window` is
+`(1, 1)`, so the bot always plays the highest-scoring move, and
+`StrategicPlayer`'s leave heuristic is constant within a decision (see
+`model.py`'s docstring) -- both are the greedy score maximiser.
+
+English cleared the gate on a 2M-game net, at parity with the mature Polish one
+on the same measurement (400 paired seeds, 800 games each):
+
+| Language | net | `strategic` vs `smart` | win rate for `smart` |
+|---|---|---|---|
+| Polish | `leave_v2`, 2M games | **+44.8 +/- 3.1** pts/game | 66.9% |
+| English | 2M games, lookahead 4 | **+42.4 +/- 3.1** pts/game | 64.9% |
+
+Both intervals clear zero by more than ten standard errors, so English levels
+9-10 are enabled (`leave_net` set in `languages/en.json`).
 
 - **generate_data.py** plays `StrategicPlayer` vs `StrategicPlayer` games to
   completion (via `simulate.play_game`, which applies the standard
@@ -61,7 +187,17 @@ python smart_player/evaluate.py 2000         # SmartPlayer vs StrategicPlayer wi
   now that training is ~free, there's no reason to stay at a size picked
   back when every epoch was expensive.
 - **evaluate.py** plays `SmartPlayer` against the existing baselines and
-  reports win rate, mirroring `src/main.py`'s `benchmark()`.
+  reports win rate, mirroring `src/main.py`'s `benchmark()`. Unseeded and
+  unpaired; kept because every historical number in this file came from it.
+- **arena.py** is the replacement: it plays each seeded bag *twice* with the
+  seats swapped, and reports a per-pair match score with a paired standard
+  error (plus the Elo that implies, and the ties-dropped win rate so the two
+  stay comparable). Seeding also makes a run reproducible, which `evaluate.py`
+  never was. Two honest caveats: the pairing only cuts the margin std error
+  ~1.1x -- the seat advantage cancels exactly, but the two games diverge as
+  soon as the players choose different moves, and that is most of the variance
+  -- and a run of `strategic` vs `strategic` returns exactly 50.00% with zero
+  variance, which is a wiring check rather than a result.
 
 ## Credit assignment: bounded lookahead, not the whole game
 
@@ -156,6 +292,300 @@ gains: warm-starting each round from the champion's weights (so training
 actually refines rather than re-rolls), or a bigger lever entirely (richer
 features, `--lookahead` sweep, a bigger dataset per round).
 
+## Simulation (`sim_player.py`)
+
+Every plateau above shares one cause: `SmartPlayer` ranks a move by
+`score + leave_value`, and no function of (my score, my leave) can express what
+the move *hands the opponent*. A play that scores four more points while opening
+the triple-word lane is a bad play, and static evaluation cannot say so.
+
+`SimPlayer` asks directly. For each leading candidate it plays the move, deals
+the opponent a rack from the tiles neither on the board nor in its own rack,
+lets both sides reply with the static player, and scores the resulting position.
+`Board.simulate` (`src/lib.rs`) does the whole rollout natively; two things make
+it affordable:
+
+- **Common random numbers.** Every candidate in one iteration is rolled out
+  against the *same* shuffled tile sequence, so the comparison isolates the
+  candidate instead of the luck.
+- **Sequential pruning.** Candidates whose interval falls clear of the leader's
+  stop being sampled. In practice 20 candidates collapse to 3 within a couple of
+  hundred iterations, so the nominal cost is rarely paid.
+
+The leave net runs *in Rust* (`export_weights.py` -> `models/<lang>/leave_value.bin`,
+`LeaveNet` in `src/lib.rs`). At hundreds of thousands of evaluations per move,
+calling back into PyTorch for a 13k-parameter MLP would cost far more in FFI and
+GIL traffic than its ~10k multiply-adds. The `.pt` stays the source of truth and
+`sim_player.get_net` re-exports automatically when it is newer than the `.bin`.
+Parity against PyTorch is 2e-6 on real feature vectors.
+
+**Ply parity matters more than depth.** Measured against `smart`:
+
+| Config | Pairs | Match score | Mean margin | Relative cost |
+|---|---|---|---|---|
+| `plies=1` (their reply — balanced 1v1) | 150 | 53.33% +/- 2.74pp | **+10.7 +/- 4.8** | 1x |
+| `plies=3` (reply, ours, reply — balanced 2v2) | 120 | 51.67% +/- 2.77pp | +8.8 +/- 5.4 | ~2.5x |
+| `plies=2` (reply, ours — **unbalanced 2v1**) | 20 | 45.00% +/- 6.18pp | -1.6 +/- 12.2 | ~1.7x |
+
+An even ply count gives us one more scoring turn than the opponent ever gets,
+which rewards setting up our own follow-up over noticing what the candidate
+concedes. `plies=1` is the default: same as the deeper balanced window within
+error, at a fraction of the cost.
+
+**Honest accounting.** Simulation is worth about **+10 points/game, ~+25 Elo**
+over `SmartPlayer` — real (the margin is significant at t=2.2, and the two
+measurements agree: +10.7 head-to-head, and +7.6 inferred from 70.12% vs 65.70%
+against the same baseline) but far short of the +60-90 Elo simulation is worth
+in engines like Quackle. The reason is visible in the design: the rollout policy
+*is* the static player, so the rollouts inherit its judgement. A sim can only
+distinguish candidates as well as the evaluator scoring its leaves, and this
+evaluator was trained on greedy self-play against an n-step return. There is
+also a scale mismatch — the net predicts a 4-turn score-differential return, and
+that gets added to a realised 1-ply differential, so the leave term double-counts
+future scoring.
+
+Which re-orders what to do next. Simulation was supposed to be the big lever;
+measurement says its ceiling is set by the leaf evaluator. The two things that
+should now come first are the **exact endgame solver** (with the bag empty the
+position is perfect information, and endgames decide exactly the close games
+where win rate is won) and **distilling sim output back into the static net**,
+which lifts the rollout policy and the ranking together.
+
+Cost: ~0.9 CPU-seconds per decision at the defaults, ~110 ms wall on 8 threads.
+Fine for real games; a benchmark needs `set_num_threads(1)` in each worker, which
+`arena.py` does — without it, one worker process per core each spinning up the
+engine's 8-thread pool turns a one-minute run into ten minutes of thrashing.
+
+## Checkpoints, and the weight that goes with them
+
+`models/<lang>/leave_value.pt` is that language's champion. The rest are the named sources behind
+the results below, kept because they are the controls any future comparison
+needs.
+
+| File | Games | Lookahead | Best weight | Margin vs `leave_v1` |
+|---|---|---|---|---|
+| **`leave_value.pt`** (= `leave_v2.pt`) | **2M** | **4** | **1.0** | **+5.4 +/- 1.6** |
+| `leave_v1.pt` (previous champion, archived) | ? | ~8, see below | 0.8 | — |
+| `leave_k4.pt` | 200k | 4 | ~1.0 | −1.1 +/- 1.6 |
+| *(k2/k6/k8, not kept)* | 200k | 2 / 6 / 8 | ~1.0 / 0.83 / 0.82 | −0.3 / −1.4 / +1.1 |
+
+Measured at 1500 seeded pairs each, endgame search off on both sides — it is
+checkpoint-independent, so it only added cost (9 minutes a run instead of one).
+
+**The lookahead horizon does not matter.** All four 200k checkpoints land within
+±2 points of the old champion. That closes the question this file previously
+left open — and it was only answerable with the weight swept, because the
+horizon mechanically sets the model's output *scale*: prediction mean runs
+−3.83 at k2 to −13.43 at k8, std 8.53 to 12.02. Comparing at one fixed weight
+measures scale, not horizon.
+
+**Data volume is not saturated after all.** An earlier entry in this file, and
+an earlier round of this work, concluded it was. Both were wrong for the same
+reason: the comparison ran the new checkpoint at the incumbent's weight. With
+each at its own optimum, the clean 10x ablation (`leave_v2` 2M vs `leave_k4`
+200k, same lookahead) is **+3.0 +/- 1.5**, and in the deployable configuration
+`leave_v2` beats `leave_v1` by **+4.8 +/- 1.7 points/game**. The two models'
+predictions still correlate +0.977 — 10x the data barely changes the *function*,
+it changes how far the function can be trusted.
+
+**Which is the practical lesson: always sweep the leave weight per checkpoint.**
+
+| weight | `leave_v2` (2M) | `leave_k4` (200k) |
+|---|---|---|
+| 0.80 | +0.7 +/- 1.5 | — |
+| ~0.90 | +3.8 +/- 1.5 | −2.0 +/- 1.5 |
+| **1.00** | **+5.4 +/- 1.6** | −1.1 +/- 1.6 |
+| 1.10 | +4.9 +/- 1.6 | — |
+| 1.25 | +1.2 +/- 1.7 | −3.1 +/- 1.6 |
+| 1.50 | −13.6 +/- 1.8 | — |
+
+Same architecture, same target, same horizon — only the data differs, and the
+peaks land in different places. Scored at the incumbent's 0.8, `leave_v2` reads
++0.7 +/- 1.5: a tie, and a real five-point improvement nearly discarded. The
+optimum is a better quality signal than validation MSE, which cannot compare two
+models whose targets sit on different scales.
+
+**`leave_v1` was probably not the lookahead-4 model this file used to claim.**
+Its predictions correlate +0.966 with `leave_k8` and only +0.830 with
+`leave_k4`; correlation is scale-invariant, so that is about ranking behaviour,
+not magnitude. Its output scale also matches k8's (mean −13.66/std 12.37 against
+k8's −13.43/12.02) rather than k4's (−6.94/10.94). Treat the older
+"lookahead 4 vs 8" numbers here as unreliable. The current champion genuinely is
+lookahead 4, on 2M games, generated after the engine fixes.
+
+## How the weight got tuned (against `leave_v1`)
+
+Kept because it is where the parameter came from, and because reading it next to
+the section above shows how a per-model constant gets mistaken for a universal
+one.
+
+`points + leave_value` weighted the model as heavily as the points themselves:
+over ~30k leaves from real self-play positions, `leave_v1`'s predictions have a
+spread of **12.33** against a candidate-score spread of **12.8**. That looked
+like a scale artefact — the net regresses a 4-turn score-differential return
+(std 47.5), so it inherits that scale. So the weight became a parameter (`~w` in
+an arena spec) and was swept at 2500 pairs — 5000 games — per point:
+
+| w | 0.1 | 0.25 | 0.5 | 0.75 | **0.8** | 1.25 | 1.5 | 2.0 |
+|---|---|---|---|---|---|---|---|---|
+| pts vs w=1.0 | −25.0 | −14.2 | −2.1 | +2.0 | **+2.5** | −5.5 | −32.1 | −153.8 |
+
+The term is clearly load-bearing — w=2.0 collapses to an 18% match score, w=0.1
+to 38.7% — and 0.8 was worth a real but small **+2.5 ± 1.1 points/game** over
+1.0. A 600-pair sweep that had shown +7.7 at w=0.75 was noise; at 2500 pairs
+0.75 and 0.8 are a dead tie (−0.1 ± 0.7).
+
+**The mistake was concluding 0.8 was a property of the *player*.** It is a
+property of the *checkpoint*: `leave_v1` peaked at 0.8 because its predictions
+were noisy enough that leaning harder on them cost points. The 2M-game
+checkpoint peaks at 1.0. Adopting 0.8 as a default then briefly scored its
+replacement at +0.7 ± 1.5 — a tie — and nearly threw away five points. The
+weight is now retuned with every checkpoint, and `DEFAULT_LEAVE_WEIGHT`'s
+comment says so.
+
+## Endgame search
+
+Once the bag is empty the game stops being a game of chance. Nobody draws again,
+so the opponent holds exactly the tiles neither on the board nor in our own rack
+— computable only because the board now remembers which squares hold blanks
+(`Board.unseen_tile_counts`, checked against the real rack on 120 endgames and
+correct every time). Simulation is at its *least* useful here: there is nothing
+left to sample.
+
+`Board.solve_endgame` runs negamax alpha-beta over both racks, passing included,
+terminal values carrying the standard rack adjustment, and out-plays ordered
+first — they collect the opponent's whole rack, so they are both the likely best
+move and the best source of cutoffs. Make/unmake, not cloning.
+
+It is bounded by **depth, not by a node budget**. A node cap bites part-way
+through the tree and leaves whichever branches were searched first with a deeper
+look than the rest, which makes the result depend on move ordering in a way that
+is not a search property. A ply horizon cuts every branch alike. Verified
+against unpruned brute force: with the branching limits lifted, alpha-beta
+returns the identical differential on small positions.
+
+**Worth +2.7 ± 0.2 points/game (+8 Elo)** over the same player without it —
+solid at t = 13.5, but well short of the +25-40 estimated. Endgames are two to
+four moves of a twenty-five move game, and playing the highest score is usually
+already right; though not always, since the search picks a different move in
+**59%** of endgames. ~490 ms median per endgame decision.
+
+That comparison is also the clearest demonstration of why the arena is paired:
+the two players play identically until the bag empties, so the pairs cancel and
+the margin std error drops **9.91x**. A 2.7-point effect is not resolvable
+otherwise.
+
+## Measured: the model cannot be given the simulator's judgement
+
+The distillation result above said the model was being asked to predict
+something its inputs could not distinguish. That suggested an obvious fix --
+give it per-candidate inputs -- so it was gated before building, and **the gate
+failed twice.**
+
+The setup: ~123,000 sim-labelled candidates across 10,338 decisions, the same
+small MLP fitted twice, scored on the **within-decision centred** target, which
+is the only part that can reorder anything. Bar set in advance at +10
+percentage points of R².
+
+| features added | R² | gain |
+|---|---|---|
+| baseline: leave + unseen + pre-move board | 0.271 | — |
+| \+ whole-board aggregates after the move | 0.276 | +0.9 pp |
+| \+ placement-local features | 0.313 | **+4.2 pp** |
+
+The first attempt was a bad experiment, not a bad idea: whole-board aggregates
+(reachable premiums, anchor totals, board fill) have a within-decision standard
+deviation of ~0.03 against the leave's 0.176 — one word barely moves a
+225-square average, so they were per-candidate in name only. The retest used
+features measured relative to the squares the move covered (premium value newly
+opened, biggest hook conceded, new anchors adjacent to the placement, how far
+from the edge), which vary as much as the leave does (0.15-0.35). They tripled
+the gain and still came in at less than half the bar.
+
+**What that rules out.** Within-decision label noise accounts for only ~8% of
+the variance, so roughly 60% of the ranking-relevant signal is real and remains
+unexplained by leave, position and placement together. Hand-designed static
+features do not reach it. Whatever decides between two candidates lives in the
+specific interaction between the resulting board and the racks the opponent
+might hold — which is what generating the opponent's replies *is*. You cannot
+approximate the simulator with features; if you want its judgement, you have to
+run it.
+
+Which makes rollout throughput, not model capacity, the thing worth working on:
+a simulation costs ~2175 move generations (263 ms against 0.12 ms), and every
+one of them rebuilds both 15x15 cross-check tables from scratch even though a
+rollout only disturbs the squares near its last placement.
+
+## Measured: rollout throughput is not the lever either
+
+The conclusion above pointed at making the simulator faster instead. That was
+measured before building, and it does not hold up.
+
+A simulation costs ~2175 move generations, and each rebuilds both 15x15
+cross-check tables, so caching them incrementally looked like the obvious win.
+Two probes, on 715 fixed seeded positions:
+
+- **The tables cost 0.7% of a generation.** Building them twice per generation
+  instead of once moved 0.3620 ms to 0.3647 ms. A perfect incremental cache
+  cannot save more than that, which is not worth the stale-cache risk of
+  carrying invalidation through `Clone`, `place_word` and `unplace_word`.
+- **Removing them entirely makes generation 4x *slower*** (0.36 -> 1.43 ms).
+  The cross-checks are not overhead, they are what prunes the traversal. Worth
+  knowing before anyone tries to "optimise" them away.
+
+A related attempt is also recorded as not working: `compute_cross_data` built
+two `Vec<char>` per empty square, 900 heap allocations per generation, and
+removing them changed a controlled A/B by 0.5% -- inside the noise. Reverted;
+the allocator was never the problem.
+
+So generation time is the GADDAG traversal doing its actual work, and the
+simulator is about as fast as this design gets. Making `sim` stronger by giving
+it more rollouts is not available cheaply -- and the earlier measurement that
+50, 200 and 500 iterations pick the same move in a typical position suggests
+more rollouts would not buy much anyway.
+
+## What to try next
+
+Three rounds of measurement now point the same way. Simulation (+25 Elo), the
+leave weight (+6), and endgame search (+8) were each smaller than estimated, and
+each for the same underlying reason: **everything downstream is limited by how
+good the leave evaluator is, and it can explain at most 6.75% of its target's
+variance.** Tuning around it is finished.
+
+Step 1 below is now **done** — regenerating on the fixed engine at 2M games is
+what produced the current champion, worth +4.8 ± 1.7 points/game. Note that this
+partly contradicts the paragraph above: "change the target, not the volume" was
+too strong, and volume did buy something. What survives is that it bought less
+than the label quality would, and that the 6.75% ceiling still binds.
+
+What is left, in order:
+
+1. ~~**Regenerate the training data.**~~ Done — see the checkpoint table at the
+   top. The old data came off a bag that under-dealt ź/ę/ó/ł/ć by 7-8.5% and
+   scored blanks at face value forever.
+2. **Change the target.** Subtract a position-only baseline (fit on the board
+   features and unseen count) so the net learns leave equity rather than game
+   phase; the baseline is constant across a decision's candidates, so dropping
+   it at inference changes no argmax. Measured on fresh data, position alone
+   explains only **1.58%** of target variance, so expect this to fix the output
+   *scale* (and with it the need to retune the weight every time) rather than to
+   move Elo much. Report R², not raw MSE, which would have made the 6% ceiling
+   obvious from the first run.
+3. **Distil the simulation.** A sim equity has a standard error of ~1-1.5
+   points; the n-step return has a standard deviation of 47.5. Per sample a sim
+   label carries roughly 25-30x less noise, which is the direct fix for a 6.75%
+   ceiling in a way more n-step samples are not. `distill.py` does not exist
+   yet.
+
+**Two process rules earned the hard way**, both of which nearly cost a real
+result:
+
+- **Sweep the leave weight for every new checkpoint.** The optimum is a property
+  of the model, not the player.
+- **Benchmark checkpoints with the endgame search off.** It is
+  checkpoint-independent, so it contributes nothing to the comparison and turns
+  a one-minute run into nine.
+
 ## Board-aware features
 
 Every ablation above (data volume, `--lookahead`, model capacity, learning
@@ -173,7 +603,7 @@ layout isn't exposed to Python by the engine (`BONUS_TABLE` in
 `src/lib.rs`), so it's ported from the already-validated copy at
 `web/static/js/board.js:4-32` rather than re-transcribed from Rust.
 
-Input width: 33 letter counts + `unseen_tiles` + these 5 = **39 dims**
+Input width: one count per tile type + `unseen_tiles` + these 5 (`INPUT_DIM = len(ALPHABET) + 1 + N_BOARD_FEATURES`) — **39 dims for Polish's 33 tile types, 33 for English's 27**
 (was 34). Old datasets/checkpoints are incompatible with the new encoding
 -- `model.get_model()` now stores and validates `input_dim` in the
 checkpoint and fails loudly on a mismatch rather than silently loading a
@@ -321,11 +751,14 @@ proven necessary yet.
 | File | Purpose |
 |---|---|
 | `model.py` | `LeaveValueNet`, rack + board-feature encoding, multi-checkpoint-aware loading |
+| `sim_player.py` | `SimPlayer` (picks its word by Monte-Carlo simulation) |
+| `export_weights.py` | Export a `.pt` checkpoint to the flat binary the Rust engine loads |
 | `board_features.py` | Bonus-square layout + `encode_board()` (board-state summary scalars) |
 | `simulate.py` | Shared self-play game loop + end-of-game scoring |
 | `player.py` | `SmartPlayer` (StrategicPlayer + learned leave evaluator + learned exchange decision) |
 | `generate_data.py` | Self-play data generation CLI (StrategicPlayer or SmartPlayer) |
 | `train.py` | Training CLI (also importable as `train()`) |
-| `evaluate.py` | Win-rate benchmark CLI: vs. baselines, or candidate vs. champion |
+| `arena.py` | Paired-seed benchmark CLI: same bag twice, seats swapped |
+| `evaluate.py` | Older unpaired win-rate benchmark: vs. baselines, or candidate vs. champion |
 | `iterate.py` | Policy-iteration orchestrator (generate -> train -> gate -> promote) |
-| `models/leave_value.pt` | Trained checkpoint (committed, like `board_reader`'s CNN weights) |
+| `models/<lang>/leave_value.pt` | Trained checkpoint (committed, like `board_reader`'s CNN weights) |

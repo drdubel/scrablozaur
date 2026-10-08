@@ -1,9 +1,87 @@
+import random
 from collections import Counter
 
 from scrablozaur import Board, Dawg
 
 VOWELS = "aąeęioóuy"
 CONSONANTS = "bcćdfghjklłmnńprsśtwzżź"
+
+# Difficulty is one continuous dial, not a handful of named tiers: an integer
+# level from MIN_LEVEL (weakest) to MAX_LEVEL (strongest). Levels up to
+# MAX_RANKED_LEVEL are "play a worse move from the same list" and are what this
+# module implements; the two above it swap the decision procedure itself
+# (leave-aware evaluation, then Monte-Carlo simulation) and live in
+# `smart_player`. `web.difficulty` maps a level onto that choice.
+#
+# Named tiers (easy/medium/hard/impossible) used to hardcode four windows here,
+# which meant a player who found "medium" too weak and "hard" too strong had
+# nowhere to go. The windows are now derived from the level, so every step in
+# between exists too.
+MIN_LEVEL = 1
+MAX_LEVEL = 10
+MAX_RANKED_LEVEL = 8
+
+# How deep into the best-first candidate list MIN_LEVEL reaches. The window
+# shrinks geometrically from there to (1, 1) at MAX_RANKED_LEVEL, because move
+# quality falls off steeply at the top of the list and slowly further down --
+# a linear ramp would make the bottom half of the dial feel identical.
+WORST_RANK_AT_MIN_LEVEL = 40
+
+
+def clamp_level(level: int, ceiling: int = MAX_LEVEL) -> int:
+    """Force *level* into [MIN_LEVEL, ceiling].
+
+    `ceiling` is normally MAX_LEVEL, but a language with no trained leave net
+    cannot field levels 9-10 (see `web.difficulty.max_level_for`), so callers
+    that know the language pass its own limit.
+    """
+    return max(MIN_LEVEL, min(int(ceiling), int(level)))
+
+
+def rank_window(level: int) -> tuple[int, int]:
+    """The (best, worst) 1-based rank window *level* picks from, in a candidate
+    list ordered by StrategicPlayer's own evaluation.
+
+    A weaker opponent should play a *worse move*, not a differently-chosen one,
+    so every level ranks candidates identically and only differs in how far down
+    the list it reaches. Picking uniformly inside a window rather than at a fixed
+    rank keeps games from repeating themselves.
+
+    Levels above MAX_RANKED_LEVEL are clamped to it: they always want the best
+    move on this list, and what makes them stronger is a better list, not a
+    different rank.
+    """
+    level = clamp_level(level)
+    span = MAX_RANKED_LEVEL - MIN_LEVEL
+    steps_below_top = max(0, MAX_RANKED_LEVEL - level)
+    worst = max(1, round(WORST_RANK_AT_MIN_LEVEL ** (steps_below_top / span)))
+    best = max(1, (worst + 1) // 2)
+    return best, worst
+
+
+def pick_by_rank(
+    ranked: list[tuple[str, int, tuple[int, int, bool], list[str]]],
+    level: int,
+) -> tuple[str, int, tuple[int, int, bool], list[str]] | None:
+    """Choose from a best-first candidate list by *level*'s rank window.
+
+    A free function rather than a method so the web app picks its bot's move
+    with exactly this code instead of a lookalike -- the same arrangement
+    `smart_player.player.choose_move` uses, and for the same reason: the last
+    time the web had its own copy of a decision, it silently drifted.
+
+    Clamping to the list length means a position offering three legal plays
+    still works.
+    """
+    if not ranked:
+        return None
+    best, worst = rank_window(level)
+    # Clamp into range: a position offering two legal plays cannot honour a
+    # window starting at rank 15, and should fall back to the worst it has
+    # rather than failing or silently playing the best.
+    hi = min(worst, len(ranked))
+    lo = min(best, hi)
+    return ranked[random.randint(lo, hi) - 1]
 
 
 class SimplePlayer:
@@ -75,7 +153,7 @@ class SimplePlayer:
 
         self.last_exchanged = False
         self.score += points
-        self.board.place_word(word, position[0], position[1], position[2])
+        self.board.place_word(word, position[0], position[1], position[2], used)
         for ch in used:
             if ch in self.letters:
                 self.letters = self.letters.replace(ch, "", 1)
@@ -209,7 +287,7 @@ class StrategicPlayer:
             return ""
 
         self.score += points
-        self.board.place_word(word, position[0], position[1], position[2])
+        self.board.place_word(word, position[0], position[1], position[2], used)
         for ch in used:
             if ch in self.letters:
                 self.letters = self.letters.replace(ch, "", 1)
@@ -220,3 +298,39 @@ class StrategicPlayer:
 
         self.draw_letters()
         return word
+
+
+class RankedPlayer(StrategicPlayer):
+    """A StrategicPlayer that deliberately plays a worse move.
+
+    Difficulty used to live in `web/game.py` as a weighted-random sample over
+    raw scores, which meant the web had a notion of "a weaker opponent" that no
+    simulator could reproduce -- so a level's strength could not be benchmarked,
+    only guessed at. As a player class it runs anywhere the others do, including
+    `arena.py` and self-play.
+
+    It ranks candidates exactly as `StrategicPlayer` does and then reaches
+    further down the list, by `rank_window(level)`.
+    """
+
+    def __init__(self, board: Board, level: int = MAX_RANKED_LEVEL) -> None:
+        super().__init__(board)
+        if not MIN_LEVEL <= level <= MAX_LEVEL:
+            raise ValueError(f"level {level!r} out of range ({MIN_LEVEL}..{MAX_LEVEL})")
+        self.level = level
+
+    def get_best_word(
+        self, dawg: Dawg, parallel: bool
+    ) -> tuple[str, int, tuple[int, int, bool], list[str]]:
+        words = self.get_best_words(dawg, self.letters, parallel)
+        if not words:
+            return ("", 0, (0, 0, True), [])
+
+        # Same ordering StrategicPlayer's argmax would produce, kept whole so a
+        # rank can be taken from it.
+        self._leave_points = sum(self.board.letter_points(ch) for ch in self.get_letters_left())
+        ranked = sorted(words, key=lambda w: self.evaluate_word(dawg, *w), reverse=True)
+        chosen = pick_by_rank(ranked, self.level)
+        if chosen is None:
+            return ("", 0, (0, 0, True), [])
+        return (chosen[0], chosen[1], chosen[2], chosen[3])

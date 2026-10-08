@@ -18,8 +18,8 @@ import cv2
 import numpy as np
 import glyph_normalizer as gn
 from letter_classifier import (
-    POLISH_ALPHABET,
     _params,
+    alphabet,
     classify_cnn_batch,
     classify_digit_cnn_batch,
     classify_digit_templates,
@@ -191,8 +191,9 @@ def classify_board(rotated, mesh, verdicts, global_shift=None, **param_overrides
     single-character strings ('-' empty, '?' unrecognised letter)."""
     readings = classify_tiles(rotated, mesh, verdicts, global_shift, **param_overrides)
     board = [["-"] * GRID for _ in range(GRID)]
+    letters = alphabet()
     for (r, c), (letter, _conf, _alts) in readings.items():
-        board[r][c] = letter if letter and letter in POLISH_ALPHABET else "?"
+        board[r][c] = letter if letter and letter in letters else "?"
     return board
 
 

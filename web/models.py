@@ -4,19 +4,30 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from web.difficulty import DEFAULT_LEVEL, MAX_LEVEL, MIN_LEVEL
+
+# Custom difficulty is a single integer dial rather than a set of named tiers
+# (see web/difficulty.py). Declared once so every request/response that carries
+# a level validates it the same way.
+DifficultyLevelField = Field(DEFAULT_LEVEL, ge=MIN_LEVEL, le=MAX_LEVEL)
+
 # ── Requests ─────────────────────────────────────────────────────────────────
 
 
 class NewPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     is_computer: bool = False
-    difficulty: Literal["easy", "medium", "hard", "impossible", "smart"] = "hard"
+    difficulty: int = DifficultyLevelField
 
 
 class NewGameRequest(BaseModel):
     players: list[NewPlayerConfig] = Field(..., min_length=1, max_length=4)
     game_mode: Literal["sandbox", "sandbox_auto", "competitive"] = "sandbox"
-    difficulty: Literal["easy", "medium", "hard", "impossible", "smart"] = "hard"
+    difficulty: int = DifficultyLevelField
+    # A plain str, not a Literal, so adding a language stays a matter of
+    # dropping a file in `languages/`. Validated against the registry in the
+    # handler, which knows what is actually installed.
+    language: str | None = None
 
 
 class PlaceHumanWordRequest(BaseModel):
@@ -40,6 +51,7 @@ class ScanConfirmRequest(BaseModel):
 
 class ScanSuggestRequest(BaseModel):
     letters: str = Field(..., min_length=1, max_length=7)
+    sort: Literal["score", "smart", "sim"] = "score"
 
 
 class ScanRecheckRequest(BaseModel):
@@ -57,12 +69,13 @@ class PlaceComputerWordRequest(BaseModel):
 
 class BenchmarkPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
-    difficulty: Literal["easy", "medium", "hard", "impossible", "smart"] = "hard"
+    difficulty: int = DifficultyLevelField
 
 
 class BenchmarkRequest(BaseModel):
     players: list[BenchmarkPlayerConfig] = Field(..., min_length=2, max_length=4)
     games: int = Field(20, ge=1)
+    language: str | None = None
 
 
 # ── Responses ─────────────────────────────────────────────────────────────────
@@ -73,7 +86,62 @@ class PlayerState(BaseModel):
     is_computer: bool
     score: int
     letters: str
-    difficulty: str = "hard"
+    difficulty: int = DEFAULT_LEVEL
+
+
+class DifficultyLevelInfo(BaseModel):
+    """One notch of the difficulty slider, described well enough that a player
+    can tell what they are choosing before the game starts. Served by
+    `GET /api/game/difficulty-levels` so the UI text is derived from the real
+    rank windows instead of a hand-maintained copy in JS."""
+
+    level: int
+    name: str
+    emoji: str
+    summary: str
+    expect: str
+    engine: Literal["ranked", "smart", "sim"]
+    rank_best: int | None = None
+    rank_worst: int | None = None
+    slow: bool = False
+
+
+class DifficultyLevelsResponse(BaseModel):
+    min_level: int
+    max_level: int
+    default_level: int
+    levels: list[DifficultyLevelInfo]
+
+
+class LanguageInfo(BaseModel):
+    """One entry of the language picker, plus the tables the client needs to
+    render a board in that language. `letter_values` replaces what used to be a
+    hand-kept copy of the point table in `web/static/js/board.js`."""
+
+    code: str
+    name: str
+    flag: str
+    alphabet: str
+    blank: str
+    letter_values: dict[str, int]
+    tile_counts: dict[str, int]
+    total_tiles: int
+    #: Strongest difficulty this language can field -- capped where no leave
+    #: net has been trained yet (see web.difficulty.max_level_for).
+    max_level: int
+    #: Whether the board-photo scanner has models for this language.
+    has_ocr: bool
+    #: True where those models were trained on rendered fonts alone, never
+    #: checked against photographs of real tiles.
+    ocr_experimental: bool
+    #: Whether a trained rack-leave evaluator exists. Without one there are no
+    #: levels 9-10, and the `smart`/`sim` suggestion orderings are unavailable.
+    has_leave_net: bool
+
+
+class LanguagesResponse(BaseModel):
+    default: str
+    languages: list[LanguageInfo]
 
 
 class LastComputerMove(BaseModel):
@@ -92,10 +160,20 @@ class Suggestion(BaseModel):
     col: int
     horizontal: bool
     cells: list[tuple[int, int]]
+    # What the list was ordered by: the raw score, the score plus the leave the
+    # play would keep, or the simulated equity. Shown so a reordering is
+    # explained rather than mysterious.
+    value: float | None = None
 
 
 class BoardStateResponse(BaseModel):
+    language: str = "pl"
     board: list[list[str]]
+    # Which occupied squares hold a blank. The grid renders a blank as the
+    # letter it stands in for, so without this the UI cannot tell a blank from
+    # a real tile -- and they score very differently for anything played
+    # through them later.
+    board_blanks: list[list[bool]] = Field(default_factory=list)
     players: list[PlayerState]
     current_player_idx: int
     is_first_move: bool
@@ -177,7 +255,7 @@ class BenchmarkMoveRecord(BaseModel):
 
 class BenchmarkPlayerStats(BaseModel):
     name: str
-    difficulty: str
+    difficulty: int
     games_played: int
     wins: int
     ties: int

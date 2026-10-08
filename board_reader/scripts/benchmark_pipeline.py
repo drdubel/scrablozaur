@@ -106,6 +106,7 @@ def _fmt(name, arr, width=34):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--lang", default="pl", help="language code (languages/<code>.json)")
     parser.add_argument("ids", nargs="*", type=int, help="specific image indices to benchmark (overrides --difficulty)")
     parser.add_argument(
         "-d",
@@ -114,6 +115,7 @@ def main():
         help="difficulty suffixes to include: any of 'e' (easy), 'm' (medium), 'h' (hard) (default: emh, all photos)",
     )
     args = parser.parse_args()
+    letter_classifier.set_language(args.lang)
     ids = args.ids or [i for i in sorted(GROUND_TRUTH) if DIFFICULTY[i] in args.difficulty]
     print(f"Benchmarking {len(ids)} photos: {ids}\n")
 
