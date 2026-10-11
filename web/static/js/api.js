@@ -113,7 +113,7 @@ class ApiClient {
     return this._request('POST', '/board/next-move');
   }
 
-  /** @param {{name:string,difficulty:number}[]} players */
+  /** @param {{name:string,difficulty:number,strength:number}[]} players */
   startBenchmark(players, games, language = null) {
     return this._request('POST', '/benchmark/start', { players, games, language });
   }

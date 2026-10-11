@@ -131,6 +131,7 @@ def test_competitive_renders_a_rack_with_point_values(page):
     page.wait_for_function(
         "document.querySelectorAll('#tile-rack .rack-tile').length === 7", timeout=30000
     )
+    _assert_strongest_bots(page)
     assert not _errors(page), _errors(page)
     # The point values are what the removed global used to supply. A blank
     # renders as a star with no value, so compare against the non-blank tiles
@@ -146,16 +147,130 @@ def test_switching_language_still_renders(page):
     if not picker.count():
         pytest.skip("only one language installed")
     picker.select_option("en")
-    # Switching language re-fetches the level table; wait for that to settle
-    # before starting, or the slider can still hold the old language's bounds.
+    # The highest difficulty must follow the language immediately.
     page.wait_for_function(
         "typeof Languages !== 'undefined' && Languages.loaded && Difficulty.loaded",
         timeout=30000,
     )
     page.click("#btn-start-game")
+    page.wait_for_selector("#dialog-setup", state="hidden", timeout=60000)
     page.wait_for_function(
         "document.querySelectorAll('#tile-rack .rack-tile').length === 7", timeout=60000
     )
+    _assert_strongest_bots(page)
+    assert not _errors(page), _errors(page)
+
+
+def _assert_strongest_bots(page):
+    state = page.evaluate("async () => (await fetch('/api/game/state')).json()")
+    maximum = page.evaluate("code => Languages.maxLevel(code)", state["language"])
+    bots = [p for p in state["players"] if p["is_computer"]]
+    assert bots
+    assert all(p["difficulty"] == maximum for p in bots)
+    assert page.locator("#setup-strength").count() == 1
+    assert not page.locator("#setup-strength").is_visible()
+
+
+@pytest.mark.parametrize("submode", ["manual", "auto"])
+def test_sandbox_modes_use_strongest_bots(page, submode):
+    _open_setup(page)
+    page.click('.mode-card[data-mode="sandbox"]')
+    page.click(f'.sub-toggle-btn[data-sandbox-sub="{submode}"]')
+    page.select_option("#setup-count", "4")
+    page.click("#btn-start-game")
+    page.wait_for_selector("#dialog-setup", state="hidden", timeout=60000)
+    assert page.locator("#board .cell").count() == 225
+    _assert_strongest_bots(page)
+    if submode == "auto":
+        page.wait_for_selector("#panel-auto:visible")
+        page.click("#btn-auto-next")
+        page.wait_for_selector("#auto-move-log li", timeout=60000)
+    assert not _errors(page), _errors(page)
+
+
+def test_advanced_options_change_strength_and_bot_type(page):
+    for strength, neural, simulation, level in [(1, False, False, 8), (55, True, False, 9), (37, True, True, 10)]:
+        _open_setup(page)
+        assert not page.locator("#setup-strength").is_visible()
+        page.click('.mode-card[data-mode="sandbox"]')
+        page.click('.sub-toggle-btn[data-sandbox-sub="auto"]')
+        page.select_option("#setup-count", "2")
+        page.click("#setup-advanced summary")
+        page.locator("#setup-strength").evaluate(
+            "(el, value) => { el.value = value; el.dispatchEvent(new Event('input', {bubbles: true})); }",
+            str(strength),
+        )
+        page.locator("#setup-smart").set_checked(neural)
+        if neural:
+            page.locator("#setup-simulation").set_checked(simulation)
+        else:
+            assert page.locator("#setup-simulation").is_disabled()
+        assert page.locator("#setup-strength-value").inner_text() == f"{strength}%"
+        page.click("#btn-start-game")
+        page.wait_for_selector("#dialog-setup", state="hidden")
+        state = page.evaluate("async () => (await fetch('/api/game/state')).json()")
+        assert all(p["strength"] == strength and p["difficulty"] == level for p in state["players"])
+        page.click("#btn-auto-next")
+        page.wait_for_selector("#auto-move-log li", timeout=60000)
+        assert not _errors(page), _errors(page)
+    _open_setup(page)
+    assert not page.locator("#setup-strength").is_visible()
+    assert page.locator("#setup-strength").input_value() == "37"
+    # A complete benchmark must receive the same options as a live game.
+    page.fill("#setup-benchmark-games", "1")
+    with page.expect_request("**/api/benchmark/start") as request:
+        page.click("#btn-run-benchmark")
+    assert all(p["strength"] == 37 and p["difficulty"] == 10 for p in request.value.post_data_json["players"])
+    page.wait_for_selector("#benchmark-results:visible", timeout=120000)
+    assert not _errors(page), _errors(page)
+
+
+def test_benchmark_customizes_each_player_independently(page):
+    _open_setup(page)
+    page.click('.mode-card[data-mode="sandbox"]')
+    page.click('.sub-toggle-btn[data-sandbox-sub="auto"]')
+    page.select_option("#setup-count", "3")
+    rows = page.locator(".setup-auto-player")
+    expected = [(25, False, False, 8), (70, True, False, 9), (100, True, True, 10)]
+    for i, (strength, neural, simulation, _level) in enumerate(expected):
+        row = rows.nth(i)
+        assert not row.locator(".player-strength").is_visible()
+        row.locator("input[type=text]").fill(f"Bot {i + 1}")
+        row.locator("summary").click()
+        row.locator(".player-strength").evaluate(
+            "(el, value) => { el.value = value; el.dispatchEvent(new Event('input', {bubbles: true})); }",
+            str(strength),
+        )
+        row.locator(".player-smart").set_checked(neural)
+        if neural:
+            row.locator(".player-simulation").set_checked(simulation)
+        else:
+            assert row.locator(".player-simulation").is_disabled()
+    # Rebuilding rows must retain each player's independent settings and name.
+    page.select_option("#setup-count", "4")
+    page.select_option("#setup-count", "3")
+    for i, (strength, neural, simulation, _level) in enumerate(expected):
+        row = rows.nth(i)
+        assert row.locator("input[type=text]").input_value() == f"Bot {i + 1}"
+        assert row.locator(".player-strength").input_value() == str(strength)
+        assert row.locator(".player-smart").is_checked() == neural
+        assert row.locator(".player-simulation").is_checked() == (simulation if neural else True)
+    page.fill("#setup-benchmark-games", "1")
+    with page.expect_request("**/api/benchmark/start") as request:
+        page.click("#btn-run-benchmark")
+    players = request.value.post_data_json["players"]
+    assert [(p["strength"], p["difficulty"]) for p in players] == [(s, level) for s, _, _, level in expected]
+    page.wait_for_selector("#benchmark-results:visible", timeout=120000)
+    labels = page.locator(".benchmark-stat-diff").all_text_contents()
+    assert len(labels) == 3
+    assert all(f"{strength}%" in labels[i] for i, (strength, _, _, _) in enumerate(expected))
+    _open_setup(page)
+    assert rows.nth(0).locator(".player-strength").input_value() == "25"
+    assert not rows.nth(0).locator(".player-strength").is_visible()
+    rows.nth(0).locator("summary").click()
+    rows.nth(0).locator(".player-defaults").click()
+    assert rows.nth(0).locator(".player-strength").input_value() == page.locator("#setup-strength").input_value()
+    assert rows.nth(1).locator(".player-strength").input_value() == "70"
     assert not _errors(page), _errors(page)
 
 

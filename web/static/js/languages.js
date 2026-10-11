@@ -50,7 +50,7 @@ const Languages = {
   letterValues(code) { return this.info(code).letter_values; },
 
   /** Strongest difficulty this language can field. Lower where no leave net
-   * has been trained, so the slider simply stops earlier. */
+   * has been trained, so the UI always picks a supported level. */
   maxLevel(code) { return this.info(code).max_level; },
 
   /** Whether the `smart` / `sim` suggestion orderings can be offered. Both
@@ -95,7 +95,7 @@ const Languages = {
     for (const lang of this._list) {
       const opt = document.createElement('option');
       opt.value = lang.code;
-      opt.textContent = lang.flag ? `${lang.flag} ${lang.name}` : lang.name;
+      opt.textContent = lang.name;
       select.appendChild(opt);
     }
     select.value = value ?? this.default;
@@ -104,13 +104,11 @@ const Languages = {
     note.className = 'setup-note';
     const describe = () => {
       const info = this.info(select.value);
-      const parts = [`${info.total_tiles} płytek`];
-      // Worth saying plainly: a language with no trained leave net cannot
-      // offer the top levels, and a silently shorter slider looks like a bug.
-      if (info.max_level < 10) parts.push(`maks. poziom ${info.max_level}`);
+      const parts = [];
       if (!info.has_ocr) parts.push('bez skanowania zdjęć');
       else if (info.ocr_experimental) parts.push('skanowanie eksperymentalne');
       note.textContent = parts.join(' · ');
+      note.hidden = parts.length === 0;
     };
     describe();
 

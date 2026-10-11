@@ -18,12 +18,14 @@ class NewPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     is_computer: bool = False
     difficulty: int = DifficultyLevelField
+    strength: int = Field(100, ge=1, le=100)
 
 
 class NewGameRequest(BaseModel):
     players: list[NewPlayerConfig] = Field(..., min_length=1, max_length=4)
     game_mode: Literal["sandbox", "sandbox_auto", "competitive"] = "sandbox"
     difficulty: int = DifficultyLevelField
+    strength: int = Field(100, ge=1, le=100)
     # A plain str, not a Literal, so adding a language stays a matter of
     # dropping a file in `languages/`. Validated against the registry in the
     # handler, which knows what is actually installed.
@@ -70,6 +72,7 @@ class PlaceComputerWordRequest(BaseModel):
 class BenchmarkPlayerConfig(BaseModel):
     name: str = Field(..., min_length=1, max_length=20)
     difficulty: int = DifficultyLevelField
+    strength: int = Field(100, ge=1, le=100)
 
 
 class BenchmarkRequest(BaseModel):
@@ -87,6 +90,7 @@ class PlayerState(BaseModel):
     score: int
     letters: str
     difficulty: int = DEFAULT_LEVEL
+    strength: int = 100
 
 
 class DifficultyLevelInfo(BaseModel):
@@ -256,6 +260,7 @@ class BenchmarkMoveRecord(BaseModel):
 class BenchmarkPlayerStats(BaseModel):
     name: str
     difficulty: int
+    strength: int = 100
     games_played: int
     wins: int
     ties: int

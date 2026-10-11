@@ -33,6 +33,7 @@ def _state_response(session: GameSession) -> BoardStateResponse:
                     else p.letters
                 ),
                 difficulty=p.difficulty,
+                strength=p.strength,
             )
             for p in session.players
         ],
@@ -86,7 +87,7 @@ def _players_from_request(body: NewGameRequest) -> list[Player]:
             )
         return [
             Player(name=non_computer[0].name, is_computer=False),
-            Player(name="Komputer", is_computer=True, difficulty=body.difficulty),
+            Player(name="Komputer", is_computer=True, difficulty=body.difficulty, strength=body.strength),
         ]
     if body.game_mode == "sandbox_auto":
         if len(body.players) < 2:
@@ -95,14 +96,14 @@ def _players_from_request(body: NewGameRequest) -> list[Player]:
                 detail="Tryb automatyczny wymaga co najmniej dwóch graczy-komputerów.",
             )
         return [
-            Player(name=p.name, is_computer=True, difficulty=p.difficulty)
+            Player(name=p.name, is_computer=True, difficulty=p.difficulty, strength=p.strength)
             for p in body.players
         ]
     computer_count = sum(1 for p in body.players if p.is_computer)
     if computer_count != 1:
         raise HTTPException(status_code=400, detail="Exactly one player must be the computer.")
     return [
-        Player(name=p.name, is_computer=p.is_computer, difficulty=p.difficulty)
+        Player(name=p.name, is_computer=p.is_computer, difficulty=p.difficulty, strength=p.strength)
         for p in body.players
     ]
 

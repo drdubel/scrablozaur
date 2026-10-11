@@ -12,95 +12,45 @@
 }
 
 :root {
-  --color-bg: #f7f4ef;
+  --color-bg: #fafbfa;
   --color-surface: #ffffff;
-  --color-border: #d4c9b8;
-  --color-text: #2d2a26;
-  --color-muted: #6b6560;
-
-  --color-tw: #c0392b;
-  --color-tw-text: #ffffff;
-  --color-dw: #e67e22;
-  --color-dw-text: #ffffff;
-  --color-tl: #2471a3;
-  --color-tl-text: #ffffff;
-  --color-dl: #7fb3d3;
-  --color-dl-text: #ffffff;
-  --color-center: #e67e22;
-  --color-empty: #ede8df;
-  --color-placed: #fef9e7;
-  --color-placed-border: #a89060;
-
-  --color-highlight-new: #82e0aa;
-  --color-highlight-existing: #aed6f1;
-
-  /* Per-player tile tint, keyed by seat index (0-3) -- owner-0/1 keep the
-     original human-yellow/computer-blue look so competitive and the common
-     1v1 sandbox case are visually unchanged; owner-2/3 (green/purple) only
-     ever appear with 3-4 players (sandbox_auto, benchmark replay). */
-  --color-owner-0: #fef9e7;
-  --color-owner-0-border: #c8a84b;
-  --color-owner-1: #e8f4fd;
-  --color-owner-1-border: #85b8d9;
-  --color-owner-2: #eafaf1;
-  --color-owner-2-border: #58b58c;
-  --color-owner-3: #f5eefb;
-  --color-owner-3-border: #b592d6;
-
-  --color-primary: #2471a3;
-  --color-primary-h: #1a5276;
-  --color-danger: #c0392b;
-
-  /* Gradients layered on top of the flat colors above -- applied to board
-     chrome, tiles, buttons and cards so the UI reads as glossy/tactile
-     rather than flat-filled. Kept as separate variables (not replacements
-     for --color-*) since plenty of components still want a flat tone
-     (e.g. text colors, thin borders, the hint/typing-word backgrounds). */
-  --gradient-page: linear-gradient(165deg, #faf7f0 0%, #f0e6d2 55%, #e9dcc0 100%);
-  --gradient-header: linear-gradient(120deg, #ffffff 0%, #f7ecd8 100%);
-  --gradient-primary: linear-gradient(135deg, #3a91cc 0%, #1a5276 100%);
-  --gradient-primary-h: linear-gradient(135deg, #2f86bf 0%, #123d59 100%);
-  --gradient-danger: linear-gradient(135deg, #e0594a 0%, #a02c1f 100%);
-  --gradient-danger-h: linear-gradient(135deg, #cf4938 0%, #8a2419 100%);
-  --gradient-accent-soft: linear-gradient(135deg, #eaf4ff 0%, #d3e9ff 100%);
-  --gradient-board-frame: linear-gradient(160deg, #b0966d 0%, #7c6640 100%);
-  --gradient-card: linear-gradient(160deg, #ffffff 0%, #faf5ea 100%);
-
-  --gradient-tw: linear-gradient(150deg, #e05a49 0%, #a5281b 100%);
-  --gradient-dw: linear-gradient(150deg, #f3a13a 0%, #c46a0e 100%);
-  --gradient-tl: linear-gradient(150deg, #3f95d1 0%, #185a82 100%);
-  --gradient-dl: linear-gradient(150deg, #a8d4ec 0%, #5b93b8 100%);
-  --gradient-center: linear-gradient(150deg, #f3a13a 0%, #c46a0e 100%);
-  --gradient-tile: linear-gradient(160deg, #fffdf6 0%, #fbecc0 55%, #f0d894 100%);
-
-  /* Per-player tile tint, keyed by seat index (0-3) -- owner-0/1 keep the
-     original human-yellow/computer-blue look so competitive and the common
-     1v1 sandbox case are visually unchanged; owner-2/3 (green/purple) only
-     ever appear with 3-4 players (sandbox_auto, benchmark replay). */
-  --gradient-owner-0: linear-gradient(160deg, #fffdf6 0%, #fbecc0 55%, #f0d894 100%);
-  --gradient-owner-1: linear-gradient(160deg, #f6fbff 0%, #d9edfb 55%, #b9dcf2 100%);
-  --gradient-owner-2: linear-gradient(160deg, #f2fcf6 0%, #cdf1de 55%, #a3e2bf 100%);
-  --gradient-owner-3: linear-gradient(160deg, #fbf5fd 0%, #ead9f5 55%, #d7bced 100%);
-
-  /* Fluid so the 15x15 board always fits the viewport width instead of
-     forcing horizontal scroll on phones -- caps at the original fixed size
-     on anything wide enough to afford it. 4.5rem is a deliberately generous
-     stand-in for main's padding + the board's own border/padding/gaps (the
-     precise overhead is ~36px board chrome + whatever main's padding is at
-     a given breakpoint); overshooting the margin only wastes a few spare
-     px, undershooting it would reintroduce horizontal overflow. Cap raised
-     46->52px (and --cell-font's cap/multiplier along with it) for bigger
-     letter tiles / point digits -- see the main/.board-layout comments for
-     the matching width-breakpoint recalculation this forced. */
-  --cell-size: clamp(15px, calc((100vw - 4.5rem) / 15), 52px);
+  --color-border: #e1e5e2;
+  --color-text: #202923;
+  --color-muted: #68716b;
+  --color-tw: #e9c9c9;
+  --color-tw-text: #773a3a;
+  --color-dw: #f2e1d2;
+  --color-dw-text: #815637;
+  --color-tl: #c5dbe5;
+  --color-tl-text: #345c70;
+  --color-dl: #e0eaf0;
+  --color-dl-text: #466678;
+  --color-center: #f2e1d2;
+  --color-empty: #f0f3f0;
+  --color-placed: #ffffff;
+  --color-placed-border: #bbc6bd;
+  --color-highlight-new: #d4eadc;
+  --color-highlight-existing: #dceaf3;
+  --color-owner-0: #fffdf4;
+  --color-owner-0-border: #d8cfa9;
+  --color-owner-1: #f0f7fb;
+  --color-owner-1-border: #b6ccda;
+  --color-owner-2: #eff8f1;
+  --color-owner-2-border: #b8d3c0;
+  --color-owner-3: #f7f2fa;
+  --color-owner-3-border: #cec0db;
+  --color-primary: #315c45;
+  --color-primary-h: #254735;
+  --color-danger: #a54444;
+  --cell-size: clamp(15px, calc((100vw - 4.5rem) / 15), 42px);
   --cell-gap: 2px;
-  --cell-font: clamp(8px, calc(var(--cell-size) * 0.34), 17px);
-  --radius: 10px;
+  --cell-font: clamp(8px, calc(var(--cell-size) * 0.38), 17px);
+  --radius: 6px;
 }
 
 body {
   font-family: system-ui, -apple-system, sans-serif;
-  background: var(--gradient-page);
+  background: var(--color-bg);
   background-attachment: fixed;
   color: var(--color-text);
   min-height: 100vh;
@@ -113,10 +63,8 @@ header {
   align-items: center;
   justify-content: space-between;
   padding: 1rem 2rem;
-  background: var(--gradient-header);
+  background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
-  position: sticky;
-  top: 0;
   z-index: 10;
 }
 
@@ -124,10 +72,7 @@ header h1 {
   font-size: 1.5rem;
   font-weight: 800;
   letter-spacing: -0.5px;
-  background: linear-gradient(135deg, var(--color-primary) 0%, #c46a0e 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--color-text);
 }
 
 .header-actions {
@@ -138,13 +83,7 @@ header h1 {
 
 /* ── Layout ────────────────────────────────────────────────────────────────── */
 main {
-  /* Must comfortably fit .board-layout's 3-column desktop mode: 2x220px side
-     panels + 2x1rem gaps + the board's own 816px at full (52px) cell size =
-     1288px of content, +32px of this padding = 1320px -- 1400px caps main
-     comfortably above that. (Cell size was bumped 46->52px for bigger
-     tiles/point-digits, which is what pushed this and the breakpoint below
-     up from their previous 1300/1280.) */
-  max-width: 1400px;
+  max-width: 860px;
   margin: 0 auto;
   padding: 1.5rem 1rem;
   display: flex;
@@ -156,20 +95,18 @@ main {
 /* ── Setup dialog ──────────────────────────────────────────────────────────── */
 dialog {
   border: none;
-  border-radius: 16px;
+  border-radius: 8px;
   padding: 2rem 2rem 1.5rem;
   max-width: 460px;
   width: 100%;
   margin: auto;
   max-height: 90vh;
   overflow-y: auto;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0,0,0,0.1);
-  background: var(--gradient-card);
+  background: var(--color-surface);
 }
 
 dialog::backdrop {
   background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(3px);
 }
 
 dialog h2 {
@@ -218,7 +155,7 @@ dialog h2 {
 
 .mode-card--active {
   border-color: var(--color-primary);
-  background: var(--gradient-accent-soft);
+  background: var(--color-empty);
 }
 
 .mode-card-icon {
@@ -300,111 +237,6 @@ dialog h2 {
   font-size: 0.75rem;
   color: var(--color-muted);
   line-height: 1.4;
-}
-
-/* Custom difficulty slider (built by js/difficulty.js) */
-.setup-difficulty-slot {
-  margin-bottom: 1.5rem;
-}
-
-.difficulty-slider--full {
-  padding: 0.85rem 0.9rem 0.75rem;
-  border: 2px solid var(--color-border);
-  border-radius: 12px;
-  background: var(--color-bg);
-}
-
-.difficulty-head {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-}
-
-.difficulty-emoji {
-  font-size: 1.35rem;
-  line-height: 1;
-}
-
-.difficulty-name {
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--color-text);
-}
-
-.difficulty-level {
-  margin-left: auto;
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--color-muted);
-}
-
-.difficulty-range {
-  width: 100%;
-  margin: 0.6rem 0 0.2rem;
-  accent-color: var(--color-primary);
-  cursor: pointer;
-}
-
-.difficulty-scale {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--color-muted);
-}
-
-.difficulty-feedback {
-  margin-top: 0.6rem;
-  padding-top: 0.6rem;
-  border-top: 1px dashed var(--color-border);
-  /* Descriptions differ in length between levels; a fixed floor stops the
-     dialog jumping around while the slider is being dragged. */
-  min-height: 3.6rem;
-}
-
-.difficulty-summary,
-.difficulty-expect,
-.difficulty-slow {
-  margin: 0 0 0.3rem;
-  font-size: 0.82rem;
-  line-height: 1.35;
-}
-
-.difficulty-summary {
-  color: var(--color-text);
-}
-
-.difficulty-expect {
-  color: var(--color-muted);
-}
-
-.difficulty-slow {
-  color: var(--color-muted);
-  font-style: italic;
-}
-
-/* Compact variant: one per computer row in automatic sandbox. */
-.difficulty-slider--compact {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-shrink: 0;
-}
-
-.difficulty-slider--compact .difficulty-range {
-  width: 7.5rem;
-  margin: 0;
-}
-
-.difficulty-compact-label {
-  min-width: 2.6rem;
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: var(--color-text);
-  white-space: nowrap;
 }
 
 /* Start button row */
@@ -491,7 +323,7 @@ dialog h2 {
 
 .sub-toggle-btn--active {
   border-color: var(--color-primary);
-  background: var(--gradient-accent-soft);
+  background: var(--color-empty);
 }
 
 .sandbox-sub-desc {
@@ -525,7 +357,7 @@ dialog h2 {
   display: flex;
   align-items: stretch;
   gap: 0;
-  background: var(--gradient-card);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   width: 100%;
@@ -551,7 +383,7 @@ dialog h2 {
 }
 
 .score-block.active-player {
-  background: var(--gradient-accent-soft);
+  background: var(--color-empty);
   outline: 2px solid var(--color-primary);
   outline-offset: -2px;
 }
@@ -621,14 +453,13 @@ dialog h2 {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--gradient-tile);
+  background: var(--color-placed);
   border: 2px solid var(--color-placed-border);
   border-radius: 8px;
   font-weight: 700;
   font-size: 1.4rem;
   color: var(--color-text);
   text-transform: uppercase;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 2px 5px rgba(0, 0, 0, 0.15);
   user-select: none;
   transition: transform 0.12s;
 }
@@ -638,7 +469,7 @@ dialog h2 {
 }
 
 .rack-tile.blank {
-  background: linear-gradient(160deg, #f5f5f5 0%, #dcdcdc 100%);
+  background: var(--color-bg);
   border-color: #aaa;
   color: var(--color-muted);
   font-size: 1.15rem;
@@ -681,7 +512,6 @@ dialog h2 {
   background: var(--color-empty);
   border-style: dashed;
   border-color: var(--color-border);
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.08);
   color: transparent;
   cursor: default;
 }
@@ -700,7 +530,7 @@ dialog h2 {
   width: 100%;
   max-width: 800px;
   padding: 0.7rem 1rem;
-  background: var(--gradient-accent-soft);
+  background: var(--color-empty);
   border: 1px solid var(--color-primary);
   border-radius: var(--radius);
   font-size: 0.9rem;
@@ -726,11 +556,10 @@ dialog h2 {
   grid-template-columns: repeat(15, var(--cell-size));
   grid-template-rows: repeat(15, var(--cell-size));
   gap: var(--cell-gap);
-  border: 2px solid #6b573e;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
-  background: var(--gradient-board-frame);
+  background: var(--color-border);
   padding: var(--cell-gap);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
 .cell {
@@ -759,42 +588,36 @@ dialog h2 {
 }
 
 .cell.tw {
-  background: var(--gradient-tw);
+  background: var(--color-tw);
   color: var(--color-tw-text);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.dw {
-  background: var(--gradient-dw);
+  background: var(--color-dw);
   color: var(--color-dw-text);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.tl {
-  background: var(--gradient-tl);
+  background: var(--color-tl);
   color: var(--color-tl-text);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.dl {
-  background: var(--gradient-dl);
+  background: var(--color-dl);
   color: var(--color-dl-text);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.center {
-  background: var(--gradient-center);
-  color: #fff;
+  background: var(--color-center);
+  color: var(--color-dw-text);
   font-size: calc(var(--cell-font) + 2px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -2px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.placed {
-  background: var(--gradient-tile);
+  background: var(--color-placed);
   color: var(--color-text);
   font-size: var(--cell-font);
   border: 1px solid var(--color-placed-border);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 1px 3px rgba(0, 0, 0, 0.15);
 }
 
 .cell.highlight-new {
@@ -923,27 +746,27 @@ dialog h2 {
   opacity: 0.5;
 }
 
-/* Per-player tile tint, keyed by seat index -- see --gradient-owner-* above. */
+/* Per-player tile tint, keyed by seat index -- see --color-owner-* above. */
 .cell.placed-owner-0 {
-  background: var(--gradient-owner-0);
+  background: var(--color-owner-0);
   color: var(--color-text);
   border: 1px solid var(--color-owner-0-border);
 }
 
 .cell.placed-owner-1 {
-  background: var(--gradient-owner-1);
+  background: var(--color-owner-1);
   color: var(--color-text);
   border: 1px solid var(--color-owner-1-border);
 }
 
 .cell.placed-owner-2 {
-  background: var(--gradient-owner-2);
+  background: var(--color-owner-2);
   color: var(--color-text);
   border: 1px solid var(--color-owner-2-border);
 }
 
 .cell.placed-owner-3 {
-  background: var(--gradient-owner-3);
+  background: var(--color-owner-3);
   color: var(--color-text);
   border: 1px solid var(--color-owner-3-border);
 }
@@ -968,7 +791,7 @@ dialog h2 {
 .word-def-panel {
   width: 100%;
   max-width: 800px;
-  background: var(--gradient-card);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 0.85rem 1.1rem;
@@ -1040,7 +863,7 @@ dialog h2 {
 }
 
 .panel {
-  background: var(--gradient-card);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 1.25rem 1.5rem;
@@ -1138,7 +961,7 @@ select:focus {
 .suggestion-item:hover,
 .suggestion-item.active {
   border-color: var(--color-primary);
-  background: var(--gradient-accent-soft);
+  background: var(--color-empty);
 }
 
 .sug-rank {
@@ -1196,25 +1019,23 @@ select:focus {
 }
 
 .btn-primary {
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   color: #fff;
-  box-shadow: 0 2px 6px rgba(36, 113, 163, 0.35);
 }
 
 .btn-primary:hover {
-  background: var(--gradient-primary-h);
-  box-shadow: 0 3px 10px rgba(36, 113, 163, 0.45);
+  background: var(--color-primary-h);
   transform: translateY(-1px);
 }
 
 .btn-secondary {
-  background: linear-gradient(160deg, #ffffff 0%, #f4efe4 100%);
+  background: var(--color-bg);
   color: var(--color-text);
   border: 1px solid var(--color-border);
 }
 
 .btn-secondary:hover {
-  background: linear-gradient(160deg, #ffffff 0%, #ece4d4 100%);
+  background: var(--color-bg);
 }
 
 .btn-ghost {
@@ -1229,14 +1050,12 @@ select:focus {
 }
 
 .btn-danger {
-  background: var(--gradient-danger);
+  background: var(--color-danger);
   color: #fff;
-  box-shadow: 0 2px 6px rgba(192, 57, 43, 0.35);
 }
 
 .btn-danger:hover {
-  background: var(--gradient-danger-h);
-  box-shadow: 0 3px 10px rgba(192, 57, 43, 0.45);
+  background: var(--color-danger);
   transform: translateY(-1px);
 }
 
@@ -1250,7 +1069,7 @@ select:focus {
   width: 100%;
   max-width: 480px;
   margin: 0 auto;
-  background: var(--gradient-card);
+  background: var(--color-surface);
   border: 2px solid var(--color-primary);
   border-radius: var(--radius);
   padding: 1.5rem 2rem;
@@ -1307,45 +1126,43 @@ select:focus {
   }
 }
 
-/* ── Three-column board layout ─────────────────────────────────────────────── */
+/* ── Board layout ─────────────────────────────────────────────── */
 .board-layout {
-  /* #game-view is otherwise a plain block, so without this the scoreboard
-     and the board would sit flush against each other (0px gap) in every
-     mode -- competitive, sandbox, and sandbox_auto all share this markup. */
-  margin-top: 1.5rem;
-  display: grid;
-  /* minmax(0, ...) rather than a bare `auto` middle column: an `auto` track
-     sizes to its content's own preferred width and won't shrink below it,
-     so if the two 220px side columns + gaps + the board's own width ever
-     exceed the viewport, `auto` just overflows the grid container instead
-     of yielding space -- minmax(0, ...) lets it actually give way. Belt and
-     braces alongside the breakpoint below, which is sized so this case
-     shouldn't be reached in the first place. */
-  grid-template-columns: 220px minmax(0, 1fr) 220px;
-  grid-template-rows: auto;
-  gap: 1rem;
-  align-items: start;
-  width: 100%;
-}
-
-.board-center {
+  margin-top: 1rem;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1rem;
+  width: 100%;
+}
+
+.board-center {
+  order: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
 }
 
 .side-panel {
-  position: sticky;
-  top: 1rem;
-  width: 220px;
+  position: static;
+  width: 100%;
+  max-width: 664px;
   min-width: 0;
-  /* visibility toggled by JS — panel always occupies its column to prevent layout shift */
 }
+
+.side-panel[style*="visibility:hidden"],
+.side-panel[style*="visibility: hidden"] {
+  display: none;
+}
+
+#rating-panel, #benchmark-rating-panel { order: 2; }
+#word-def-panel, #benchmark-word-def-panel { order: 3; }
 
 /* ── Side panels (def + rating) ────────────────────────────────────────────── */
 .word-def-panel {
-  background: var(--gradient-card);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 0.85rem 1rem;
@@ -1353,7 +1170,7 @@ select:focus {
 }
 
 .rating-panel {
-  background: var(--gradient-card);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 1rem;
@@ -1584,11 +1401,10 @@ select:focus {
   width: 100%;
   max-width: 700px;
   margin: 0 auto;
-  background: var(--gradient-card);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 1.5rem;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
 }
 
 .scan-view-header {
@@ -1681,12 +1497,11 @@ select:focus {
      last column. width:max-content plus the margin:auto below keeps the
      box sized to (and centered on) its actual 15-cell content instead. */
   width: max-content;
-  border: 2px solid #6b573e;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
-  background: var(--gradient-board-frame);
+  background: var(--color-border);
   padding: var(--cell-gap);
   margin: 0 auto 1rem;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
 #scan-board .tile-letter {
@@ -1767,7 +1582,7 @@ select:focus {
 
 .scan-alt-btn:hover {
   border-color: var(--color-primary);
-  background: var(--gradient-accent-soft);
+  background: var(--color-empty);
 }
 
 .scan-save-training-label {
@@ -1784,19 +1599,6 @@ select:focus {
   accent-color: var(--color-primary);
 }
 
-/* ── Responsive: collapse the 3-column board layout ──────────────────────────
-   #board's --cell-size formula is viewport-relative (100vw), not
-   column-relative, so while the 3-column layout is active it always renders
-   at its full 52px/816px-wide size regardless of how little room the middle
-   grid track actually has -- it does NOT gracefully shrink to fit alongside
-   the two 220px side panels the way it does in the single-column layout.
-   The exact width where 220px + gap + 816px + gap + 220px (1288px) plus
-   main's 32px padding stops fitting is 1320px (see main's own comment,
-   which raises its max-width to 1400px so it can actually reach that width
-   in the first place) -- 1380px below gives that a ~60px safety margin.
-   minmax(0, 1fr) on the middle column (see .board-layout) is only a
-   backstop for the grid container's own box, not a fix for the board
-   visually overlapping the panels below this width. */
 /* ── Auto-play panel (SANDBOX_AUTO live game) ─────────────────────────────── */
 .auto-move-log {
   list-style: none;
@@ -1856,11 +1658,10 @@ select:focus {
   width: 100%;
   max-width: 1100px;
   margin: 0 auto;
-  background: var(--gradient-card);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   padding: 1.5rem;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
 }
 
 #benchmark-summary {
@@ -1936,11 +1737,10 @@ select:focus {
   grid-template-columns: repeat(15, var(--cell-size));
   grid-template-rows: repeat(15, var(--cell-size));
   gap: var(--cell-gap);
-  border: 2px solid #6b573e;
+  border: 1px solid var(--color-border);
   border-radius: 6px;
-  background: var(--gradient-board-frame);
+  background: var(--color-border);
   padding: var(--cell-gap);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   flex-shrink: 0;
 }
 
@@ -1993,26 +1793,6 @@ select:focus {
   color: var(--color-muted);
   margin-left: auto;
   align-self: center;
-}
-
-@media (max-width: 1380px) {
-  .board-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .side-panel {
-    position: static;
-    width: 100%;
-    max-width: 480px;
-    margin: 0 auto;
-  }
-
-  /* Board first, then the move rating, then the (usually-empty-until-tapped)
-     word definition panel -- matches what a mobile visitor actually wants to
-     see first without scrolling past reserved-but-empty panel space. */
-  .board-center  { order: 1; }
-  #rating-panel  { order: 2; }
-  #word-def-panel { order: 3; }
 }
 
 /* ── List toolbar + segmented sort control ─────────────────────────────────── */
@@ -2070,13 +1850,12 @@ select:focus {
 
 .seg-btn--active {
   color: #fff;
-  background: var(--gradient-primary);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  background: var(--color-primary);
 }
 
 .seg-btn--active:hover {
   color: #fff;
-  background: var(--gradient-primary-h);
+  background: var(--color-primary-h);
 }
 
 .seg-btn:focus-visible {
@@ -2233,3 +2012,78 @@ select:focus {
     flex: 1;
   }
 }
+
+/* Minimal controls and typography. */
+header { padding: 1rem max(1rem, calc((100vw - 828px) / 2)); }
+header h1 { font-size: 1.15rem; font-weight: 650; letter-spacing: -0.4px; }
+#game-view { width: 100%; }
+#dialog-setup { max-width: 420px; width: calc(100% - 2rem); }
+dialog::backdrop { background: rgb(32 41 35 / 25%); }
+dialog h2 { font-size: 1.15rem; margin-bottom: 1.25rem; }
+.setup-mode-cards { display: flex; gap: 0.4rem; margin-bottom: 1.25rem; }
+.mode-card { flex: 1; padding: 0.65rem 0.5rem; align-items: center; border-width: 1px; border-radius: 5px; }
+.mode-card--active { background: var(--color-primary); color: white; }
+.mode-card-name { font-size: 0.8rem; font-weight: 550; color: inherit; }
+.setup-section-label, .setup-field-label, .setup-label, .rack-label,
+.form-row label, .typing-word-label, .rating-title, .score-label {
+  text-transform: none; letter-spacing: 0; font-weight: 500;
+}
+.setup-note { margin: 0.75rem 0 0; color: var(--color-muted); font-size: 0.75rem; }
+.setup-player-row { gap: 0.5rem; }
+.setup-player-row input[type="text"] { flex: 1; width: 0; min-width: 0; }
+.sub-toggle-btn { font-weight: 500; border-radius: 4px; }
+.btn { font-weight: 500; border-radius: 5px; }
+.btn:hover { transform: none; }
+.btn-danger { background: transparent; color: var(--color-danger); border: 1px solid var(--color-border); }
+.btn-danger:hover { background: #fcf0f0; color: var(--color-danger); }
+.btn:focus-visible, .mode-card:focus-visible, .sub-toggle-btn:focus-visible,
+.seg-btn:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--color-primary); outline-offset: 3px;
+}
+input:focus-visible, select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+.scoreboard, .panels { max-width: 664px; }
+.score-label { max-width: 140px; }
+.score-block.active-player { outline: none; box-shadow: inset 0 -2px var(--color-primary); }
+.panel { padding: 1rem; gap: 0.75rem; }
+.rack-tile { border-width: 1px; border-radius: 4px; }
+.help-details { color: var(--color-muted); font-size: 0.75rem; }
+.help-details summary { cursor: pointer; width: fit-content; }
+.help-details p { margin-top: 0.5rem; }
+.rating-gauge { display: none; }
+.rating-gauge-wrap { align-items: flex-start; }
+.rating-value-wrap { position: static; transform: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 640px) {
+  header { padding: 0.75rem; }
+  .setup-mode-cards { display: flex; }
+  .header-actions .btn { padding: 0.45rem 0.6rem; }
+  .score-move, .score-bag { padding: 0.5rem; font-size: 0.65rem; }
+  .score-label { max-width: 80px; }
+  .panel .btn { padding: 0.5rem 0.65rem; font-size: 0.8rem; }
+}
+
+#tile-rack-wrap { width: 100%; }
+.tile-rack { flex-wrap: nowrap; gap: 4px; }
+.rack-tile { width: clamp(32px, calc((100vw - 3rem) / 7), 48px); height: clamp(32px, calc((100vw - 3rem) / 7), 48px); flex-shrink: 0; }
+.score-block { min-width: 0; }
+.score-label { max-width: 100%; }
+.scoreboard .score-label { font-size: 0.72rem; }
+.typing-word-display { min-width: 4rem; }
+.computer-move-info { width: 100%; max-width: 664px; padding: 0.6rem 0.8rem; font-size: 0.8rem; border-color: var(--color-border); }
+
+/* Optional setup controls stay behind a native disclosure. */
+.setup-advanced { margin-top: 1rem; font-size: 0.8rem; color: var(--color-muted); }
+.setup-advanced summary { cursor: pointer; width: fit-content; }
+.advanced-options { display: grid; gap: 0.75rem; padding-top: 1rem; }
+.strength-label { display: flex; justify-content: space-between; color: var(--color-text); }
+#setup-strength { width: 100%; accent-color: var(--color-primary); cursor: pointer; }
+.advanced-check { display: flex; align-items: center; gap: 0.5rem; color: var(--color-text); }
+.advanced-check input { accent-color: var(--color-primary); }
+.advanced-check:has(input:disabled) { color: var(--color-muted); opacity: 0.65; }
+.advanced-options .setup-note { margin: 0; }
+
+.setup-auto-player { flex-wrap: wrap; }
+.player-advanced { flex-basis: 100%; margin: 0 0 0.5rem 2rem; }
+.player-advanced .advanced-options { padding: 0.75rem; border: 1px solid var(--color-border); border-radius: var(--radius); }
+.player-strength { width: 100%; accent-color: var(--color-primary); cursor: pointer; }
+.player-defaults { justify-self: start; }

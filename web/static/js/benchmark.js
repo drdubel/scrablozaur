@@ -74,7 +74,7 @@ class BenchmarkController {
     const rows = [...this._setupPlayers.querySelectorAll('.setup-player-row')];
     return rows.map((row, i) => ({
       name: row.querySelector('input[type="text"]').value.trim() || `Gracz ${i + 1}`,
-      difficulty: Number(row.dataset.difficulty),
+      ...this._gameController._readAutoPlayerOptions(row),
     }));
   }
 
@@ -196,7 +196,7 @@ class BenchmarkController {
         <div class="benchmark-stat-name">
           <span class="player-dot player-dot-${i}"></span>${escapeHtml(s.name)} ${Difficulty.emoji(s.difficulty)}
         </div>
-        <div class="benchmark-stat-diff">${escapeHtml(Difficulty.label(s.difficulty))}</div>
+        <div class="benchmark-stat-diff">${s.strength ?? 100}% · ${escapeHtml(Difficulty.name(s.difficulty))}</div>
         <dl class="benchmark-stat-grid">
           <dt>Gry</dt><dd>${s.games_played}</dd>
           <dt>Wygrane</dt><dd>${s.wins} (${winPct}%)</dd>

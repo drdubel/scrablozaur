@@ -150,6 +150,28 @@ def test_leave_net_orderings_work_where_a_net_exists(client):
             assert response.status_code == 200, f"{code}/{sort}: {response.text}"
 
 
+@pytest.mark.parametrize("count", [2, 4])
+def test_english_level_ten_plays_an_automatic_move(client, count):
+    response = client.post(
+        "/api/game/new",
+        json={
+            "language": "en",
+            "game_mode": "sandbox_auto",
+            "players": [
+                {"name": f"Bot {i}", "is_computer": True, "difficulty": 10}
+                for i in range(count)
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    response = client.post("/api/board/next-move")
+    assert response.status_code == 200, response.text
+    state = response.json()
+    assert state["language"] == "en"
+    assert state["move_number"] == 1
+    assert state["last_computer_move"]["word"]
+
+
 def test_leave_net_orderings_are_refused_without_a_net(client, monkeypatch):
     """Fed another language's rack, a net does not fail -- it drops the letters
     its own alphabet lacks and scores the rest against the wrong distribution.
@@ -198,3 +220,47 @@ def test_a_level_above_a_languages_ceiling_is_clamped(client):
         state = _new_game(client, language=code, mode="competitive", difficulty=10).json()
         bot = next(p for p in state["players"] if p["is_computer"])
         assert bot["difficulty"] <= (10 if spec.leave_net is not None else 8), code
+
+
+@pytest.mark.parametrize("strength", [1, 50, 99])
+@pytest.mark.parametrize("level", [8, 9, 10])
+def test_strength_applies_to_the_selected_engine(client, monkeypatch, strength, level):
+    from web import game
+
+    sorts = []
+    original = game.rank_suggestions
+
+    def record_sort(board, dawg, letters, n, sort="score", **kwargs):
+        if level == 10:
+            from web.difficulty import strength_rank_window
+
+            _, worst = strength_rank_window(strength)
+            assert n == max(20, worst)
+            assert kwargs["sim_iterations"] == max(8, round(game.SUGGEST_SIM_ITERATIONS * strength / 100))
+        sorts.append(sort)
+        return original(board, dawg, letters, n, sort, **kwargs)
+
+    monkeypatch.setattr(game, "rank_suggestions", record_sort)
+    response = client.post("/api/game/new", json={
+        "language": "en", "game_mode": "sandbox_auto",
+        "players": [{"name": f"Bot {i}", "is_computer": True,
+                     "difficulty": level, "strength": strength} for i in range(2)],
+    })
+    assert response.status_code == 200, response.text
+    assert all(p["strength"] == strength for p in response.json()["players"])
+    response = client.post("/api/board/next-move")
+    assert response.status_code == 200, response.text
+    state = response.json()
+    assert state["move_number"] == 1
+    move = state["last_computer_move"]
+    assert move["word"] or move["passed"]  # some randomly dealt racks have no legal opening
+    assert sorts == [{8: "score", 9: "smart", 10: "sim"}[level]]
+
+
+@pytest.mark.parametrize("strength", [0, 101])
+def test_strength_rejects_out_of_range_values(client, strength):
+    response = client.post("/api/game/new", json={
+        "game_mode": "competitive", "strength": strength,
+        "players": [{"name": "Human", "is_computer": False}],
+    })
+    assert response.status_code == 422

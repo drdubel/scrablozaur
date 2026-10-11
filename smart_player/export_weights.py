@@ -31,7 +31,7 @@ import struct
 
 import torch
 
-from model import ALPHABET, DEFAULT_WEIGHTS_PATH, INPUT_DIM, LANGUAGE, _SPEC, get_model
+from model import DEFAULT_WEIGHTS_PATH, LANGUAGE, N_BOARD_FEATURES, _SPEC, get_model, model_alphabet
 
 MAGIC = b"SCRBNET1"
 # Per-language, alongside the `.pt` it is exported from. The engine checks the
@@ -44,23 +44,30 @@ DEFAULT_BIN_PATH = (
 )
 
 
-def export(model_path: str = DEFAULT_WEIGHTS_PATH, out_path: str = DEFAULT_BIN_PATH) -> str:
+def export(model_path: str = DEFAULT_WEIGHTS_PATH, out_path: str | None = None) -> str:
     model = get_model(model_path)
+    alphabet = model_alphabet(model_path)
+    input_dim = len(alphabet) + 1 + N_BOARD_FEATURES
+    # A web process serves every language; its import-time language is only
+    # the CLI default, not the encoding or destination of another checkpoint.
+    out_path = out_path or (
+        DEFAULT_BIN_PATH if model_path == DEFAULT_WEIGHTS_PATH else os.path.splitext(model_path)[0] + ".bin"
+    )
 
     layers = [m for m in model.net if isinstance(m, torch.nn.Linear)]
     if not layers:
         raise ValueError(f"{model_path} has no Linear layers to export")
-    if layers[0].in_features != INPUT_DIM:
+    if layers[0].in_features != input_dim:
         raise ValueError(
             f"{model_path} takes {layers[0].in_features} inputs but the current "
-            f"encoding produces {INPUT_DIM} -- retrain before exporting."
+            f"checkpoint's encoding produces {input_dim} -- retrain before exporting."
         )
     if layers[-1].out_features != 1:
         raise ValueError(f"{model_path} must end in a scalar head, got {layers[-1].out_features}")
 
     with open(out_path, "wb") as f:
         f.write(MAGIC)
-        f.write(struct.pack("<II", INPUT_DIM, len(layers)))
+        f.write(struct.pack("<II", input_dim, len(layers)))
         for layer in layers:
             f.write(struct.pack("<II", layer.in_features, layer.out_features))
         for layer in layers:
@@ -71,13 +78,13 @@ def export(model_path: str = DEFAULT_WEIGHTS_PATH, out_path: str = DEFAULT_BIN_P
 
     shapes = " -> ".join([str(layers[0].in_features)] + [str(x.out_features) for x in layers])
     print(f"exported {model_path}")
-    print(f"      -> {out_path}  ({shapes}, {len(ALPHABET)}-tile alphabet)")
+    print(f"      -> {out_path}  ({shapes}, {len(alphabet)}-tile alphabet)")
     return out_path
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model-path", default=DEFAULT_WEIGHTS_PATH)
-    ap.add_argument("--out", default=DEFAULT_BIN_PATH)
+    ap.add_argument("--out", help="Output binary (defaults to the checkpoint's sibling .bin)")
     args = ap.parse_args()
     export(args.model_path, args.out)

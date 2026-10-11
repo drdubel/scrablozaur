@@ -527,8 +527,20 @@ web bot calls the same decision functions the CLI players do, and
 
 ### Difficulty
 
-There are no named tiers. Difficulty is one custom level, an integer `1..10`,
-set with a slider in the setup dialog (and per bot in automatic sandbox):
+The web UI defaults to the strongest supported bot. Setup's **Advanced** section
+is collapsed by default and offers a 1–100% strength slider, neural-network
+rack evaluation, and opponent-response simulation. The chosen settings apply to
+competitive play, sandbox bots, and benchmarks. Automatic sandbox and benchmark
+setup also offer collapsed Advanced controls per player, overriding the shared
+defaults. Player settings survive changes to player count and setup reopens;
+**Defaults** restores the shared settings. Neural options are disabled for
+languages without a trained leave net.
+
+Strength is move quality, not a win probability: below 100%, the bot samples a
+geometrically shrinking rank window from its selected engine's candidate list.
+Reduced-strength simulation uses fewer candidates and rollouts as strength
+decreases. At 100% it runs that engine's full decision, including endgame search. The API
+accepts `strength` (1–100, default 100) alongside the existing levels `1..10`:
 
 | Level | How the move is chosen |
 |:---|:---|
@@ -539,9 +551,7 @@ set with a slider in the setup dialog (and per bot in automatic sandbox):
 `src/strategy.py` owns the level → rank-window maths so `RankedPlayer`, the web
 bot and the benchmark all weaken identically; `web/difficulty.py` owns the level
 → engine mapping plus the descriptions served by
-`GET /api/game/difficulty-levels`, which is what the slider shows as feedback
-(what the bot will do, and what to expect from it) — so the text can't drift
-from the windows the bot actually plays by.
+`GET /api/game/difficulty-levels`, used for bot labels in the web UI.
 
 An 8-game 4-bot benchmark (`/api/benchmark`) at levels 1/3/6/8 averaged
 82 / 128 / 197 / 229 points: the dial is monotone in real play, not just on

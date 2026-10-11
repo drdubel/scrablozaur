@@ -161,3 +161,15 @@ def all_levels(spec=None) -> list[LevelInfo]:
     """Every level a game in `spec` can be played at (all of them if omitted)."""
     ceiling = MAX_LEVEL if spec is None else max_level_for(spec)
     return [describe_level(level) for level in range(MIN_LEVEL, ceiling + 1)]
+
+
+def strength_rank_window(strength: int) -> tuple[int, int]:
+    """1–100% move quality within the chosen engine's best-first ranking.
+
+    These percentages control a rank window, not a calibrated win probability.
+    Use the same geometric falloff as the legacy difficulty dial.
+    """
+    strength = max(1, min(100, strength))
+    _, weakest_rank = rank_window(MIN_LEVEL)
+    worst = max(1, round(weakest_rank ** ((100 - strength) / 99)))
+    return max(1, (worst + 1) // 2), worst

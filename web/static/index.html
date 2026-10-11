@@ -19,22 +19,16 @@
     </select>
 
     <!-- Mode picker cards -->
-    <p class="setup-section-label">Tryb gry</p>
+
     <div class="setup-mode-cards">
       <button type="button" class="mode-card mode-card--active" data-mode="competitive">
-        <span class="mode-card-icon">🎮</span>
         <span class="mode-card-name">Rywalizacja</span>
-        <span class="mode-card-desc">Ty vs. Komputer · litery z worka</span>
       </button>
       <button type="button" class="mode-card" data-mode="sandbox">
-        <span class="mode-card-icon">🔧</span>
         <span class="mode-card-name">Sandbox</span>
-        <span class="mode-card-desc">Pełna kontrola · bez losowania</span>
       </button>
       <button type="button" class="mode-card" data-mode="scan">
-        <span class="mode-card-icon">📷</span>
-        <span class="mode-card-name">Skanuj planszę</span>
-        <span class="mode-card-desc">Zdjęcie prawdziwej planszy</span>
+        <span class="mode-card-name">Skanuj</span>
       </button>
     </div>
 
@@ -47,10 +41,10 @@
     <!-- Sandbox: multi-player config -->
     <div id="setup-sandbox-config" hidden>
       <div class="sandbox-sub-toggle" role="group" aria-label="Tryb sandboxa">
-        <button type="button" class="sub-toggle-btn sub-toggle-btn--active" data-sandbox-sub="manual">✋ Ręczny</button>
-        <button type="button" class="sub-toggle-btn" data-sandbox-sub="auto">🤖 Automatyczny</button>
+        <button type="button" class="sub-toggle-btn sub-toggle-btn--active" data-sandbox-sub="manual">Ręczny</button>
+        <button type="button" class="sub-toggle-btn" data-sandbox-sub="auto">Automatyczny</button>
       </div>
-      <p id="sandbox-sub-desc" class="sandbox-sub-desc">
+      <p id="sandbox-sub-desc" class="sandbox-sub-desc" hidden>
         Ty sterujesz każdym graczem — wpisujesz słowa albo litery komputera ręcznie.
       </p>
 
@@ -69,36 +63,48 @@
       <div id="setup-benchmark-row" class="setup-benchmark-row" hidden>
         <label class="setup-field-label" for="setup-benchmark-games">Ile gier?</label>
         <input type="number" id="setup-benchmark-games" min="1" value="20" />
-        <button type="button" id="btn-run-benchmark" class="btn btn-secondary">🧪 Uruchom benchmark</button>
+        <button type="button" id="btn-run-benchmark" class="btn btn-secondary">Benchmark</button>
       </div>
     </div>
 
-    <!-- Competitive: name + difficulty -->
+    <!-- Competitive: player name -->
     <div id="setup-competitive-config">
       <label class="setup-field">
         <span class="setup-field-label">Twoje imię</span>
         <input id="setup-player-name" type="text" maxlength="20" value="Gracz" class="setup-name-input" />
       </label>
 
-      <p class="setup-section-label">Poziom trudności</p>
-      <!-- One custom-difficulty dial instead of fixed tiers; the slider and
-           its feedback text are built by js/difficulty.js from the level
-           table the server serves. -->
-      <div id="setup-difficulty-slot" class="setup-difficulty-slot"></div>
     </div>
+
+    <details id="setup-advanced" class="setup-advanced">
+      <summary>Zaawansowane</summary>
+      <div class="advanced-options">
+        <label class="strength-label" for="setup-strength">
+          Siła komputera <output id="setup-strength-value" for="setup-strength">100%</output>
+        </label>
+        <input id="setup-strength" type="range" min="1" max="100" step="1" value="100" />
+        <label class="advanced-check">
+          <input id="setup-smart" type="checkbox" checked /> Sieć neuronowa
+        </label>
+        <label class="advanced-check">
+          <input id="setup-simulation" type="checkbox" checked /> Symulacja odpowiedzi
+        </label>
+        <p id="setup-difficulty-note" class="setup-note" aria-live="polite"></p>
+      </div>
+    </details>
 
     <p id="setup-error" class="error" hidden></p>
 
     <div class="btn-row setup-btn-row">
-      <button id="btn-start-game" class="btn btn-primary btn-start">Rozpocznij grę</button>
+      <button id="btn-start-game" class="btn btn-primary btn-start">Graj</button>
     </div>
   </dialog>
 
   <header>
     <h1>Scrablozaur</h1>
     <div class="header-actions">
-      <button id="btn-undo" class="btn btn-ghost" disabled>↩ Cofnij ruch</button>
-      <button id="btn-scan-board" class="btn btn-secondary">📷 Skanuj planszę</button>
+      <button id="btn-undo" class="btn btn-ghost" disabled>Cofnij</button>
+      <button id="btn-scan-board" class="btn btn-secondary">Skanuj</button>
       <button id="btn-new-game" class="btn btn-secondary">Nowa gra</button>
     </div>
   </header>
@@ -109,7 +115,7 @@
       <!-- ── Scoreboard ───────────────────────────────────────────────────── -->
       <section id="scoreboard" class="scoreboard"></section>
 
-      <!-- ── Three-column layout: def | board | rating ───────────────────── -->
+      <!-- ── Board with definitions and move rating ───────────────────── -->
       <div class="board-layout">
 
         <!-- LEFT: word definition panel -->
@@ -149,14 +155,13 @@
 
             <!-- Human turn -->
             <section id="panel-human" class="panel" hidden>
-              <h2 id="panel-human-title">Ruch gracza</h2>
-              <p class="typing-hint">Kliknij pole startowe · pisz litery lub klikaj kafelki na stojaku · spacja zmienia kierunek · Enter zatwierdza · „Anuluj układanie” (Escape) zwalnia planszę</p>
+              <h2 id="panel-human-title" class="sr-only">Ruch gracza</h2>
               <div class="form-row">
                 <label>
-                  Kierunek <small>(spacja)</small>
+                  Kierunek
                   <select id="human-dir">
-                    <option value="true">Poziomo →</option>
-                    <option value="false">Pionowo ↓</option>
+                    <option value="true">Poziomo</option>
+                    <option value="false">Pionowo</option>
                   </select>
                 </label>
                 <div class="typing-word-wrap">
@@ -173,20 +178,22 @@
                 <!-- The only way off the board on a phone: there is no Escape
                      key there, and while a square is selected every rack tap
                      places a tile instead of picking it for exchange. -->
-                <button id="btn-cancel-typing" class="btn btn-secondary" hidden>✕ Anuluj układanie</button>
-                <button id="btn-hints" class="btn btn-ghost">Pokaż podpowiedzi</button>
+                <button id="btn-cancel-typing" class="btn btn-secondary" hidden>Anuluj</button>
+                <button id="btn-hints" class="btn btn-ghost">Podpowiedzi</button>
                 <button id="btn-exchange-human" class="btn btn-ghost">Wymień litery</button>
-                <button id="btn-skip-human" class="btn btn-ghost">Pomiń ruch</button>
+                <button id="btn-skip-human" class="btn btn-ghost">Pomiń</button>
                 <button id="btn-pass-human" class="btn btn-danger">Poddaj się</button>
               </div>
-              <p id="exchange-hint" class="typing-hint">Aby wymienić litery: zakończ układanie słowa („Anuluj układanie”), kliknij litery na stojaku, potem naciśnij „Wymień litery”.</p>
+              <details class="help-details"><summary>Jak wymienić litery?</summary>
+                <p id="exchange-hint" class="typing-hint">Anuluj układanie, zaznacz litery na stojaku i wybierz „Wymień litery”.</p>
+              </details>
               <p id="human-error" class="error" hidden></p>
               <div id="hint-toolbar" class="list-toolbar" hidden>
-                <span class="list-toolbar-label">Sortuj</span>
+
                 <div id="hint-sort" class="segmented" role="group" aria-label="Sortuj podpowiedzi">
-                  <button type="button" class="seg-btn seg-btn--active" data-value="score">🏆 Punkty</button>
-                  <button type="button" class="seg-btn" data-value="smart">🧠 Strateg</button>
-                  <button type="button" class="seg-btn" data-value="sim">🔮 Analityk</button>
+                  <button type="button" class="seg-btn seg-btn--active" data-value="score">Punkty</button>
+                  <button type="button" class="seg-btn" data-value="smart">Strateg</button>
+                  <button type="button" class="seg-btn" data-value="sim">Analityk</button>
                 </div>
               </div>
               <ol id="hint-list" class="hint-list" hidden></ol>
@@ -194,23 +201,23 @@
 
             <!-- Computer turn (sandbox only) -->
             <section id="panel-computer" class="panel" hidden>
-              <h2 id="panel-computer-title">Ruch komputera</h2>
+              <h2 id="panel-computer-title" class="sr-only">Ruch komputera</h2>
               <div class="form-row">
                 <label>
                   Litery komputera
                   <input id="computer-letters" type="text" maxlength="7" autocomplete="off"
                          placeholder="np. aeinrst" />
                 </label>
-                <button id="btn-suggest" class="btn btn-primary">Znajdź słowa</button>
-                <button id="btn-skip-computer" class="btn btn-ghost">Pomiń ruch</button>
+                <button id="btn-suggest" class="btn btn-primary">Szukaj</button>
+                <button id="btn-skip-computer" class="btn btn-ghost">Pomiń</button>
               </div>
               <p id="suggest-error" class="error" hidden></p>
               <div id="suggestion-toolbar" class="list-toolbar" hidden>
-                <span class="list-toolbar-label">Sortuj</span>
+
                 <div id="suggestion-sort" class="segmented" role="group" aria-label="Sortuj propozycje">
-                  <button type="button" class="seg-btn seg-btn--active" data-value="score">🏆 Punkty</button>
-                  <button type="button" class="seg-btn" data-value="smart">🧠 Strateg</button>
-                  <button type="button" class="seg-btn" data-value="sim">🔮 Analityk</button>
+                  <button type="button" class="seg-btn seg-btn--active" data-value="score">Punkty</button>
+                  <button type="button" class="seg-btn" data-value="smart">Strateg</button>
+                  <button type="button" class="seg-btn" data-value="sim">Analityk</button>
                 </div>
               </div>
               <ol id="suggestion-list" class="suggestion-list" hidden></ol>
@@ -269,11 +276,10 @@
       </div>
 
       <div id="scan-step-upload">
-      <p class="setup-section-label">Zrób zdjęcie planszy Scrabble albo wybierz plik ze zdjęciem</p>
-      <p class="scan-hint">Sfotografuj całą planszę z góry, przy dobrym oświetleniu.</p>
+      <p class="scan-hint">Zdjęcie całej planszy z góry.</p>
       <input type="file" id="scan-file-input" accept="image/*" capture="environment" hidden />
       <div class="btn-row setup-btn-row">
-        <button id="btn-scan-choose" class="btn btn-primary">📷 Wybierz zdjęcie</button>
+        <button id="btn-scan-choose" class="btn btn-primary">Wybierz zdjęcie</button>
       </div>
       <p id="scan-upload-error" class="error" hidden></p>
     </div>
@@ -298,19 +304,17 @@
 
     <div id="scan-step-review" hidden>
       <p class="setup-section-label">Sprawdź odczytaną planszę</p>
-      <p class="scan-hint">
-        Kliknij pole, aby poprawić literę (Backspace czyści, Escape anuluje zaznaczenie).
-        Pola oznaczone na czerwono mogły zostać odczytane błędnie; przerywana niebieska ramka
-        oznacza pole przeniesione z poprzedniego zdjęcia, którego to zdjęcie nie potwierdziło.
-      </p>
+      <details class="help-details"><summary>Pomoc</summary>
+        <p>Kliknij pole, aby poprawić literę. Czerwona ramka: niepewny odczyt. Niebieska: pole z poprzedniego zdjęcia.</p>
+      </details>
       <p id="scan-review-error" class="error" hidden></p>
       <label class="scan-save-training-label">
         <input type="checkbox" id="scan-save-training-checkbox" />
-        Zapisz to zdjęcie i planszę do zbioru treningowego OCR
+        Zapisz do treningu OCR
       </label>
       <div class="btn-row setup-btn-row">
         <button id="btn-scan-rescan" class="btn btn-ghost">↺ Inne zdjęcie</button>
-        <button id="btn-scan-confirm" class="btn btn-primary">Zatwierdź planszę ▶</button>
+        <button id="btn-scan-confirm" class="btn btn-primary">Zatwierdź</button>
       </div>
     </div>
 
@@ -319,22 +323,22 @@
       <p class="setup-section-label">Twoje litery</p>
       <div class="form-row">
         <input id="scan-rack-input" type="text" maxlength="7" autocomplete="off" placeholder="np. aeinrst" />
-        <button id="btn-scan-suggest" class="btn btn-primary">Znajdź słowa</button>
+        <button id="btn-scan-suggest" class="btn btn-primary">Szukaj</button>
       </div>
       <p id="scan-suggest-error" class="error" hidden></p>
       <div id="scan-suggestion-toolbar" class="list-toolbar" hidden>
-        <span class="list-toolbar-label">Sortuj</span>
+
         <div id="scan-suggestion-sort" class="segmented" role="group" aria-label="Sortuj propozycje">
-          <button type="button" class="seg-btn seg-btn--active" data-value="score">🏆 Punkty</button>
-          <button type="button" class="seg-btn" data-value="smart">🧠 Strateg</button>
-          <button type="button" class="seg-btn" data-value="sim">🔮 Analityk</button>
+          <button type="button" class="seg-btn seg-btn--active" data-value="score">Punkty</button>
+          <button type="button" class="seg-btn" data-value="smart">Strateg</button>
+          <button type="button" class="seg-btn" data-value="sim">Analityk</button>
         </div>
       </div>
       <ol id="scan-suggestion-list" class="hint-list scan-suggestion-list" hidden></ol>
 
       <div class="btn-row setup-btn-row">
-        <button id="btn-scan-next-photo" class="btn btn-secondary">📷 Zrób kolejne zdjęcie</button>
-        <button id="btn-scan-new-session" class="btn btn-ghost">🗑 Nowa sesja</button>
+        <button id="btn-scan-next-photo" class="btn btn-secondary">Kolejne zdjęcie</button>
+        <button id="btn-scan-new-session" class="btn btn-ghost">Nowa sesja</button>
       </div>
     </div>
     </div><!-- #scan-view -->

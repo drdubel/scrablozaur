@@ -26,7 +26,7 @@ _jobs: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 _jobs_lock = threading.Lock()
 
 
-def _run_job(job_id: str, player_specs: list[tuple[str, int]], games: int, language: str) -> None:
+def _run_job(job_id: str, player_specs: list[tuple[str, int, int]], games: int, language: str) -> None:
     def on_game_done(done: int) -> None:
         with _jobs_lock:
             _jobs[job_id]["games_done"] = done
@@ -45,7 +45,7 @@ def _run_job(job_id: str, player_specs: list[tuple[str, int]], games: int, langu
 @router.post("/start", response_model=BenchmarkJobStartResponse)
 async def start_benchmark(body: BenchmarkRequest) -> BenchmarkJobStartResponse:
     pack = resolve_language(body.language)
-    player_specs = [(p.name, p.difficulty) for p in body.players]
+    player_specs = [(p.name, p.difficulty, p.strength) for p in body.players]
     job_id = str(uuid.uuid4())
     with _jobs_lock:
         _jobs[job_id] = {
@@ -78,6 +78,7 @@ def _to_response(result: BenchmarkResult) -> BenchmarkResultResponse:
                     score=p.score,
                     letters=p.letters,
                     difficulty=p.difficulty,
+                    strength=p.strength,
                 )
                 for p in bg.final_players
             ],
@@ -106,6 +107,7 @@ def _to_response(result: BenchmarkResult) -> BenchmarkResultResponse:
             BenchmarkPlayerStats(
                 name=s.name,
                 difficulty=s.difficulty,
+                strength=s.strength,
                 games_played=s.games_played,
                 wins=s.wins,
                 ties=s.ties,

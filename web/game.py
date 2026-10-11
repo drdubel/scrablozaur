@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 
 from scrablozaur import Board, Dawg, set_num_threads
-from web.difficulty import DEFAULT_LEVEL, EngineMode, clamp_level, engine_mode, max_level_for
+from web.difficulty import DEFAULT_LEVEL, EngineMode, clamp_level, engine_mode, max_level_for, strength_rank_window
 from web.engine import DEFAULT_LANGUAGE, get_pack
 
 # smart_player is a standalone script-style package (like board_reader, see
@@ -103,6 +103,7 @@ class Player:
     # Monte-Carlo player, and every step in between actually exists -- this
     # used to be a four-value enum with unadjustable gaps.
     difficulty: int = DEFAULT_LEVEL
+    strength: int = 100
 
 
 @dataclass
@@ -257,7 +258,7 @@ class SessionStore:
         # leave net there is no level 9 or 10 to give anyone.
         ceiling = max_level_for(pack.spec)
         player_list = [
-            Player(p.name, p.is_computer, difficulty=clamp_level(p.difficulty, ceiling))
+            Player(p.name, p.is_computer, difficulty=clamp_level(p.difficulty, ceiling), strength=p.strength)
             for p in (players or _DEFAULT_PLAYERS)
         ]
         session = _deal_new_game(player_list, game_mode, pack)
@@ -463,7 +464,31 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
     level = session.current_player.difficulty
     mode = engine_mode(level)
 
-    if mode is not EngineMode.RANKED:
+    if session.current_player.strength < 100:
+        # Weaken the selected engine's own ranking, including neural/simulation
+        # rankings, rather than silently replacing it with a different bot.
+        best, worst = strength_rank_window(session.current_player.strength)
+        sort = "score" if mode is EngineMode.RANKED else mode.value
+        # Weak simulations need only enough candidates for their rank window,
+        # not the full 50-candidate, unpruned hint list. Scale sampling effort
+        # with strength; the 100% bot keeps its full, pruned search below.
+        if mode is EngineMode.SIM:
+            candidates = max(20, worst)
+            iterations = max(8, round(SUGGEST_SIM_ITERATIONS * session.current_player.strength / 100))
+            suggestions = rank_suggestions(
+                session.board, dawg, session.current_player.letters, candidates, sort,
+                sim_iterations=iterations,
+            )
+        else:
+            candidates = worst if mode is EngineMode.RANKED else max(50, worst)
+            suggestions = rank_suggestions(session.board, dawg, session.current_player.letters, candidates, sort)
+        if suggestions:
+            hi = min(worst, len(suggestions))
+            lo = min(best, hi)
+            sug = suggestions[random.randint(lo, hi) - 1]
+        else:
+            sug = None
+    elif mode is not EngineMode.RANKED:
         # The top levels make the full decision themselves rather than sampling
         # a shortlist -- they weigh the leave, and search the endgame outright.
         sug = _pick_engine_move(session, dawg, mode)
@@ -563,7 +588,8 @@ def has_leave_net(language: str) -> bool:
 
 
 def rank_suggestions(
-    board: Board, dawg: Dawg, letters: str, n: int, sort: str = "score"
+    board: Board, dawg: Dawg, letters: str, n: int, sort: str = "score",
+    *, sim_iterations: int = SUGGEST_SIM_ITERATIONS,
 ) -> list[dict]:
     """Top `n` plays, ordered by `sort`.
 
@@ -596,9 +622,9 @@ def rank_suggestions(
             get_net(_leave_net_path(board.lang.code), lang=board.lang),
             letters,
             candidates=max(n, 1),
-            iterations=SUGGEST_SIM_ITERATIONS,
+            iterations=sim_iterations,
             plies=1,
-            batch=SUGGEST_SIM_ITERATIONS,
+            batch=sim_iterations,
         )
         return [
             {
@@ -690,6 +716,7 @@ class BenchmarkMoveRecord:
 class BenchmarkPlayerStats:
     name: str
     difficulty: int
+    strength: int = 100
     games_played: int = 0
     wins: int = 0
     ties: int = 0
@@ -752,12 +779,13 @@ def _init_worker(engine_threads: int) -> None:
         pass  # pool already built -- nothing to do in a fresh worker anyway
 
 
-def _simulate_game(player_specs: list[tuple[str, int]], language: str) -> _SimulatedGame:
+def _simulate_game(player_specs: list[tuple[str, int, int]], language: str) -> _SimulatedGame:
     # `get_pack` caches per process, so the first game in a worker pays the
     # dictionary load and the rest are free -- and a worker that has served two
     # languages simply holds both, which is cheaper than a pool per language.
     pack = get_pack(language)
-    players = [Player(name=name, is_computer=True, difficulty=level) for name, level in player_specs]
+    players = [Player(name=name, is_computer=True, difficulty=level, strength=strength)
+               for name, level, strength in player_specs]
     session = _deal_new_game(players, GameMode.SANDBOX_AUTO, pack)
 
     moves: list[BenchmarkMoveRecord] = []
@@ -874,20 +902,21 @@ def _benchmark_pool() -> Iterator[ProcessPoolExecutor]:
 
 
 def run_benchmark(
-    player_specs: list[tuple[str, int]],
+    player_specs: list[tuple[str, int, int]],
     games: int,
     on_game_done: Callable[[int], None] | None = None,
     language: str = DEFAULT_LANGUAGE,
 ) -> BenchmarkResult:
     """Simulate *games* full SANDBOX_AUTO games with the given (name,
-    level) players end-to-end using the same engine primitives as a
+    level, strength) players end-to-end using the same engine primitives as a
     live game (_deal_new_game + computer_auto_play), never touching
     SessionStore. Games are independent, so they're farmed out across a
     process pool (see _benchmark_pool) instead of run one at a time. Returns
     aggregate per-player stats plus the full move-by-move detail of whichever
     single game had the highest final score for any one player."""
     start = time.perf_counter()
-    stats = [BenchmarkPlayerStats(name=name, difficulty=level) for name, level in player_specs]
+    stats = [BenchmarkPlayerStats(name=name, difficulty=level, strength=strength)
+             for name, level, strength in player_specs]
     best_game: BenchmarkBestGame | None = None
     best_score = -1
     total_moves = 0

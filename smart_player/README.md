@@ -317,6 +317,9 @@ The leave net runs *in Rust* (`export_weights.py` -> `models/<lang>/leave_value.
 calling back into PyTorch for a 13k-parameter MLP would cost far more in FFI and
 GIL traffic than its ~10k multiply-adds. The `.pt` stays the source of truth and
 `sim_player.get_net` re-exports automatically when it is newer than the `.bin`.
+Export uses the checkpoint's own alphabet and input width, so a web process can
+re-export English and Polish models regardless of its default language. An
+explicit `--model-path` defaults to that checkpoint's sibling `.bin`.
 Parity against PyTorch is 2e-6 on real feature vectors.
 
 **Ply parity matters more than depth.** Measured against `smart`:

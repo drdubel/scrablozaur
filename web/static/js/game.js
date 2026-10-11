@@ -30,17 +30,13 @@ class GameController {
     ];
 
     // "Automatyczny" sandbox sub-mode: 2-4 computer players, each with its
-    // own difficulty level, no human -- a distinct row shape from manual
+    // advanced settings, no human -- a distinct row shape from manual
     // sandbox's name+radio rows, remembered separately across dialog reopens.
     this._sandboxSubMode  = 'manual';
     this._autoPlayerConfig = [
-      { name: 'Gracz 1', difficulty: 2 },
-      { name: 'Gracz 2', difficulty: 8 },
+      { name: 'Gracz 1' },
+      { name: 'Gracz 2' },
     ];
-
-    // Competitive opponent's level, remembered across dialog reopens. The
-    // slider itself is built in _bindElements (it needs the level table).
-    this._competitiveLevel = Difficulty.default;
 
     // Live sandbox_auto play: move log + autoplay loop state.
     this._autoMoveLog    = [];
@@ -123,8 +119,13 @@ class GameController {
     this._setupCount        = document.getElementById('setup-count');
     this._setupPlayers      = document.getElementById('setup-players');
     this._inPlayerName      = document.getElementById('setup-player-name');
-    this._elDifficultySlot  = document.getElementById('setup-difficulty-slot');
-    this._buildDifficultySlider();
+    this._advancedOptions   = document.getElementById('setup-advanced');
+    this._inStrength        = document.getElementById('setup-strength');
+    this._outStrength       = document.getElementById('setup-strength-value');
+    this._inSmart           = document.getElementById('setup-smart');
+    this._inSimulation      = document.getElementById('setup-simulation');
+    this._elDifficultyNote  = document.getElementById('setup-difficulty-note');
+    this._updateDifficultyNote();
     this._btnStartGame      = document.getElementById('btn-start-game');
     this._elSetupError      = document.getElementById('setup-error');
 
@@ -148,15 +149,15 @@ class GameController {
   }
 
   /** Switching language changes the point table the board draws with and,
-   * where no leave net exists for it, how far the difficulty slider goes --
+   * where no leave net exists for it, the strongest available difficulty --
    * so the level table is re-fetched for the new language. */
   async _onLanguageChange(code) {
     this._language = code;
     this._board.setLetterValues(Languages.letterValues(code));
     this._syncSortModeAvailability();
+    this._updateDifficultyNote();
     await Difficulty.load(this._api, code);
-    this._competitiveLevel = Difficulty.clamp(this._competitiveLevel);
-    this._buildDifficultySlider();
+    this._updateDifficultyNote();
     this._buildSetupRows(parseInt(this._setupCount.value, 10));
   }
 
@@ -164,6 +165,7 @@ class GameController {
   onLanguagesLoaded() {
     this._language = Languages.default;
     this._buildLanguagePicker();
+    this._updateDifficultyNote();
     this._syncSortModeAvailability();
   }
 
@@ -187,23 +189,33 @@ class GameController {
     }
   }
 
-  _buildDifficultySlider() {
-    this._elDifficultySlot.innerHTML = '';
-    this._diffSlider = Difficulty.createSlider({
-      value: this._competitiveLevel,
-      onChange: level => { this._competitiveLevel = level; },
-    });
-    this._elDifficultySlot.appendChild(this._diffSlider.el);
+  _readComputerOptions(options = null) {
+    const settings = options ?? {
+      neural: this._inSmart.checked, simulation: this._inSimulation.checked, strength: Number(this._inStrength.value),
+    };
+    const neural = Languages.hasLeaveNet(this._language) && settings.neural;
+    const difficulty = neural ? (settings.simulation ? 10 : 9) : 8;
+    return { difficulty: Math.min(difficulty, Languages.maxLevel(this._language)), strength: settings.strength };
   }
 
-  /** The level table is fetched asynchronously (main.js) but the setup
-   * controls are built in the constructor, so anything showing a level's name
-   * or description has to be rebuilt once it lands. That way a slow
-   * /difficulty-levels response degrades to plain "Poziom N" labels for a
-   * moment instead of breaking the dialog. */
+  _readAutoPlayerOptions(row) {
+    return this._readComputerOptions(this._autoPlayerConfig[Number(row.dataset.playerIndex)]?.advanced);
+  }
+
+  _updateDifficultyNote() {
+    const available = Languages.hasLeaveNet(this._language);
+    this._inSmart.disabled = !available;
+    this._inSimulation.disabled = !available || !this._inSmart.checked;
+    this._outStrength.value = `${this._inStrength.value}%`;
+    const { difficulty } = this._readComputerOptions();
+    this._elDifficultyNote.textContent = !available ? 'Brak modelu dla tego języka.'
+      : difficulty === 10 ? 'Sieć + symulacja' : difficulty === 9 ? 'Sieć neuronowa' : 'Najlepsza punktacja';
+    this._setupPlayers?.querySelectorAll('.setup-auto-player').forEach(row => row.renderAdvanced());
+  }
+
+  /** Refresh labels after the server's difficulty descriptions arrive. */
   onDifficultyLevelsLoaded() {
-    this._competitiveLevel = Difficulty.clamp(this._competitiveLevel);
-    this._buildDifficultySlider();
+    this._updateDifficultyNote();
     this._buildSetupRows(parseInt(this._setupCount.value, 10));
     if (this._lastState) {
       this._renderScoreboard(this._lastState);
@@ -248,31 +260,62 @@ class GameController {
     }
   }
 
-  /** Automatyczny sandbox: every row is a computer with its own difficulty
-   * level (no radio -- there's no human to designate). Each row carries a
-   * compact copy of the same slider the competitive setup uses, with the
-   * feedback text moved into the control's tooltip; the chosen level lives on
-   * the row's own dataset since there's no single underlying input to read it
-   * back from. */
+  /** Independent bot settings are shared by live automatic games and benchmarks. */
   _buildAutoSetupRows(count) {
     this._setupPlayers.innerHTML = '';
-    const defaults = this._autoPlayerConfig;
     for (let i = 0; i < count; i++) {
-      const def = defaults[i] ?? { name: `Gracz ${i + 1}`, difficulty: Difficulty.default };
+      const config = this._autoPlayerConfig[i] ??= { name: `Gracz ${i + 1}`, advanced: null };
       const row = document.createElement('div');
-      row.className = 'setup-player-row';
-      row.dataset.difficulty = String(Difficulty.clamp(def.difficulty));
+      row.className = 'setup-player-row setup-auto-player';
+      row.dataset.playerIndex = String(i);
       const num = document.createElement('span');
       num.className = 'player-num'; num.textContent = `${i + 1}.`;
       const inp = document.createElement('input');
-      inp.type = 'text'; inp.maxLength = 20; inp.value = def.name;
+      inp.type = 'text'; inp.maxLength = 20; inp.value = config.name;
       inp.placeholder = `Gracz ${i + 1}`;
-      const slider = Difficulty.createSlider({
-        value: def.difficulty,
-        variant: 'compact',
-        onChange: level => { row.dataset.difficulty = String(level); },
-      });
-      row.appendChild(num); row.appendChild(inp); row.appendChild(slider.el);
+      inp.setAttribute('aria-label', `Imię gracza ${i + 1}`);
+      inp.addEventListener('input', () => { config.name = inp.value; });
+      const advanced = document.createElement('details');
+      advanced.className = 'player-advanced setup-advanced';
+      // Only a numeric seat index is interpolated; user names remain text/input values.
+      advanced.innerHTML = `
+        <summary>Zaawansowane</summary>
+        <div class="advanced-options">
+          <label class="strength-label" for="player-strength-${i}">Siła komputera
+            <output class="player-strength-value" for="player-strength-${i}"></output>
+          </label>
+          <input id="player-strength-${i}" class="player-strength" type="range" min="1" max="100" step="1" />
+          <label class="advanced-check"><input class="player-smart" type="checkbox" /> Sieć neuronowa</label>
+          <label class="advanced-check"><input class="player-simulation" type="checkbox" /> Symulacja odpowiedzi</label>
+          <button type="button" class="btn btn-ghost btn-sm player-defaults">Domyślne</button>
+        </div>`;
+      const strength = advanced.querySelector('.player-strength');
+      const value = advanced.querySelector('.player-strength-value');
+      const smart = advanced.querySelector('.player-smart');
+      const simulation = advanced.querySelector('.player-simulation');
+      const reset = advanced.querySelector('.player-defaults');
+      row.renderAdvanced = () => {
+        const settings = config.advanced ?? {
+          strength: Number(this._inStrength.value), neural: this._inSmart.checked, simulation: this._inSimulation.checked,
+        };
+        strength.value = String(settings.strength);
+        value.value = `${settings.strength}%`;
+        smart.checked = settings.neural;
+        simulation.checked = settings.simulation;
+        smart.disabled = !Languages.hasLeaveNet(this._language);
+        simulation.disabled = smart.disabled || !smart.checked;
+        reset.hidden = !config.advanced;
+      };
+      const save = () => {
+        config.advanced = { strength: Number(strength.value), neural: smart.checked, simulation: simulation.checked };
+        row.renderAdvanced();
+      };
+      strength.addEventListener('input', save);
+      smart.addEventListener('change', save);
+      simulation.addEventListener('change', save);
+      reset.addEventListener('click', () => { config.advanced = null; row.renderAdvanced(); });
+      row.renderAdvanced();
+      row.append(num, inp, advanced);
       this._setupPlayers.appendChild(row);
     }
   }
@@ -283,7 +326,7 @@ class GameController {
       btn.classList.toggle('sub-toggle-btn--active', btn.dataset.sandboxSub === mode);
     });
     this._elSandboxSubDesc.textContent = mode === 'auto'
-      ? 'Komputery grają same, każdy z własnym poziomem trudności — obserwuj partię albo uruchom benchmark.'
+      ? 'Obserwuj grę komputerów lub uruchom benchmark.'
       : 'Ty sterujesz każdym graczem — wpisujesz słowa albo litery komputera ręcznie.';
     this._elBenchmarkRow.hidden = mode !== 'auto';
     this._buildSetupRows(parseInt(this._setupCount.value, 10));
@@ -306,15 +349,17 @@ class GameController {
     this._setSandboxSubMode(this._sandboxSubMode);
     this._syncModeUI();
     this._hideError(this._elSetupError);
+    this._advancedOptions.open = false;
+    this._updateDifficultyNote();
     this._dialog.showModal();
   }
 
   _readSetupConfig() {
     const mode = this._setupMode.value;
+    const computerOptions = this._readComputerOptions();
     if (mode === 'competitive') {
       const name = this._inPlayerName.value.trim() || 'Gracz';
-      const difficulty = this._diffSlider.getLevel();
-      return { players: [{ name, is_computer: false }], game_mode: 'competitive', difficulty, language: this._language };
+      return { players: [{ name, is_computer: false }], game_mode: 'competitive', ...computerOptions, language: this._language };
     }
     const rows = [...this._setupPlayers.querySelectorAll('.setup-player-row')];
     if (this._sandboxSubMode === 'auto') {
@@ -322,7 +367,7 @@ class GameController {
         players: rows.map((row, i) => ({
           name: row.querySelector('input[type="text"]').value.trim() || `Gracz ${i + 1}`,
           is_computer: true,
-          difficulty: Number(row.dataset.difficulty),
+          ...this._readAutoPlayerOptions(row),
         })),
         game_mode: 'sandbox_auto',
         language: this._language,
@@ -334,6 +379,7 @@ class GameController {
       players: rows.map((row, i) => ({
         name: row.querySelector('input[type="text"]').value.trim() || `Gracz ${i + 1}`,
         is_computer: i === checked,
+        ...computerOptions,
       })),
       game_mode: 'sandbox',
       language: this._language,
@@ -343,6 +389,9 @@ class GameController {
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   _bindEvents() {
+    this._inStrength.addEventListener('input', () => this._updateDifficultyNote());
+    this._inSmart.addEventListener('change', () => this._updateDifficultyNote());
+    this._inSimulation.addEventListener('change', () => this._updateDifficultyNote());
     this._btnNewGame.addEventListener('click', () => this._openSetupDialog());
     this._btnUndo.addEventListener('click', () => this._undoMove());
     this._setupMode.addEventListener('change', () => this._syncModeUI());
@@ -527,8 +576,7 @@ class GameController {
     try {
       this._lastMode = config.game_mode === 'sandbox_auto' ? 'sandbox' : config.game_mode;
       if (config.game_mode === 'competitive') this._lastHumanName = config.players[0].name;
-      else if (config.game_mode === 'sandbox_auto') this._autoPlayerConfig = config.players;
-      else this._playerConfig = config.players;
+      else if (config.game_mode !== 'sandbox_auto') this._playerConfig = config.players;
       this._stopAutoplay();
       const state = await this._api.resetGame(config);
       this._dialog.close();
@@ -653,7 +701,7 @@ class GameController {
       dot.className = `player-dot player-dot-${i}`;
       const diffBadge = state.game_mode === 'sandbox_auto' ? ` ${Difficulty.emoji(p.difficulty)}` : '';
       lbl.appendChild(dot);
-      lbl.appendChild(document.createTextNode(`${p.name}${p.is_computer ? ' 🤖' : ''}${diffBadge}`));
+      lbl.appendChild(document.createTextNode(`${p.name}${diffBadge}`));
       const val = document.createElement('span');
       val.className = 'score-value'; val.textContent = p.score;
       block.appendChild(lbl); block.appendChild(val);
@@ -770,8 +818,8 @@ class GameController {
     const m = state.last_computer_move;
     if (!m) { this._elCompMoveInfo.hidden = true; return; }
     this._elCompMoveInfo.textContent = m.passed
-      ? '🤖 Komputer spasował (brak możliwych ruchów).'
-      : `🤖 Komputer zagrał ${m.word.toUpperCase()} za ${m.score} pkt.`;
+      ? 'Komputer pasuje.'
+      : `${m.word.toUpperCase()} · ${m.score} pkt`;
     this._elCompMoveInfo.hidden = false;
   }
 
@@ -811,7 +859,7 @@ class GameController {
 
   _renderAutoPanel(state) {
     const current = state.players[state.current_player_idx];
-    this._elAutoCurrent.textContent = `Na ruchu: ${current.name} (${Difficulty.label(current.difficulty)})`;
+    this._elAutoCurrent.textContent = `Na ruchu: ${current.name} (${current.strength ?? 100}%)`;
   }
 
   /** Append the move that was just made to the log. Reads the mover off
@@ -1254,7 +1302,7 @@ class GameController {
     this._board.clearHint();
     if (this._elHintList) { this._elHintList.hidden = true; this._elHintList.innerHTML = ''; }
     if (this._elHintBar) this._elHintBar.hidden = true;
-    if (this._btnHints) this._btnHints.textContent = 'Pokaż podpowiedzi';
+    if (this._btnHints) this._btnHints.textContent = 'Podpowiedzi';
   }
 
   async _loadHints() {
@@ -1263,7 +1311,7 @@ class GameController {
       const res = await this._api.getHints(this._elHintSort?.value ?? 'score');
       this._hints = res.suggestions;
       this._renderHintList();
-      this._btnHints.textContent = 'Ukryj podpowiedzi';
+      this._btnHints.textContent = 'Ukryj';
     } catch (err) {
       this._showError(this._elHumanError, err.detail ?? err.message);
     } finally {
