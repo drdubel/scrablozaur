@@ -130,7 +130,7 @@ def main() -> None:
         text=True,
         check=True,
     )
-    print(f"device: {model.stdout.strip()}")
+    print(f"device: {model.stdout.strip()}", flush=True)
 
     binary = build(args.min_sdk)
     files, dawg, gaddag, net = data_files(args.lang)
@@ -164,7 +164,7 @@ def main() -> None:
             out = subprocess.run(
                 adb + ["shell", command], capture_output=True, text=True, check=True
             ).stdout
-            print(out.strip())
+            print(out.strip(), flush=True)
             stats = {}
             for label, key in (("bag not empty", "mid"), ("bag empty", "end")):
                 m = re.search(

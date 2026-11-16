@@ -492,11 +492,22 @@ cargo run --release -- lookup       pl words/pl/dawg.bin hamulec             # s
 cargo run --release -- bench        pl words/pl/dawg.bin words/pl/words.txt  # lookup throughput
 cargo run --release -- gen-verify   pl words/pl/dawg.bin words/pl/gaddag.bin [games]  # GADDAG vs legacy parity
 cargo run --release -- gen-bench    pl words/pl/dawg.bin words/pl/gaddag.bin [games]  # GADDAG vs legacy speed
+cargo run --release -- bot-bench    pl words/pl/dawg.bin words/pl/gaddag.bin \
+    smart_player/models/pl/leave_value.bin 10 [games]                         # a bot's time per move
 
 # `build`/`build-gaddag` derive everything from the word list. The rest read a
 # `.bin`, so they need the alphabet: they take a language code (a definition in
 # `languages/<code>.json`) as their first argument.
 ```
+
+`bot-bench` plays seeded automatic games at one level (1–10; pass `-` for the
+leave net of a language without one) through the same `GameSession` the
+Android app plays, and reports the time per move, keeping bag-empty moves (the
+endgame search) apart. It uses `RAYON_NUM_THREADS` threads and prints each
+game's final scores and a board digest, so runs at different thread counts can
+be checked to have played identical games. `android/tools/device_bench.py` runs
+it on a connected phone, cross-compiled exactly as the app's engine is, for
+every level and thread count asked for.
 
 Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):
 

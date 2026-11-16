@@ -3725,6 +3725,13 @@ impl Board {
             let batch = opts.batch.max(1).min(opts.iterations - done);
             // Each iteration gets its own shuffle, shared by every candidate in
             // it, and derived from the seed so a run is reproducible.
+            //
+            // One task per rollout, not per iteration: an iteration's 20-odd
+            // rollouts as one task let a slow core hold up the whole batch. On
+            // a Galaxy A54 (4 fast + 4 efficiency cores) a level-10 move took
+            // 1.39 s with 8 threads that way, slower than with 6; per rollout
+            // it takes 0.87 s (and 156 -> 88 ms on an Apple M5 Max). Collection
+            // keeps the order, so every result is the same either way.
             let results: Vec<Vec<f64>> = gen_pool().install(|| {
                 (done..done + batch)
                     .into_par_iter()
@@ -3735,7 +3742,7 @@ impl Board {
                         let mut shuffled = pool.clone();
                         shuffle(&mut shuffled, &mut rng);
                         cands
-                            .iter()
+                            .par_iter()
                             .map(|c| {
                                 self.rollout(
                                     dawg,
@@ -4447,6 +4454,10 @@ fn cmd_bot_bench(
     // With the bag empty the bots search the endgame instead, a different cost.
     let mut midgame = Vec::new();
     let mut endgame = Vec::new();
+    // Final scores and a digest of the final board, so runs can be checked to
+    // have played the same games (across thread counts, or before and after
+    // an optimisation that must not change any decision).
+    let mut played = Vec::new();
     for g in 0..games {
         let seats = vec![
             PlayerConfig::computer("A", level, 100),
@@ -4466,6 +4477,17 @@ fn cmd_bot_bench(
                 midgame.push(ms);
             }
         }
+        let state = session.state();
+        // FNV-1a over the final grid.
+        let digest = state
+            .board
+            .iter()
+            .flatten()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, &ch| {
+                (h ^ ch as u64).wrapping_mul(0x0100_0000_01b3)
+            });
+        let scores: Vec<String> = state.players.iter().map(|p| p.score.to_string()).collect();
+        played.push(format!("{} {digest:016x}", scores.join("-")));
     }
 
     let summary = |label: &str, times: &mut Vec<f64>| {
@@ -4492,6 +4514,7 @@ fn cmd_bot_bench(
     );
     summary("bag not empty", &mut midgame);
     summary("bag empty    ", &mut endgame);
+    println!("  games played : {}", played.join(" | "));
     Ok(())
 }
 
