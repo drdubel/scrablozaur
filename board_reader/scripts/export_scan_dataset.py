@@ -4,10 +4,15 @@ for the learned scanner.
 For each photo in test/in/ that has ground truth, runs the board_reader stages
 and writes to --out (default test/derived/scan_dataset/):
 
-    board<i>.jpg   the playing grid straightened by ONE homography from its four
-                   corners -- the same rectification the app performs on a camera
-                   frame -- in true board orientation: SIZE x SIZE pixels, cells
-                   CELL px square, a MARGIN of context around the grid
+    board<i>.jpg   the tiles' top faces straightened, in true board
+                   orientation: SIZE x SIZE pixels, cells CELL px square, a
+                   MARGIN of context around the grid -- so that every tile's
+                   letter sits in the square its label names. Tiles stand
+                   TILE_HEIGHT above the board, so in a photo taken at an
+                   angle their tops are displaced from the printed grid:
+                   by the camera's pose (from the grid's corners and the
+                   photo's focal length) and, where the pipeline's mesh is
+                   itself off, by a residual measured against the labels
     board<i>.json  {
                      "photo": "imgN_e.jpg", "difficulty": "e", "layout": n,
                      "photo_size": [w, h],
@@ -15,6 +20,10 @@ and writes to --out (default test/derived/scan_dataset/):
                      "mesh": 16 x 16 x [x, y],       # every grid-line intersection, photo px
                      "rotation_k": k,                # letter-based correction read_letters applied
                      "registration": 0.97,           # see registration(); boards under 0.7 are not exported
+                     "bend": 0.12,                   # see bend(): squares off a four-corner homography
+                     "focal_px": 2607,               # from EXIF, the 35 mm equivalent
+                     "parallax": [dx, dy],           # tile tops' displacement at the centre, squares
+                     "residual": [dx, dy],           # the further offset the labels needed, squares
                      "truth": [15 strings],          # '-' empty, upper-case letters
                      "tiles": {"r,c": [is_tile, confidence]},             # detector, every cell
                      "readings": {"r,c": [letter, confidence, [[alt, p]]]}  # classifier, tiles only
@@ -35,6 +44,7 @@ import time
 
 import cv2
 import numpy as np
+from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
@@ -138,13 +148,121 @@ def registration(straight, truth) -> float:
 MIN_REGISTRATION = 0.7
 
 
-def straighten(photo, grid_corners):
-    dst = np.array(
-        [[MARGIN, MARGIN], [SIZE - MARGIN, MARGIN], [SIZE - MARGIN, SIZE - MARGIN], [MARGIN, SIZE - MARGIN]],
-        dtype=np.float32,
+# A tile's top face above the board, in squares: fitted to the test photos
+# (0.253; a tile is about 4.9 mm thick on a 19.5 mm square).
+TILE_HEIGHT = 0.25
+
+
+def focal_px(path, photo_size) -> float:
+    """The photo's focal length in pixels, from its EXIF 35 mm equivalent
+    (a 36 mm wide frame); 26 mm, a typical phone's, if it has none."""
+    try:
+        exif = Image.open(path).getexif().get_ifd(0x8769)
+        f35 = float(exif.get(0xA405) or 26)  # FocalLengthIn35mmFilm
+    except (OSError, ValueError):
+        f35 = 26.0
+    return f35 / 36 * max(photo_size)
+
+
+def tile_tops(mesh, photo_size, f_px):
+    """Per mesh point, where the top of a tile on that point appears,
+    in grid squares relative to the point itself: the camera's pose comes
+    from the homography of the grid's corners and the focal length, and a
+    plane TILE_HEIGHT above the board is projected with it. (16, 16, 2)."""
+    m = np.asarray(mesh, np.float64)
+    w, h = photo_size
+    K = np.array([[f_px, 0, w / 2], [0, f_px, h / 2], [0, 0, 1]])
+    grid = np.array([[0, 0], [GRID, 0], [GRID, GRID], [0, GRID]], np.float64)
+    H, _ = cv2.findHomography(grid, np.array([m[0, 0], m[0, GRID], m[GRID, GRID], m[GRID, 0]]))
+    B = np.linalg.inv(K) @ H
+    scale = 2 / (np.linalg.norm(B[:, 0]) + np.linalg.norm(B[:, 1]))
+    r1, r2, t = scale * B[:, 0], scale * B[:, 1], scale * B[:, 2]
+    if t[2] < 0:  # the board must be in front of the camera
+        r1, r2, t = -r1, -r2, -t
+    r3 = np.cross(r1, r2)
+    if (np.stack([r1, r2, r3]) @ -t)[2] < 0:  # and tiles rise toward the camera
+        r3 = -r3
+    tops = K @ np.stack([r1, r2, t + TILE_HEIGHT * r3], 1)
+    xy = np.stack(np.meshgrid(np.arange(GRID + 1), np.arange(GRID + 1)), -1).astype(np.float64)
+    seen = np.einsum("ij,...j->...i", np.linalg.inv(H) @ tops, np.concatenate([xy, np.ones_like(xy[..., :1])], -1))
+    return seen[..., :2] / seen[..., 2:] - xy
+
+
+def extended(mesh):
+    """The mesh with one more ring of points, extrapolated: (18, 18, 2),
+    point (i, j) at grid coordinates (i - 1, j - 1)."""
+    m = np.asarray(mesh, dtype=np.float64)
+    m = np.concatenate([2 * m[:1] - m[1:2], m, 2 * m[-1:] - m[-2:-1]], 0)
+    return np.concatenate([2 * m[:, :1] - m[:, 1:2], m, 2 * m[:, -1:] - m[:, -2:-1]], 1)
+
+
+def at(ext, gx, gy):
+    """Photo points at grid coordinates (gx, gy), interpolating the extended mesh."""
+    gx = np.clip(np.asarray(gx, np.float64) + 1, 0, GRID + 2 - 1e-6)
+    gy = np.clip(np.asarray(gy, np.float64) + 1, 0, GRID + 2 - 1e-6)
+    i, j = np.minimum(gy.astype(int), GRID + 1), np.minimum(gx.astype(int), GRID + 1)
+    v, u = (gy - i)[..., None], (gx - j)[..., None]
+    return (
+        (1 - u) * (1 - v) * ext[i, j]
+        + u * (1 - v) * ext[i, j + 1]
+        + (1 - u) * v * ext[i + 1, j]
+        + u * v * ext[i + 1, j + 1]
     )
-    h = cv2.getPerspectiveTransform(np.asarray(grid_corners, dtype=np.float32), dst)
-    return cv2.warpPerspective(photo, h, (SIZE, SIZE), flags=cv2.INTER_AREA)
+
+
+def offset(img, truth):
+    """The offset, in squares, at which square windows best separate the
+    labelled tiles from the labelled empty squares by their share of
+    tile-face pixels (bright, unsaturated): where the labels' tiles are."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    sat, val = hsv[..., 1].astype(np.float32), hsv[..., 2].astype(np.float32)
+    face = ((sat < np.percentile(sat, 30) + 25) & (val > np.percentile(val, 50))).astype(np.float32)
+    integral = cv2.integral(face)
+    is_tile = np.array([[ch != "-" for ch in row] for row in truth])
+    if is_tile.all() or not is_tile.any():
+        return 0.0, 0.0
+    best = (-np.inf, 0.0, 0.0)
+    for sy in np.arange(-0.9, 0.91, 0.05):
+        for sx in np.arange(-0.9, 0.91, 0.05):
+            y0 = np.clip(np.round(MARGIN + (np.arange(GRID) + sy) * CELL).astype(int), 0, SIZE)
+            x0 = np.clip(np.round(MARGIN + (np.arange(GRID) + sx) * CELL).astype(int), 0, SIZE)
+            y1, x1 = np.clip(y0 + CELL, 0, SIZE), np.clip(x0 + CELL, 0, SIZE)
+            Y0, X0, Y1, X1 = y0[:, None], x0[None, :], y1[:, None], x1[None, :]
+            share = (integral[Y1, X1] - integral[Y0, X1] - integral[Y1, X0] + integral[Y0, X0]) / CELL**2
+            score = share[is_tile].mean() - share[~is_tile].mean()
+            if score > best[0]:
+                best = (score, float(sx), float(sy))
+    return round(best[1], 2), round(best[2], 2)
+
+
+def straighten(photo, mesh, shift=None):
+    """The grid straightened through its mesh, each output pixel found in
+    the photo by interpolating the mesh at its grid coordinates -- moved by
+    `shift`, per mesh point in squares (16, 16, 2), if given."""
+    ext = extended(mesh)
+    g = (np.arange(SIZE) + 0.5 - MARGIN) / CELL
+    gx, gy = np.meshgrid(g, g)
+    if shift is not None:
+        s = extended(shift)  # extrapolated the same way, as a smooth field
+        moved = at(s, gx, gy)
+        gx, gy = gx + moved[..., 0], gy + moved[..., 1]
+    pts = at(ext, gx, gy).astype(np.float32)
+    # The photo's squares are about twice the export's: smooth first, or
+    # sampling them would alias.
+    return cv2.remap(cv2.GaussianBlur(photo, (0, 0), 0.8), pts[..., 0], pts[..., 1], cv2.INTER_LINEAR)
+
+
+def bend(mesh) -> float:
+    """The largest distance, in squares, between a mesh point and where the
+    homography from the grid's four corners puts it: about 0 for a flat
+    board, near 1 for one bowed along its fold."""
+    m = np.asarray(mesh, dtype=np.float32)
+    corners = np.array([m[0, 0], m[0, GRID], m[GRID, GRID], m[GRID, 0]], dtype=np.float32)
+    unit = np.array([[0, 0], [GRID, 0], [GRID, GRID], [0, GRID]], dtype=np.float32)
+    to_grid = cv2.getPerspectiveTransform(corners, unit)
+    ideal = np.stack(np.meshgrid(np.arange(GRID + 1), np.arange(GRID + 1)), -1).astype(np.float32)  # (x, y)
+    seen = cv2.perspectiveTransform(m.reshape(-1, 1, 2), to_grid).reshape(GRID + 1, GRID + 1, 2)
+    return float(np.linalg.norm(seen - ideal, axis=-1).max())
 
 
 def export_one(idx, layout, out_dir):
@@ -175,7 +293,11 @@ def export_one(idx, layout, out_dir):
         return f"board{idx}: the grid collapsed ({quad_area(grid_corners):.0f} px²)"
 
     truth = ["".join(GROUND_TRUTH[idx].get((r, c), "-") for c in range(GRID)) for r in range(GRID)]
-    straight = straighten(photo, grid_corners)
+    f_px = focal_px(path, (photo_w, photo_h))
+    tops = tile_tops(mesh, (photo_w, photo_h), f_px)
+    first = straighten(photo, mesh, tops)
+    residual = offset(first, truth)
+    straight = straighten(photo, mesh, tops + np.array(residual)) if any(residual) else first
     match = registration(straight, truth)
     if match < MIN_REGISTRATION:
         return f"board{idx}: the grid does not match the labels (registration {match:.2f})"
@@ -196,6 +318,10 @@ def export_one(idx, layout, out_dir):
         "mesh": [[[round(float(x), 2), round(float(y), 2)] for x, y in row] for row in mesh],
         "rotation_k": int(k),
         "registration": round(match, 3),
+        "bend": round(bend(mesh), 3),
+        "focal_px": round(f_px, 1),
+        "parallax": [round(float(v), 3) for v in tops[GRID // 2, GRID // 2]],
+        "residual": list(residual),
         "truth": truth,
         "tiles": tiles,
         "readings": out_readings,
