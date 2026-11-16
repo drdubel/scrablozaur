@@ -15,7 +15,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // Per-quadrant bonus lookup. Index by (min(r, 14-r), min(c, 14-c)).
@@ -4063,9 +4063,11 @@ fn usage(prog: &str) {
                     {prog} lookup        <lang> <dawg.bin>  <word>\n  \
                     {prog} bench         <lang> <dawg.bin>  <words.txt>\n  \
                     {prog} gen-verify    <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
-                    {prog} gen-bench     <lang> <dawg.bin>  <gaddag.bin>  [games]\n\n\
+                    {prog} gen-bench     <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
+                    {prog} bot-bench     <lang> <dawg.bin>  <gaddag.bin>  <leave_value.bin|-> <level> [games]\n\n\
          <lang> is a language code with a definition in languages/<lang>.json\n\
-         (e.g. `pl`), searched for in the current directory and its parents."
+         (e.g. `pl`), searched for in the current directory and its parents.\n\
+         bot-bench times a bot's moves at a level (1-10) with RAYON_NUM_THREADS threads."
     );
 }
 
@@ -4416,6 +4418,83 @@ fn cmd_gen_bench(
     Ok(())
 }
 
+/// Benchmark: what a bot at `level` costs per move, as the apps run it --
+/// automatic games through `GameSession`, every move timed. The pool size comes
+/// from `RAYON_NUM_THREADS`, so running this once per thread count on a phone
+/// is how its pool gets sized. Games are seeded; the simulating levels still
+/// sample their rollouts from the clock, so their games vary a little.
+fn cmd_bot_bench(
+    lang: &'static Language,
+    dawg_path: &str,
+    gaddag_path: &str,
+    net_path: &str,
+    level: u8,
+    games: usize,
+) -> io::Result<()> {
+    use game::{GameMode, GameSession, LanguagePack, PlayerConfig};
+
+    let invalid = |e: &dyn fmt::Display| io::Error::new(io::ErrorKind::InvalidInput, e.to_string());
+    let lexicon = Lexicon::open(lang, dawg_path, Some(gaddag_path)).map_err(|e| invalid(&e))?;
+    let net = match net_path {
+        "-" => None,
+        path => Some(Arc::new(
+            LeaveNet::open(lang, path).map_err(|e| invalid(&e))?,
+        )),
+    };
+    let pack = LanguagePack::new(Arc::new(lexicon), net).map_err(|e| invalid(&e))?;
+    let level = game::clamp_level(level as i64, pack.max_level());
+
+    // With the bag empty the bots search the endgame instead, a different cost.
+    let mut midgame = Vec::new();
+    let mut endgame = Vec::new();
+    for g in 0..games {
+        let seats = vec![
+            PlayerConfig::computer("A", level, 100),
+            PlayerConfig::computer("B", level, 100),
+        ];
+        let mut session =
+            GameSession::new(pack.clone(), GameMode::SandboxAuto, seats, 0xB07 + g as u64)
+                .map_err(|e| invalid(&e))?;
+        while !session.is_over() {
+            let bag_empty = session.bag_remaining() == 0;
+            let t = Instant::now();
+            session.next_auto_move().map_err(|e| invalid(&e))?;
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            if bag_empty {
+                endgame.push(ms);
+            } else {
+                midgame.push(ms);
+            }
+        }
+    }
+
+    let summary = |label: &str, times: &mut Vec<f64>| {
+        if times.is_empty() {
+            println!("  {label}: none");
+            return;
+        }
+        times.sort_by(f64::total_cmp);
+        let at = |p: f64| times[((times.len() - 1) as f64 * p).round() as usize];
+        let mean = times.iter().sum::<f64>() / times.len() as f64;
+        println!(
+            "  {label}: {:3} moves | mean {mean:8.1} ms | p50 {:8.1} | p90 {:8.1} | max {:8.1}",
+            times.len(),
+            at(0.5),
+            at(0.9),
+            at(1.0),
+        );
+    };
+    println!(
+        "\nbot-bench {} level {level} ({:?}), {} threads, {games} games:",
+        lang.code(),
+        game::engine_mode(level),
+        num_threads(),
+    );
+    summary("bag not empty", &mut midgame);
+    summary("bag empty    ", &mut endgame);
+    Ok(())
+}
+
 pub fn main_cli() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // Every command that reads a `.bin` needs the alphabet to decode its edges,
@@ -4437,6 +4516,13 @@ pub fn main_cli() -> io::Result<()> {
         Some("gen-bench") if args.len() == 5 || args.len() == 6 => {
             let games = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
             cmd_gen_bench(lang(&args[2])?, &args[3], &args[4], games)
+        }
+        Some("bot-bench") if args.len() == 7 || args.len() == 8 => {
+            let level = args[6]
+                .parse()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "level must be 1-10"))?;
+            let games = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(2);
+            cmd_bot_bench(lang(&args[2])?, &args[3], &args[4], &args[5], level, games)
         }
         _ => {
             usage(&args[0]);
