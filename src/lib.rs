@@ -4676,6 +4676,32 @@ fn cmd_frame_bench(
         let scan = scan_frame(&finder, &reader, &lexicon, rgb, w, h, focal, None, &options)
             .map_err(|e| invalid(&e))?;
         scanning.push(t.elapsed().as_secs_f64() * 1e3);
+        // The same stages one by one, to see where the time goes.
+        if let Some(corners) = found {
+            let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+            let t = Instant::now();
+            let tops = scan::geometry::tile_tops(&corners, w, h, focal).unwrap_or(corners);
+            let side = (BOARD_SIZE + 2) * reader.cell_size();
+            let image = scan::geometry::straighten(rgb, w, h, &tops, reader.cell_size())
+                .map_err(|e| invalid(&e))?;
+            let straighten_ms = ms(t);
+            let t = Instant::now();
+            let readings = reader.read_board(&image, side).map_err(|e| invalid(&e))?;
+            let read_ms = ms(t);
+            let t = Instant::now();
+            reader.upright_given(&image, side, &readings);
+            let upright_ms = ms(t);
+            let t = Instant::now();
+            let decoded = scan::decode::decode(&lexicon, &readings, None, &options)
+                .map_err(|e| invalid(&e))?;
+            println!(
+                "    straighten {straighten_ms:.0} ms, read {read_ms:.0} ms, upright {upright_ms:.0} ms, \
+                 decode {:.0} ms ({} work, legal {})",
+                ms(t),
+                decoded.work,
+                decoded.legal
+            );
+        }
         let tiles = scan.as_ref().map(|s| {
             s.decoded
                 .board
