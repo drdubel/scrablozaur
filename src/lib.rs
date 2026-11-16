@@ -4088,10 +4088,12 @@ fn usage(prog: &str) {
                     {prog} bench         <lang> <dawg.bin>  <words.txt>\n  \
                     {prog} gen-verify    <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
                     {prog} gen-bench     <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
-                    {prog} bot-bench     <lang> <dawg.bin>  <gaddag.bin>  <leave_value.bin|-> <level> [games]\n\n\
+                    {prog} bot-bench     <lang> <dawg.bin>  <gaddag.bin>  <leave_value.bin|-> <level> [games]\n  \
+                    {prog} scan-bench    <lang> <dawg.bin>  <cases.json>\n\n\
          <lang> is a language code with a definition in languages/<lang>.json\n\
          (e.g. `pl`), searched for in the current directory and its parents.\n\
-         bot-bench times a bot's moves at a level (1-10) with RAYON_NUM_THREADS threads."
+         bot-bench times a bot's moves at a level (1-10) with RAYON_NUM_THREADS threads.\n\
+         scan-bench times the scan decoder on the cases `eval_decoder.py --dump` writes."
     );
 }
 
@@ -4529,6 +4531,101 @@ fn cmd_bot_bench(
     Ok(())
 }
 
+/// `scan-bench`: decode every case of a file `board_reader/scripts/
+/// eval_decoder.py --dump` wrote, timing each, so the decoder can be timed on
+/// a phone as well. Ends with a digest of every decoded board: the decoder
+/// has no clock, no randomness and no threads, so any two machines must agree.
+fn cmd_scan_bench(lang: &'static Language, dawg_path: &str, cases_path: &str) -> io::Result<()> {
+    use scan::decode::{decode, CellReading, DecodeOptions, ScanBoard};
+
+    /// `(p_tile, [(letter, p)], p_blank)`, as `CellReading` holds them.
+    type Reading = (f32, Vec<(char, f32)>, f32);
+    #[derive(serde::Deserialize)]
+    struct Case {
+        label: String,
+        readings: Vec<Vec<Reading>>,
+        prior: Option<Vec<Vec<char>>>,
+        prior_blanks: Option<Vec<Vec<bool>>>,
+    }
+    let invalid = |e: &dyn fmt::Display| io::Error::new(io::ErrorKind::InvalidInput, e.to_string());
+    let lexicon = Lexicon::open(lang, dawg_path, None).map_err(|e| invalid(&e))?;
+    let cases: Vec<Case> =
+        serde_json::from_str(&fs::read_to_string(cases_path)?).map_err(|e| invalid(&e))?;
+    fn square<T>(rows: &[Vec<T>]) -> bool {
+        rows.len() == BOARD_SIZE && rows.iter().all(|r| r.len() == BOARD_SIZE)
+    }
+
+    // label -> (ms per decode, legal, complete), in first-seen order
+    let mut groups: Vec<(String, Vec<f64>, usize, usize)> = Vec::new();
+    let mut digest = 0xcbf2_9ce4_8422_2325u64;
+    let options = DecodeOptions::default();
+    for case in &cases {
+        if !square(&case.readings) {
+            return Err(invalid(&"every case needs 15x15 readings"));
+        }
+        let readings: scan::Grid<CellReading> = std::array::from_fn(|r| {
+            std::array::from_fn(|c| {
+                let (p_tile, letters, p_blank) = &case.readings[r][c];
+                CellReading {
+                    p_tile: *p_tile,
+                    letters: letters.clone(),
+                    p_blank: *p_blank,
+                }
+            })
+        });
+        let prior = match &case.prior {
+            Some(letters) if square(letters) => Some(ScanBoard {
+                letters: std::array::from_fn(|r| std::array::from_fn(|c| letters[r][c])),
+                blanks: std::array::from_fn(|r| {
+                    std::array::from_fn(|c| case.prior_blanks.as_ref().is_some_and(|b| b[r][c]))
+                }),
+            }),
+            Some(_) => return Err(invalid(&"a prior must be 15x15")),
+            None => None,
+        };
+        let t = Instant::now();
+        let out = decode(&lexicon, &readings, prior.as_ref(), &options).map_err(|e| invalid(&e))?;
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        for (&ch, &blank) in out
+            .board
+            .letters
+            .iter()
+            .flatten()
+            .zip(out.board.blanks.iter().flatten())
+        {
+            digest = (digest ^ (ch as u64) ^ ((blank as u64) << 32)).wrapping_mul(0x0100_0000_01b3);
+        }
+        let i = match groups.iter().position(|g| g.0 == case.label) {
+            Some(i) => i,
+            None => {
+                groups.push((case.label.clone(), Vec::new(), 0, 0));
+                groups.len() - 1
+            }
+        };
+        let g = &mut groups[i];
+        g.1.push(ms);
+        g.2 += out.legal as usize;
+        g.3 += out.complete as usize;
+    }
+    println!("\nscan-bench {}, {} cases:", lang.code(), cases.len());
+    for (label, times, legal, complete) in &mut groups {
+        times.sort_by(f64::total_cmp);
+        let at = |p: f64| times[((times.len() - 1) as f64 * p).round() as usize];
+        let n = times.len();
+        println!(
+            "  {label:8}: {n:4} boards | mean {:7.2} ms | p50 {:7.2} | p90 {:7.2} | max {:8.1} | legal {:3}% complete {:3}%",
+            times.iter().sum::<f64>() / n as f64,
+            at(0.5),
+            at(0.9),
+            at(1.0),
+            100 * *legal / n,
+            100 * *complete / n,
+        );
+    }
+    println!("  boards decoded: {digest:016x}");
+    Ok(())
+}
+
 pub fn main_cli() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // Every command that reads a `.bin` needs the alphabet to decode its edges,
@@ -4557,6 +4654,9 @@ pub fn main_cli() -> io::Result<()> {
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "level must be 1-10"))?;
             let games = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(2);
             cmd_bot_bench(lang(&args[2])?, &args[3], &args[4], &args[5], level, games)
+        }
+        Some("scan-bench") if args.len() == 5 => {
+            cmd_scan_bench(lang(&args[2])?, &args[3], &args[4])
         }
         _ => {
             usage(&args[0]);

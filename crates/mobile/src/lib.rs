@@ -16,6 +16,7 @@ use scrablozaur_core::game::{
     GameError, GameMode, GameSession, GameState, LanguagePack, PlayerConfig, Preview, SortMode,
     Suggestion, Winner,
 };
+use scrablozaur_core::scan::decode::{decode, CellReading, DecodeOptions, ScanBoard};
 use scrablozaur_core::{square_bonus, Language, LeaveNet, Lexicon};
 
 uniffi::setup_scaffolding!();
@@ -129,6 +130,23 @@ impl From<GameError> for MoveError {
         }
     }
 }
+
+/// Scan readings the decoder cannot take: the wrong number of squares, or a
+/// letter that is not one character of the language.
+#[derive(Debug, uniffi::Error)]
+pub enum ScanError {
+    Invalid { reason: String },
+}
+
+impl fmt::Display for ScanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScanError::Invalid { reason } => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for ScanError {}
 
 // ── Engine-wide settings ─────────────────────────────────────────────────────
 
@@ -288,6 +306,125 @@ impl LanguagePackHandle {
     pub fn is_word(&self, word: String) -> bool {
         self.pack.lexicon.contains(&word.to_lowercase())
     }
+
+    /// The most probable legal board under `readings`, 225 squares row-major,
+    /// keeping every tile of the last confirmed board -- `prior_letters` (225,
+    /// a lowercase letter or "" for empty) and `prior_blanks` -- as it was.
+    /// See `scan::decode` in the engine; its default options apply.
+    pub fn decode_scan(
+        &self,
+        readings: Vec<SquareReading>,
+        prior_letters: Option<Vec<String>>,
+        prior_blanks: Option<Vec<bool>>,
+    ) -> Result<DecodedBoard, ScanError> {
+        let invalid = |reason: String| ScanError::Invalid { reason };
+        let one_char = |s: &str| {
+            let mut chars = s.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => Ok(ch),
+                _ => Err(invalid(format!("'{s}' is not one letter"))),
+            }
+        };
+        if readings.len() != CELLS {
+            return Err(invalid(format!("{} readings, not {CELLS}", readings.len())));
+        }
+        let mut grid: [[CellReading; 15]; 15] =
+            std::array::from_fn(|_| std::array::from_fn(|_| CellReading::empty()));
+        for (i, r) in readings.into_iter().enumerate() {
+            let letters = r
+                .letters
+                .iter()
+                .map(|l| Ok((one_char(&l.letter)?, l.p)))
+                .collect::<Result<Vec<_>, ScanError>>()?;
+            grid[i / 15][i % 15] = CellReading {
+                p_tile: r.p_tile,
+                letters,
+                p_blank: r.p_blank,
+            };
+        }
+        let prior = match prior_letters {
+            None => None,
+            Some(letters) => {
+                let blanks = prior_blanks.unwrap_or_else(|| vec![false; CELLS]);
+                if letters.len() != CELLS || blanks.len() != CELLS {
+                    return Err(invalid(format!(
+                        "the previous board must have {CELLS} squares"
+                    )));
+                }
+                let mut board = ScanBoard::empty();
+                for i in 0..CELLS {
+                    if !letters[i].is_empty() {
+                        board.letters[i / 15][i % 15] = one_char(&letters[i])?;
+                    }
+                    board.blanks[i / 15][i % 15] = blanks[i];
+                }
+                Some(board)
+            }
+        };
+        let out = decode(
+            &self.pack.lexicon,
+            &grid,
+            prior.as_ref(),
+            &DecodeOptions::default(),
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+        Ok(DecodedBoard {
+            letters: flatten(&out.board.letters, |ch| {
+                if ch == '-' {
+                    String::new()
+                } else {
+                    ch.to_string()
+                }
+            }),
+            blanks: flatten(&out.board.blanks, |b| b),
+            corrected: flatten(&out.corrected, |b| b),
+            flagged: flatten(&out.flagged, |b| b),
+            legal: out.legal,
+            complete: out.complete,
+            cost: out.cost,
+        })
+    }
+}
+
+// ── Scanning ─────────────────────────────────────────────────────────────────
+
+/// One letter a scanned square may show, and how likely.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct LetterChance {
+    /// Lowercase.
+    pub letter: String,
+    pub p: f32,
+}
+
+/// What the scanner made of one square: see `CellReading` in the engine.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct SquareReading {
+    /// Probability that the square holds a tile.
+    pub p_tile: f32,
+    /// The letter such a tile shows; letters left out share what these
+    /// leave, and none at all says nothing about the letter.
+    pub letters: Vec<LetterChance>,
+    /// Probability that the tile is a blank.
+    pub p_blank: f32,
+}
+
+/// The board the decoder settled on, 225 squares row-major.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct DecodedBoard {
+    /// A letter, or "" for an empty square.
+    pub letters: Vec<String>,
+    /// True where a blank plays the letter shown.
+    pub blanks: Vec<bool>,
+    /// Where the board differs from the readings' own best guess.
+    pub corrected: Vec<bool>,
+    /// Squares still in a non-word or alone; only when not `legal`.
+    pub flagged: Vec<bool>,
+    /// Every rule of a real board holds.
+    pub legal: bool,
+    /// The search finished within its budget.
+    pub complete: bool,
+    /// How far, in nats, the rules forced the board from the readings.
+    pub cost: f32,
 }
 
 // ── Games ────────────────────────────────────────────────────────────────────

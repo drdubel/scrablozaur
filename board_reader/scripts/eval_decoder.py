@@ -276,6 +276,9 @@ def main():
         ap.add_argument(f"--{name.replace('_', '-')}", dest=name, type=float)
     ap.add_argument("--max-flips", type=int)
     ap.add_argument("--budget", type=int)
+    ap.add_argument(
+        "--dump", type=Path, help="also write every decoded case here, for `scrablozaur scan-bench` on a phone"
+    )
     args = ap.parse_args()
     options = {
         k: getattr(args, k)
@@ -300,6 +303,7 @@ def main():
     )
 
     rng = random.Random(args.seed)
+    dumped = []
     for tier in args.tiers:
         for scenario in ("cold", "warm"):
             stats = collections.defaultdict(list)
@@ -313,6 +317,15 @@ def main():
                     ]
                 fixed = greedy(dawg, raw, prior, letters)
                 readings = [[calibration.reading(x) for x in row] for row in raw]
+                if args.dump:
+                    dumped.append(
+                        {
+                            "label": f"{tier} {scenario}",
+                            "readings": readings,
+                            "prior": prior,
+                            "prior_blanks": prev_blanks if prior is not None else None,
+                        }
+                    )
                 t0 = time.perf_counter()
                 out = scrablozaur.decode_scan(
                     dawg, readings, prior, prev_blanks if prior is not None else None, **options
@@ -343,6 +356,9 @@ def main():
                 f"work max {max(stats['work'])}"
             )
             print(" | ".join(line[:4]), line[4])
+    if args.dump:
+        args.dump.write_text(json.dumps(dumped, ensure_ascii=False), encoding="utf-8")
+        print(f"{len(dumped)} cases written to {args.dump}")
 
 
 if __name__ == "__main__":
