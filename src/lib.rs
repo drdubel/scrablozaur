@@ -267,8 +267,9 @@ impl Language {
         }
 
         for (&c, &value) in points {
-            let value = u8::try_from(value)
-                .map_err(|_| format!("language '{code}': '{c}' scores {value}, too much for a tile"))?;
+            let value = u8::try_from(value).map_err(|_| {
+                format!("language '{code}': '{c}' scores {value}, too much for a tile")
+            })?;
             // Both cases carry the value: the engine plays in lowercase, but
             // callers score user input that may arrive either way.
             for variant in [c, c.to_uppercase().next().unwrap_or(c)] {
@@ -477,7 +478,9 @@ fn find_language_file(code: &str) -> Result<std::path::PathBuf, String> {
 
 /// Load a language by code, for the CLI.
 fn load_language(code: &str) -> Result<&'static Language, String> {
-    Ok(intern_language(Language::from_file(&find_language_file(code)?)?))
+    Ok(intern_language(Language::from_file(&find_language_file(
+        code,
+    )?)?))
 }
 
 // ---------------------------------------------------------------------------
@@ -607,7 +610,11 @@ impl Dawg {
             let name = |k: u8| if k == KIND_GADDAG { "GADDAG" } else { "DAWG" };
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("'{path}' is a {}, expected a {}", name(dawg.kind), name(want)),
+                format!(
+                    "'{path}' is a {}, expected a {}",
+                    name(dawg.kind),
+                    name(want)
+                ),
             ));
         }
         Ok(dawg)
@@ -677,7 +684,11 @@ impl Dawg {
                 let cid = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
                 pos += 8;
                 let ch = char::from_u32(cp).unwrap();
-                children.push(Child { ch, bit: lang.letter_bit(ch), id: cid });
+                children.push(Child {
+                    ch,
+                    bit: lang.letter_bit(ch),
+                    id: cid,
+                });
             }
             // Pack this node's children in symbol-index order (any non-alphabet,
             // non-SEP edge sorts after all known symbols) so the child bitmap and
@@ -1051,7 +1062,8 @@ impl DawgPy {
         let inner = Dawg::load_kind(path, lang.inner, KIND_DAWG)
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
         let load_gaddag = |gp: &str| {
-            Dawg::load_kind(gp, lang.inner, KIND_GADDAG).map_err(|e| PyIOError::new_err(e.to_string()))
+            Dawg::load_kind(gp, lang.inner, KIND_GADDAG)
+                .map_err(|e| PyIOError::new_err(e.to_string()))
         };
         let gaddag = match gaddag_path {
             Some(gp) => Some(load_gaddag(gp)?),
@@ -1848,7 +1860,15 @@ impl Board {
         my_rack: &str,
         opp_rack: &str,
         max_nodes: usize,
-    ) -> PyResult<(String, u32, (usize, usize, bool), Vec<char>, i32, usize, bool)> {
+    ) -> PyResult<(
+        String,
+        u32,
+        (usize, usize, bool),
+        Vec<char>,
+        i32,
+        usize,
+        bool,
+    )> {
         self.require_same_lang(dawg.inner.lang, "dictionary")?;
         let Some(gaddag) = &dawg.gaddag else {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1858,7 +1878,13 @@ impl Board {
         let mut board = self.clone();
         let (best, value, stats) = py.detach(|| {
             board.solve_endgame_inner(
-                &dawg.inner, gaddag, my_rack, opp_rack, max_nodes, &EG_BRANCH, EG_MAX_DEPTH,
+                &dawg.inner,
+                gaddag,
+                my_rack,
+                opp_rack,
+                max_nodes,
+                &EG_BRANCH,
+                EG_MAX_DEPTH,
             )
         });
         Ok(match best {
@@ -1928,7 +1954,17 @@ impl Board {
         root_eval_cap: usize,
         leave_weight: f64,
         seed: u64,
-    ) -> PyResult<Vec<(String, u32, (usize, usize, bool), Vec<char>, f64, f64, usize)>> {
+    ) -> PyResult<
+        Vec<(
+            String,
+            u32,
+            (usize, usize, bool),
+            Vec<char>,
+            f64,
+            f64,
+            usize,
+        )>,
+    > {
         self.require_same_lang(dawg.inner.lang, "dictionary")?;
         // A leave net encodes one slot per tile type, so a net for another
         // language does not merely score badly -- it reads the wrong features.
@@ -2729,7 +2765,15 @@ impl Board {
                     ac,
                     horizontal,
                 };
-                ctx.gen(gaddag.root, 0, budget, &mut freq, &mut left, &mut right, &mut out);
+                ctx.gen(
+                    gaddag.root,
+                    0,
+                    budget,
+                    &mut freq,
+                    &mut left,
+                    &mut right,
+                    &mut out,
+                );
                 left.clear();
                 right.clear();
             }
@@ -2856,8 +2900,12 @@ fn compact(arena: &Arena, root: u32) -> (Arena, u32) {
     order.push(root);
 
     while let Some(old) = stack.pop() {
-        let mut children: Vec<(char, u32)> =
-            arena.node(old).children.iter().map(|(&c, &id)| (c, id)).collect();
+        let mut children: Vec<(char, u32)> = arena
+            .node(old)
+            .children
+            .iter()
+            .map(|(&c, &id)| (c, id))
+            .collect();
         children.sort_unstable_by_key(|&(c, _)| c);
         for (_, cid) in children {
             if let std::collections::hash_map::Entry::Vacant(e) = remap.entry(cid) {
@@ -2873,8 +2921,11 @@ fn compact(arena: &Arena, root: u32) -> (Arena, u32) {
         let nid = new_arena.alloc();
         let src = arena.node(old);
         let is_terminal = src.is_terminal;
-        let children: Vec<(char, u32)> =
-            src.children.iter().map(|(&c, &cid)| (c, remap[&cid])).collect();
+        let children: Vec<(char, u32)> = src
+            .children
+            .iter()
+            .map(|(&c, &cid)| (c, remap[&cid]))
+            .collect();
         let node = new_arena.node_mut(nid);
         node.is_terminal = is_terminal;
         for (c, cid) in children {
@@ -3036,7 +3087,12 @@ impl LeaveNet {
             };
             let w = read_f32s(n_w);
             let b = read_f32s(out_dim);
-            layers.push(DenseLayer { in_dim, out_dim, w, b });
+            layers.push(DenseLayer {
+                in_dim,
+                out_dim,
+                w,
+                b,
+            });
         }
         if layers.last().map(|l| l.out_dim) != Some(1) {
             return Err(bad("net must end in a scalar head"));
@@ -3335,11 +3391,7 @@ impl Board {
             moves.truncate(eval_cap);
         }
         let feats = self.board_features();
-        let unseen_total: usize = self
-            .unseen_counts(rack)
-            .iter()
-            .map(|&c| c as usize)
-            .sum();
+        let unseen_total: usize = self.unseen_counts(rack).iter().map(|&c| c as usize).sum();
         let mut best_i = 0usize;
         let mut best_v = f64::NEG_INFINITY;
         for (i, m) in moves.iter().enumerate() {
@@ -3517,14 +3569,22 @@ impl Board {
                 (done..done + batch)
                     .into_par_iter()
                     .map(|iter| {
-                        let mut rng = splitmix64(opts.seed ^ (iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                        let mut rng = splitmix64(
+                            opts.seed ^ (iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                        );
                         let mut shuffled = pool.clone();
                         shuffle(&mut shuffled, &mut rng);
                         cands
                             .iter()
                             .map(|c| {
                                 self.rollout(
-                                    dawg, gaddag, net, c, &shuffled, opts.plies, opts.leave_weight,
+                                    dawg,
+                                    gaddag,
+                                    net,
+                                    c,
+                                    &shuffled,
+                                    opts.plies,
+                                    opts.leave_weight,
                                 )
                             })
                             .collect()
@@ -3707,8 +3767,18 @@ impl Board {
         // Passing is always legal, and occasionally right — declining to open
         // a lane can be worth more than the points on offer.
         let mut best = -self.endgame_value(
-            dawg, gaddag, them, me, passes + 1, -beta, -alpha, depth + 1, stats, max_nodes,
-            limits, max_depth,
+            dawg,
+            gaddag,
+            them,
+            me,
+            passes + 1,
+            -beta,
+            -alpha,
+            depth + 1,
+            stats,
+            max_nodes,
+            limits,
+            max_depth,
         );
         alpha = alpha.max(best);
         if alpha >= beta {
@@ -3747,8 +3817,18 @@ impl Board {
             } else {
                 score as i32
                     - self.endgame_value(
-                        dawg, gaddag, them, &left, 0, -beta, -alpha, depth + 1, stats, max_nodes,
-                        limits, max_depth,
+                        dawg,
+                        gaddag,
+                        them,
+                        &left,
+                        0,
+                        -beta,
+                        -alpha,
+                        depth + 1,
+                        stats,
+                        max_nodes,
+                        limits,
+                        max_depth,
                     )
             };
 
@@ -3777,7 +3857,11 @@ impl Board {
         limits: &[usize],
         max_depth: usize,
     ) -> (Option<GenMove>, i32, EndgameStats) {
-        let mut stats = EndgameStats { nodes: 0, capped: false, truncated: false };
+        let mut stats = EndgameStats {
+            nodes: 0,
+            capped: false,
+            truncated: false,
+        };
         // Passing is the baseline every play has to beat. Usually trivially
         // beaten, but not always: declining to open the board can be worth
         // more than the points on offer.
@@ -4088,11 +4172,15 @@ fn cmd_gen_verify(
 
                 // (a) The in-place fast score must equal calculate_word_points.
                 for (r, c, h, word, score) in &limited {
-                    let auth = board.calculate_word_points(word, *r, *c, *h, &rack).unwrap_or(0);
+                    let auth = board
+                        .calculate_word_points(word, *r, *c, *h, &rack)
+                        .unwrap_or(0);
                     if *score != auth {
                         score_mismatches += 1;
                         if score_mismatches <= 10 {
-                            eprintln!("SCORE MISMATCH {word} @({r},{c},{h}): fast={score} auth={auth}");
+                            eprintln!(
+                                "SCORE MISMATCH {word} @({r},{c},{h}): fast={score} auth={auth}"
+                            );
                         }
                     }
                 }
@@ -4182,10 +4270,12 @@ fn cmd_gen_bench(
             }
             if !board.first {
                 let t = Instant::now();
-                let leg = std::hint::black_box(board.best_words_from_patterns(&dpy, &rack, 1, false));
+                let leg =
+                    std::hint::black_box(board.best_words_from_patterns(&dpy, &rack, 1, false));
                 leg_secs += t.elapsed().as_secs_f64();
                 let t = Instant::now();
-                let g = std::hint::black_box(board.gaddag_best_words(&dpy.inner, gad, &rack, 1, false));
+                let g =
+                    std::hint::black_box(board.gaddag_best_words(&dpy.inner, gad, &rack, 1, false));
                 gad_secs += t.elapsed().as_secs_f64();
                 let _ = (leg, g);
                 positions += 1;
@@ -4201,7 +4291,10 @@ fn cmd_gen_bench(
     println!("\ngen-bench ({positions} positions, single-threaded):");
     println!("  legacy pattern search : {leg_ms:.3} ms/position");
     println!("  gaddag generation     : {gad_ms:.3} ms/position");
-    println!("  speedup               : {:.2}x", leg_secs / gad_secs.max(1e-12));
+    println!(
+        "  speedup               : {:.2}x",
+        leg_secs / gad_secs.max(1e-12)
+    );
     Ok(())
 }
 
@@ -4295,16 +4388,62 @@ mod gaddag_tests {
     /// and points are the standard set.
     fn en() -> &'static Language {
         let counts = [
-            ('a', 9), ('b', 2), ('c', 2), ('d', 4), ('e', 12), ('f', 2), ('g', 3), ('h', 2),
-            ('i', 9), ('j', 1), ('k', 1), ('l', 4), ('m', 2), ('n', 6), ('o', 8), ('p', 2),
-            ('q', 1), ('r', 6), ('s', 4), ('t', 6), ('u', 4), ('v', 2), ('w', 2), ('x', 1),
-            ('y', 2), ('z', 1), ('?', 2),
+            ('a', 9),
+            ('b', 2),
+            ('c', 2),
+            ('d', 4),
+            ('e', 12),
+            ('f', 2),
+            ('g', 3),
+            ('h', 2),
+            ('i', 9),
+            ('j', 1),
+            ('k', 1),
+            ('l', 4),
+            ('m', 2),
+            ('n', 6),
+            ('o', 8),
+            ('p', 2),
+            ('q', 1),
+            ('r', 6),
+            ('s', 4),
+            ('t', 6),
+            ('u', 4),
+            ('v', 2),
+            ('w', 2),
+            ('x', 1),
+            ('y', 2),
+            ('z', 1),
+            ('?', 2),
         ];
         let points = [
-            ('a', 1), ('b', 3), ('c', 3), ('d', 2), ('e', 1), ('f', 4), ('g', 2), ('h', 4),
-            ('i', 1), ('j', 8), ('k', 5), ('l', 1), ('m', 3), ('n', 1), ('o', 1), ('p', 3),
-            ('q', 10), ('r', 1), ('s', 1), ('t', 1), ('u', 1), ('v', 4), ('w', 4), ('x', 8),
-            ('y', 4), ('z', 10), ('?', 0),
+            ('a', 1),
+            ('b', 3),
+            ('c', 3),
+            ('d', 2),
+            ('e', 1),
+            ('f', 4),
+            ('g', 2),
+            ('h', 4),
+            ('i', 1),
+            ('j', 8),
+            ('k', 5),
+            ('l', 1),
+            ('m', 3),
+            ('n', 1),
+            ('o', 1),
+            ('p', 3),
+            ('q', 10),
+            ('r', 1),
+            ('s', 1),
+            ('t', 1),
+            ('u', 1),
+            ('v', 4),
+            ('w', 4),
+            ('x', 8),
+            ('y', 4),
+            ('z', 10),
+            ('?', 0),
         ];
         intern_language(
             Language::new(
@@ -4385,7 +4524,11 @@ mod gaddag_tests {
         for c in OLD_ALPHABET.chars() {
             assert_eq!(lang.points(c), old_points(c), "points for '{c}'");
             let upper = c.to_uppercase().next().unwrap();
-            assert_eq!(lang.points(upper), old_points(upper), "points for '{upper}'");
+            assert_eq!(
+                lang.points(upper),
+                old_points(upper),
+                "points for '{upper}'"
+            );
         }
         assert_eq!(lang.points('?'), 0);
 
@@ -4404,9 +4547,16 @@ mod gaddag_tests {
     fn eval_alphabet_is_derived_from_the_bag() {
         const OLD_EVAL_ALPHABET: &str = "?abcdefghijklmnoprstuwyzóąćęłńśźż";
         let lang = pl();
-        assert_eq!(lang.eval_letters.iter().collect::<String>(), OLD_EVAL_ALPHABET);
+        assert_eq!(
+            lang.eval_letters.iter().collect::<String>(),
+            OLD_EVAL_ALPHABET
+        );
         assert_eq!(lang.eval_size(), 33);
-        assert_eq!(lang.eval_input_dim(), 39, "the committed nets take 39 inputs");
+        assert_eq!(
+            lang.eval_input_dim(),
+            39,
+            "the committed nets take 39 inputs"
+        );
     }
 
     /// Seeded deals must be byte-identical to what the compiled-in bag produced,
@@ -4622,7 +4772,9 @@ mod gaddag_tests {
         }
         // A non-word must not appear as any anchor's path.
         let n = g.find_child(g.root, 'x');
-        assert!(n.is_none() || !g.node_is_terminal(g.find_child(n.unwrap(), SEP).unwrap_or(g.root)));
+        assert!(
+            n.is_none() || !g.node_is_terminal(g.find_child(n.unwrap(), SEP).unwrap_or(g.root))
+        );
     }
 
     /// cross_bits sets exactly the letters that complete a valid cross-word.
@@ -4687,7 +4839,12 @@ mod gaddag_tests {
 
         // Extending to "koty" re-scores the whole main word. k(2) + o(1) +
         // blank t(0) + y(2) = 5. Without blank tracking this comes out 7.
-        assert_eq!(board.calculate_word_points("koty", 7, 7, true, "y").unwrap(), 5);
+        assert_eq!(
+            board
+                .calculate_word_points("koty", 7, 7, true, "y")
+                .unwrap(),
+            5
+        );
 
         // The same must hold through the fast generator path used in search.
         let moves = board.gaddag_best_words(&dawg, &gaddag, "y", 5, false);
@@ -4696,7 +4853,10 @@ mod gaddag_tests {
 
         // And through a cross-word: "ty" played vertically off the blank 't'
         // scores blank t(0) + y(2) = 2.
-        assert_eq!(board.calculate_word_points("ty", 7, 9, false, "y").unwrap(), 2);
+        assert_eq!(
+            board.calculate_word_points("ty", 7, 9, false, "y").unwrap(),
+            2
+        );
     }
 
     /// The same seed deals the same tiles in the same order, and different
@@ -4711,7 +4871,10 @@ mod gaddag_tests {
         assert_ne!(deal(12345), deal(12346));
         // Seed 0 is xorshift64's fixed point and must not deal a constant bag.
         let zero = deal(0);
-        assert!(zero[0] != zero[1], "seed 0 degenerated into a constant stream");
+        assert!(
+            zero[0] != zero[1],
+            "seed 0 degenerated into a constant stream"
+        );
     }
 
     /// Exchanged tiles go back into the bag, but not in time to be drawn as
@@ -4787,9 +4950,14 @@ mod gaddag_tests {
                 "brute force left the board dirty"
             );
 
-            let (_mv, value, stats) =
-                board.solve_endgame_inner(
-                &dawg, &gaddag, me, them, 10_000_000, &[usize::MAX; 16], 64,
+            let (_mv, value, stats) = board.solve_endgame_inner(
+                &dawg,
+                &gaddag,
+                me,
+                them,
+                10_000_000,
+                &[usize::MAX; 16],
+                64,
             );
             assert!(
                 !stats.capped && !stats.truncated,
@@ -4810,14 +4978,27 @@ mod gaddag_tests {
         let dawg = compile_in(pl(), &words);
         let gaddag = compile_gaddag_in(pl(), &words);
         let mut board = Board::with_seed(pl(), time_seed());
-        board.place_word("kot", 7, 7, true, Some(vec!['k', 'o', '?'])).unwrap();
+        board
+            .place_word("kot", 7, 7, true, Some(vec!['k', 'o', '?']))
+            .unwrap();
         board.set_bag(Vec::new());
 
         let before = board.__str__();
         let blanks_before = board.blanks;
-        board.solve_endgame_inner(&dawg, &gaddag, "oty", "k", 100_000, &EG_BRANCH, EG_MAX_DEPTH);
+        board.solve_endgame_inner(
+            &dawg,
+            &gaddag,
+            "oty",
+            "k",
+            100_000,
+            &EG_BRANCH,
+            EG_MAX_DEPTH,
+        );
         assert_eq!(board.__str__(), before, "search left tiles on the board");
-        assert_eq!(board.blanks, blanks_before, "search left a stale blank flag");
+        assert_eq!(
+            board.blanks, blanks_before,
+            "search left a stale blank flag"
+        );
     }
 
     /// `copy()` is a real deep copy, and `unplace_word` restores the position
