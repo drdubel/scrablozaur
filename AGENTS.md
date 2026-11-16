@@ -14,6 +14,9 @@ Sub-projects have their own READMEs: `board_reader/README.md`, `smart_player/REA
 | `src/lib.rs` | The engine (`scrablozaur-core`): DAWG/GADDAG, `Board`, move search, scoring, CLI subcommands. Plain Rust, no bindings |
 | `src/main.rs` | Thin binary entry point, delegates to `lib.rs` |
 | `crates/py/` | The `scrablozaur` Python module: a thin PyO3 wrapper over the engine |
+| `src/game/` | Game layer for the apps: session state machine, rules, bots (levels 1–10), hints, move rating, benchmark — a Rust port of the web's Python game logic |
+| `src/scan.rs` | The scanner's dictionary pass (correction + flagging), ported from `web/scan.py` |
+| `tests/web_parity.py` | Records the web app's behaviour into `tests/fixtures/web_parity.json`, which `cargo test` replays against `src/game/` and `src/scan.rs` |
 | `src/main.py`, `src/strategy.py`, `src/verify_engine.py` | Self-play benchmark, bot classes, sanity checks |
 | `web/` | FastAPI app (`web.main:app`), routes under `web/routers/`, vanilla-JS frontend in `web/static/` |
 | `board_reader/` | Photo → board-state OpenCV/torch pipeline |
@@ -69,6 +72,12 @@ make bench  LANG=pl            # speed comparison         (gen-bench)
   `[tool.maturin] features`.
 - `scrablozaur.pyi` is maintained by hand — **update it whenever the PyO3 API changes**,
   or type checking of `web/`, `smart_player/`, and `src/*.py` goes stale.
+- **The web app's Python game logic is the specification for `src/game/`.** Change
+  `web/game.py`, a router, `src/rules.py`, `src/strategy.py`'s windows or `smart_player`'s
+  `choose_move`, and `tests/test_web_parity.py` fails until you regenerate the fixture
+  (`uv run python tests/web_parity.py`) — after which `cargo test` fails until the Rust
+  port matches again. Deliberate deviations (rule fixes) are marked "Deviation" in
+  `src/game/session.rs`; the fixture only exercises behaviour both sides share.
 - **Alphabet, point values and tile distribution live in `languages/<code>.json`** — never
   hardcode a letter table again. `src/languages.py` parses and validates it; the engine
   reads it too (`Language::from_file`). `tests/test_tables_agree.py` fails if any consumer

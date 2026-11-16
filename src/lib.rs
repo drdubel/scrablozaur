@@ -6,6 +6,9 @@
 //! `crates/py`, the Android one in `crates/mobile`; both map `EngineError`
 //! onto their own error types.
 
+pub mod game;
+pub mod scan;
+
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fmt;
@@ -1199,6 +1202,98 @@ impl fmt::Display for Board {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let rows: Vec<String> = self.board.iter().map(row_to_string).collect();
         f.write_str(&rows.join("\n"))
+    }
+}
+
+/// A board as plain data: what a saved game and an undo entry hold. Unlike
+/// `from_grid` it keeps everything -- blanks, the bag in draw order, the
+/// opening flag and the draw RNG's position -- so a restored board is the same
+/// position, not a reconstruction of one.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BoardSnapshot {
+    /// 15 rows of 15 cells, `-` for an empty square.
+    pub rows: Vec<String>,
+    /// Occupied squares that hold a blank, as `(row, col)`.
+    pub blanks: Vec<(u8, u8)>,
+    /// The bag in draw order (last character drawn first).
+    pub bag: String,
+    pub first: bool,
+    pub rng: u64,
+}
+
+impl Board {
+    pub fn to_snapshot(&self) -> BoardSnapshot {
+        let mut blanks = Vec::new();
+        for r in 0..BOARD_SIZE {
+            for c in 0..BOARD_SIZE {
+                if self.blanks[r][c] {
+                    blanks.push((r as u8, c as u8));
+                }
+            }
+        }
+        BoardSnapshot {
+            rows: self.board.iter().map(|row| row.iter().collect()).collect(),
+            blanks,
+            bag: self.tile_bag.iter().collect(),
+            first: self.first,
+            rng: self.rng,
+        }
+    }
+
+    /// Rebuild a board from `to_snapshot`'s output, refusing anything that is
+    /// not a position in `lang`: a cell outside the alphabet, a blank on an
+    /// empty square, a bag holding a tile the language does not have.
+    pub fn from_snapshot(lang: &'static Language, snap: &BoardSnapshot) -> EngineResult<Board> {
+        if snap.rows.len() != BOARD_SIZE {
+            return Err(value_error("board must have exactly 15 rows"));
+        }
+        let mut board = [['-'; BOARD_SIZE]; BOARD_SIZE];
+        for (r, row) in snap.rows.iter().enumerate() {
+            let cells: Vec<char> = row.chars().collect();
+            if cells.len() != BOARD_SIZE {
+                return Err(value_error("each row must have exactly 15 columns"));
+            }
+            for (c, &ch) in cells.iter().enumerate() {
+                if ch != '-' && lang.letter_index(ch).is_none() {
+                    return Err(value_error(format!(
+                        "'{ch}' is not a letter of '{}'",
+                        lang.code
+                    )));
+                }
+                board[r][c] = ch;
+            }
+        }
+        let mut blanks = [[false; BOARD_SIZE]; BOARD_SIZE];
+        for &(r, c) in &snap.blanks {
+            let (r, c) = (r as usize, c as usize);
+            if !in_bounds(r, c) || board[r][c] == '-' {
+                return Err(value_error("a blank must sit on an occupied square"));
+            }
+            blanks[r][c] = true;
+        }
+        let tile_bag: Vec<char> = snap.bag.chars().collect();
+        if let Some(&bad) = tile_bag
+            .iter()
+            .find(|&&ch| ch != lang.blank && lang.letter_index(ch).is_none())
+        {
+            return Err(value_error(format!(
+                "the bag holds '{bad}', not a tile of '{}'",
+                lang.code
+            )));
+        }
+        Ok(Board {
+            lang,
+            board,
+            blanks,
+            tile_bag,
+            first: snap.first,
+            // A zero state would never move; nudge it like `with_seed` does.
+            rng: if snap.rng == 0 {
+                0x9E3779B97F4A7C15
+            } else {
+                snap.rng
+            },
+        })
     }
 }
 
