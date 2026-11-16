@@ -37,8 +37,8 @@ import pl.scrablozaur.engine.MoveException
 import pl.scrablozaur.engine.PlayerSetup
 import pl.scrablozaur.engine.PreviewResult
 
-/** A new game as the setup screen describes it. */
-data class NewGame(val language: String, val mode: Mode, val players: List<PlayerSetup>)
+/** A new game as the setup screen describes it. `seed` 0 deals from the clock. */
+data class NewGame(val language: String, val mode: Mode, val players: List<PlayerSetup>, val seed: ULong = 0uL)
 
 data class DefinitionUi(val word: String, val result: DefinitionResult?)
 
@@ -114,15 +114,27 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
-    fun start(config: NewGame) = launchLoading {
-        val pack = repo.pack(config.language)
-        val g = withContext(engine) { Game(pack, config.mode, config.players, 0uL) }
-        install(g, config.language, emptyList(), emptyList())
+    /**
+     * Set once a game has been asked for, started or resumed. A game takes a
+     * moment to load, and the screen that shows it asks to resume on
+     * appearing: going by `game` alone, it would cancel a new game still
+     * loading and try to resume the save the setup screen just discarded.
+     */
+    private var requested = false
+
+    fun start(config: NewGame) {
+        requested = true
+        launchLoading {
+            val pack = repo.pack(config.language)
+            val g = withContext(engine) { Game(pack, config.mode, config.players, config.seed) }
+            install(g, config.language, emptyList(), emptyList())
+        }
     }
 
-    /** Load the saved game, unless this one is already showing it. */
+    /** Load the saved game, unless a game is already here or on its way. */
     fun resumeIfNeeded() {
-        if (game != null) return
+        if (requested) return
+        requested = true
         launchLoading {
             val saved = withContext(Dispatchers.IO) { saves.load() } ?: error("no saved game")
             val pack = repo.pack(saved.language)
@@ -477,7 +489,9 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun stepAuto(g: Game) = withContext(NonCancellable) {
         val before = _ui.value.view ?: return@withContext
         val mover = before.players[before.currentPlayer.toInt()]
+        val start = SystemClock.elapsedRealtime()
         val move = withContext(engine) { g.nextAutoMove() }
+        Log.i(LOG_TAG, "automatic move '${move.word}' after ${SystemClock.elapsedRealtime() - start} ms")
         val entry = AutoLogEntry(mover.name, move.word, move.score.toInt(), move.passed)
         refresh(g) { it.copy(autoLog = listOf(entry) + it.autoLog) }
     }

@@ -24,12 +24,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import pl.scrablozaur.BuildConfig
 import pl.scrablozaur.R
 import pl.scrablozaur.ScrablozaurApplication
 import pl.scrablozaur.ui.benchmark.BenchmarkScreen
 import pl.scrablozaur.ui.benchmark.BenchmarkViewModel
 import pl.scrablozaur.ui.game.GameScreen
+import pl.scrablozaur.engine.Mode
+import pl.scrablozaur.engine.PlayerSetup
 import pl.scrablozaur.ui.game.GameViewModel
+import pl.scrablozaur.ui.game.NewGame
 import pl.scrablozaur.ui.setup.SetupScreen
 import pl.scrablozaur.ui.theme.ScrablozaurTheme
 
@@ -38,14 +42,28 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val app = application as ScrablozaurApplication
-        setContent { ScrablozaurTheme { App(app) } }
+        // Debug builds only: `adb shell am start -n pl.scrablozaur/.ui.MainActivity
+        // --el bench_seed 2823 --ei bench_level 10` opens the automatic game
+        // `scrablozaur bot-bench` plays with that seed, so the app's engine speed
+        // can be compared with the CLI's move for move on the same phone.
+        val requested = intent.getLongExtra("bench_seed", 0L).takeIf { BuildConfig.DEBUG && savedInstanceState == null }
+        val benchGame = requested?.takeIf { it != 0L }?.let { seed ->
+            val level = intent.getIntExtra("bench_level", 10).toUByte()
+            NewGame(
+                language = app.engine.defaultLanguage,
+                mode = Mode.SANDBOX_AUTO,
+                players = listOf(PlayerSetup("A", true, level, 100u), PlayerSetup("B", true, level, 100u)),
+                seed = seed.toULong(),
+            )
+        }
+        setContent { ScrablozaurTheme { App(app, benchGame) } }
     }
 }
 
 private enum class Screen { Setup, Game, Benchmark, Scan }
 
 @Composable
-private fun App(app: ScrablozaurApplication) {
+private fun App(app: ScrablozaurApplication, benchGame: NewGame?) {
     val game: GameViewModel = viewModel()
     val bench: BenchmarkViewModel = viewModel()
     val premiums = app.engine.premiums
@@ -57,6 +75,14 @@ private fun App(app: ScrablozaurApplication) {
     fun go(to: Screen) {
         previous = screen
         screen = to
+    }
+
+    LaunchedEffect(benchGame) {
+        if (benchGame != null) {
+            game.forgetGame()
+            game.start(benchGame)
+            go(Screen.Game)
+        }
     }
 
     LaunchedEffect(screen) {
