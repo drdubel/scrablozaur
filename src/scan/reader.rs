@@ -13,32 +13,11 @@
 use rayon::prelude::*;
 
 use super::decode::CellReading;
+use super::net::{Bytes, Map, Net};
 use super::Grid;
 use crate::{value_error, EngineError, EngineResult, Language, BOARD_SIZE};
 
 const MAGIC: &[u8; 8] = b"SCRBCNN1";
-
-enum Layer {
-    /// 3x3, padding 1, batch norm folded in, then ReLU. Weights are
-    /// `[ky][kx][cin][cout]`, the order the patch gather produces.
-    Conv {
-        cin: usize,
-        cout: usize,
-        w: Vec<f32>,
-        b: Vec<f32>,
-    },
-    /// 2x2, stride 2.
-    MaxPool,
-    /// Every pixel's channels averaged into one vector.
-    Mean,
-    /// Weights `[out][in]`.
-    Linear {
-        cin: usize,
-        cout: usize,
-        w: Vec<f32>,
-        b: Vec<f32>,
-    },
-}
 
 /// The trained reader, loaded from a SCRBCNN1 file.
 pub struct CellReader {
@@ -52,44 +31,7 @@ pub struct CellReader {
     /// Softmax temperature that makes held-out probabilities honest.
     /// Classes are empty, blank, then the language's letters in order.
     temperature: f32,
-    layers: Vec<Layer>,
-}
-
-/// Little-endian reads over a byte slice, failing instead of panicking.
-struct Bytes<'a> {
-    data: &'a [u8],
-    at: usize,
-}
-
-impl Bytes<'_> {
-    fn take(&mut self, n: usize) -> EngineResult<&[u8]> {
-        let end = self.at.checked_add(n).filter(|&e| e <= self.data.len());
-        let end = end.ok_or_else(|| EngineError::Io("truncated cell reader".into()))?;
-        let out = &self.data[self.at..end];
-        self.at = end;
-        Ok(out)
-    }
-
-    fn u32(&mut self) -> EngineResult<usize> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()) as usize)
-    }
-
-    fn f32(&mut self) -> EngineResult<f32> {
-        Ok(f32::from_le_bytes(self.take(4)?.try_into().unwrap()))
-    }
-
-    fn f32s(&mut self, n: usize) -> EngineResult<Vec<f32>> {
-        Ok(self
-            .take(
-                n.checked_mul(4)
-                    .ok_or_else(|| EngineError::Io("bad layer size".into()))?,
-            )?
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|&c| f32::from_le_bytes(c))
-            .collect())
-    }
+    net: Net,
 }
 
 impl CellReader {
@@ -133,56 +75,8 @@ impl CellReader {
         if cell == 0 || crop == 0 || temperature.is_nan() || temperature <= 0.0 {
             return Err(bad("bad reader geometry"));
         }
-        let n_layers = r.u32()?;
-        let mut layers = Vec::with_capacity(n_layers);
-        let (mut channels, mut side, mut flat) = (3usize, crop, false);
-        for _ in 0..n_layers {
-            let layer = match r.u32()? {
-                0 => {
-                    let (cin, cout) = (r.u32()?, r.u32()?);
-                    if flat || cin != channels {
-                        return Err(bad("convolution does not fit the layer before"));
-                    }
-                    if cout > MAX_CHANNELS {
-                        return Err(bad("convolution wider than the engine runs"));
-                    }
-                    channels = cout;
-                    Layer::Conv {
-                        cin,
-                        cout,
-                        w: r.f32s(9 * cin * cout)?,
-                        b: r.f32s(cout)?,
-                    }
-                }
-                1 => {
-                    if flat || side % 2 != 0 {
-                        return Err(bad("pooling an odd-sized map"));
-                    }
-                    side /= 2;
-                    Layer::MaxPool
-                }
-                2 => {
-                    flat = true;
-                    Layer::Mean
-                }
-                3 => {
-                    let (cin, cout) = (r.u32()?, r.u32()?);
-                    if !flat || cin != channels {
-                        return Err(bad("linear layer does not fit the layer before"));
-                    }
-                    channels = cout;
-                    Layer::Linear {
-                        cin,
-                        cout,
-                        w: r.f32s(cin * cout)?,
-                        b: r.f32s(cout)?,
-                    }
-                }
-                k => return Err(bad(&format!("unknown layer kind {k}"))),
-            };
-            layers.push(layer);
-        }
-        if !flat || channels != 2 + lang.letters.len() {
+        let net = Net::parse(&mut r, 3)?;
+        if !net.flat || net.out_channels != 2 + lang.letters.len() {
             return Err(bad("the reader must end in one score per class"));
         }
         Ok(CellReader {
@@ -192,7 +86,7 @@ impl CellReader {
             scale,
             offset,
             temperature,
-            layers,
+            net,
         })
     }
 
@@ -279,129 +173,12 @@ impl CellReader {
 
     /// The logits for one crop of 0-255 values.
     fn forward(&self, crop: &[f32]) -> Vec<f32> {
-        let mut side = self.crop;
-        let mut x: Vec<f32> = crop.iter().map(|&v| v * self.scale + self.offset).collect();
-        let mut patches = Vec::new();
-        for layer in &self.layers {
-            x = match layer {
-                Layer::Conv { cin, cout, w, b } => {
-                    conv3x3(&x, side, *cin, *cout, w, b, &mut patches)
-                }
-                Layer::MaxPool => max_pool(&x, side, x.len() / (side * side)),
-                Layer::Mean => {
-                    let c = x.len() / (side * side);
-                    let mut out = vec![0f32; c];
-                    for px in x.chunks_exact(c) {
-                        for (o, &v) in out.iter_mut().zip(px) {
-                            *o += v;
-                        }
-                    }
-                    let n = (side * side) as f32;
-                    out.iter_mut().for_each(|o| *o /= n);
-                    out
-                }
-                Layer::Linear { cin, cout, w, b } => (0..*cout)
-                    .map(|o| {
-                        b[o] + w[o * cin..(o + 1) * cin]
-                            .iter()
-                            .zip(&x)
-                            .map(|(a, v)| a * v)
-                            .sum::<f32>()
-                    })
-                    .collect(),
-            };
-            if let Layer::MaxPool = layer {
-                side /= 2;
-            }
-        }
-        x
+        let x = Map {
+            h: self.crop,
+            w: self.crop,
+            c: 3,
+            data: crop.iter().map(|&v| v * self.scale + self.offset).collect(),
+        };
+        self.net.forward(x).data
     }
-}
-
-/// How many output pixels the convolution computes together: each weight
-/// loaded serves this many of them.
-const ROWS: usize = 4;
-/// The widest convolution: its accumulators live on the stack.
-const MAX_CHANNELS: usize = 256;
-
-/// A 3x3 convolution with padding 1 and a ReLU, on an HWC map `side` pixels
-/// square. Each output pixel's 3x3xcin patch is gathered into a row of
-/// `patches`, and rows are multiplied by the weights ROWS at a time, the
-/// output channels innermost so the compiler can vectorise them.
-fn conv3x3(
-    x: &[f32],
-    side: usize,
-    cin: usize,
-    cout: usize,
-    w: &[f32],
-    b: &[f32],
-    patches: &mut Vec<f32>,
-) -> Vec<f32> {
-    let k = 9 * cin;
-    let pixels = side * side;
-    patches.clear();
-    patches.resize(pixels * k, 0.0);
-    for y in 0..side {
-        for xx in 0..side {
-            let row = &mut patches[(y * side + xx) * k..(y * side + xx + 1) * k];
-            for ky in 0..3 {
-                let sy = y as isize + ky as isize - 1;
-                if sy < 0 || sy >= side as isize {
-                    continue; // zeros, as gathered
-                }
-                for kx in 0..3 {
-                    let sx = xx as isize + kx as isize - 1;
-                    if sx < 0 || sx >= side as isize {
-                        continue;
-                    }
-                    let src = (sy as usize * side + sx as usize) * cin;
-                    let dst = (ky * 3 + kx) * cin;
-                    row[dst..dst + cin].copy_from_slice(&x[src..src + cin]);
-                }
-            }
-        }
-    }
-    let mut out = vec![0f32; pixels * cout];
-    for p0 in (0..pixels).step_by(ROWS) {
-        let n = ROWS.min(pixels - p0);
-        let mut acc = [[0f32; MAX_CHANNELS]; ROWS];
-        for a in acc.iter_mut().take(n) {
-            a[..cout].copy_from_slice(b);
-        }
-        for kk in 0..k {
-            let wrow = &w[kk * cout..(kk + 1) * cout];
-            for (r, a) in acc.iter_mut().enumerate().take(n) {
-                let v = patches[(p0 + r) * k + kk];
-                if v != 0.0 {
-                    for (o, &wv) in a[..cout].iter_mut().zip(wrow) {
-                        *o += v * wv;
-                    }
-                }
-            }
-        }
-        for (r, a) in acc.iter().enumerate().take(n) {
-            for (o, &v) in out[(p0 + r) * cout..(p0 + r + 1) * cout]
-                .iter_mut()
-                .zip(&a[..cout])
-            {
-                *o = v.max(0.0);
-            }
-        }
-    }
-    out
-}
-
-fn max_pool(x: &[f32], side: usize, c: usize) -> Vec<f32> {
-    let half = side / 2;
-    let mut out = vec![f32::NEG_INFINITY; half * half * c];
-    for y in 0..half * 2 {
-        for xx in 0..half * 2 {
-            let src = &x[(y * side + xx) * c..(y * side + xx + 1) * c];
-            let dst = &mut out[((y / 2) * half + xx / 2) * c..((y / 2) * half + xx / 2 + 1) * c];
-            for (o, &v) in dst.iter_mut().zip(src) {
-                *o = o.max(v);
-            }
-        }
-    }
-    out
 }
