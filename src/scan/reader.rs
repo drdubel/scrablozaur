@@ -12,7 +12,7 @@
 
 use rayon::prelude::*;
 
-use super::decode::CellReading;
+use super::decode::{CellReading, ScanBoard};
 use super::net::{Bytes, Map, Net};
 use super::Grid;
 use crate::{value_error, EngineError, EngineResult, Language, BOARD_SIZE};
@@ -155,6 +155,16 @@ impl CellReader {
     /// if it sees no tiles to tell by.
     pub fn upright(&self, rgb: &[u8], side: usize) -> EngineResult<Option<usize>> {
         let readings = self.read_board(rgb, side)?;
+        Ok(self.upright_given(rgb, side, &readings))
+    }
+
+    /// `upright`, for a board already read as it lies.
+    pub fn upright_given(
+        &self,
+        rgb: &[u8],
+        side: usize,
+        readings: &Grid<CellReading>,
+    ) -> Option<usize> {
         let mut tiles: Vec<(f32, usize)> = readings
             .iter()
             .flatten()
@@ -165,45 +175,104 @@ impl CellReader {
         tiles.sort_by(|a, b| b.0.total_cmp(&a.0));
         tiles.truncate(UPRIGHT_TILES);
         if tiles.is_empty() {
-            return Ok(None);
+            return None;
         }
-        let start = |i: usize| (2 * i + 3) * self.cell / 2 - self.crop / 2;
-        let n = self.crop;
-        let scores: Vec<f32> = (0..4)
-            .into_par_iter()
-            .map(|k| {
-                let mut score = 0f32;
-                for &(_, square) in &tiles {
-                    let (y0, x0) = (start(square / BOARD_SIZE), start(square % BOARD_SIZE));
-                    // The crop turned k quarter turns clockwise: output (y, x)
-                    // comes from the source pixel that turn moves there.
-                    let mut crop = Vec::with_capacity(n * n * 3);
-                    for y in 0..n {
-                        for x in 0..n {
-                            let (sy, sx) = match k {
-                                0 => (y, x),
-                                1 => (n - 1 - x, y),
-                                2 => (n - 1 - y, n - 1 - x),
-                                _ => (x, n - 1 - y),
-                            };
-                            let at = ((y0 + sy) * side + x0 + sx) * 3;
-                            crop.extend(rgb[at..at + 3].iter().map(|&v| v as f32));
-                        }
-                    }
-                    let logits = self.forward(&crop);
+        self.best_turn(|k| {
+            tiles
+                .iter()
+                .map(|&(_, square)| {
                     // The best letter's log-probability among letters.
+                    let logits = self.forward(&self.turned_crop(rgb, side, square, k));
                     let letters = &logits[2..];
                     let top = letters.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                    let sum: f32 = letters
+                    -letters
+                        .iter()
+                        .map(|&z| ((z - top) / self.temperature).exp())
+                        .sum::<f32>()
+                        .ln()
+                })
+                .sum()
+        })
+    }
+
+    /// The quarter turns clockwise under which the board image shows the
+    /// tiles of `prior`, the last confirmed board, as they were: on a later
+    /// scan, that settles which way up the board is far more surely than
+    /// letters read cold. None if `prior` has no tiles.
+    pub fn agreeing_turn(&self, rgb: &[u8], side: usize, prior: &ScanBoard) -> Option<usize> {
+        let mut known: Vec<(usize, usize)> = Vec::new(); // (board square, class)
+        for r in 0..BOARD_SIZE {
+            for c in 0..BOARD_SIZE {
+                let ch = prior.letters[r][c];
+                if ch == '-' {
+                    continue;
+                }
+                let class = if prior.blanks[r][c] {
+                    1
+                } else {
+                    match self.lang.letter_index(ch) {
+                        Some(l) => 2 + l,
+                        None => continue,
+                    }
+                };
+                known.push((r * BOARD_SIZE + c, class));
+            }
+        }
+        if known.is_empty() {
+            return None;
+        }
+        // Spread the sample over the whole board, not its first rows.
+        let step = known.len().div_ceil(UPRIGHT_TILES);
+        let known: Vec<(usize, usize)> = known.into_iter().step_by(step).collect();
+        self.best_turn(|k| {
+            known
+                .iter()
+                .map(|&(square, class)| {
+                    // Where board square (r, c) lies in the image before the
+                    // turns: each clockwise turn took (r, c) to (c, n - 1 - r).
+                    let (mut r, mut c) = (square / BOARD_SIZE, square % BOARD_SIZE);
+                    for _ in 0..k {
+                        (r, c) = (BOARD_SIZE - 1 - c, r);
+                    }
+                    let logits = self.forward(&self.turned_crop(rgb, side, r * BOARD_SIZE + c, k));
+                    let top = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    let sum: f32 = logits
                         .iter()
                         .map(|&z| ((z - top) / self.temperature).exp())
                         .sum();
-                    score -= sum.ln();
-                }
-                score
-            })
-            .collect();
-        Ok((0..4).max_by(|&a, &b| scores[a].total_cmp(&scores[b])))
+                    (logits[class] - top) / self.temperature - sum.ln()
+                })
+                .sum()
+        })
+    }
+
+    /// The turn, of the four, scoring highest.
+    fn best_turn(&self, score: impl Fn(usize) -> f32 + Sync + Send) -> Option<usize> {
+        let scores: Vec<f32> = (0..4).into_par_iter().map(&score).collect();
+        (0..4).max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
+    }
+
+    /// The crop around image square `square`, turned `k` quarter turns
+    /// clockwise: what that square shows once the board is turned so.
+    fn turned_crop(&self, rgb: &[u8], side: usize, square: usize, k: usize) -> Vec<f32> {
+        let start = |i: usize| (2 * i + 3) * self.cell / 2 - self.crop / 2;
+        let (y0, x0) = (start(square / BOARD_SIZE), start(square % BOARD_SIZE));
+        let n = self.crop;
+        let mut crop = Vec::with_capacity(n * n * 3);
+        for y in 0..n {
+            for x in 0..n {
+                // Output (y, x) comes from the source pixel the turn moves there.
+                let (sy, sx) = match k % 4 {
+                    0 => (y, x),
+                    1 => (n - 1 - x, y),
+                    2 => (n - 1 - y, n - 1 - x),
+                    _ => (x, n - 1 - y),
+                };
+                let at = ((y0 + sy) * side + x0 + sx) * 3;
+                crop.extend(rgb[at..at + 3].iter().map(|&v| v as f32));
+            }
+        }
+        crop
     }
 
     /// Softmax with the calibration temperature, turned into what the

@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use scrablozaur_core::scan::decode::{self as scan_decode, CellReading, DecodeOptions, ScanBoard};
+use scrablozaur_core::scan::frame;
 use scrablozaur_core::scan::geometry;
+use scrablozaur_core::scan::grid::GridFinder;
 use scrablozaur_core::scan::reader::CellReader;
 use scrablozaur_core::{
     self as engine, BestWord, Board, EngineError, Language, LeaveNet, Lexicon, SimParams,
@@ -634,6 +636,139 @@ fn scan_straighten(
         .map_err(to_py)
 }
 
+/// The grid finder: where the playing grid's four corners are in a frame.
+#[pyclass(name = "GridFinder")]
+struct GridFinderPy {
+    inner: GridFinder,
+}
+
+#[pymethods]
+impl GridFinderPy {
+    /// Load `train_grid_finder.py --final`'s `.bin`.
+    #[new]
+    fn new(path: &str) -> PyResult<Self> {
+        let inner = GridFinder::open(path).map_err(to_py)?;
+        Ok(GridFinderPy { inner })
+    }
+
+    /// The heatmap's logits for a square input of 0-255 values.
+    fn raw(&self, input: Vec<f32>) -> PyResult<Vec<f32>> {
+        self.inner.raw(&input).map_err(to_py)
+    }
+
+    /// The grid's corners in an RGB frame, clockwise from the one nearest
+    /// its top left, or None.
+    fn find(
+        &self,
+        py: Python<'_>,
+        rgb: &[u8],
+        width: usize,
+        height: usize,
+    ) -> PyResult<Option<Corners>> {
+        let quad = py
+            .detach(|| self.inner.find(rgb, width, height))
+            .map_err(to_py)?;
+        Ok(quad.map(|q| q.map(|[x, y]| (x, y))))
+    }
+}
+
+/// What `scan_frame` made of a camera frame.
+#[pyclass(name = "FrameScan", frozen)]
+struct FrameScanPy {
+    /// The grid's corners in the frame, from the board's own top left, clockwise.
+    #[pyo3(get)]
+    corners: Corners,
+    /// The board straightened and turned upright, as read: RGB, `side` square.
+    #[pyo3(get)]
+    image: Vec<u8>,
+    #[pyo3(get)]
+    side: usize,
+    #[pyo3(get)]
+    readings: Vec<Vec<ReadingTuple>>,
+    #[pyo3(get)]
+    decoded: Py<DecodedScanPy>,
+}
+
+/// A camera frame to a decoded board: find the grid, straighten the tiles'
+/// tops, turn the board upright, read and decode. None if no grid shows.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (finder, reader, dawg, rgb, width, height, focal_px, prior=None, prior_blanks=None))]
+fn scan_frame(
+    py: Python<'_>,
+    finder: &GridFinderPy,
+    reader: &CellReaderPy,
+    dawg: &DawgPy,
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    focal_px: f64,
+    prior: Option<Vec<Vec<char>>>,
+    prior_blanks: Option<Vec<Vec<bool>>>,
+) -> PyResult<Option<FrameScanPy>> {
+    let prior = prior_board(prior, prior_blanks)?;
+    let out = py
+        .detach(|| {
+            frame::scan_frame(
+                &finder.inner,
+                &reader.inner,
+                &dawg.inner,
+                rgb,
+                width,
+                height,
+                focal_px,
+                prior.as_ref(),
+                &DecodeOptions::default(),
+            )
+        })
+        .map_err(to_py)?;
+    let Some(scan) = out else { return Ok(None) };
+    Ok(Some(FrameScanPy {
+        corners: scan.corners.map(|[x, y]| (x, y)),
+        image: scan.image,
+        side: scan.side,
+        readings: scan
+            .readings
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|c| (c.p_tile, c.letters.clone(), c.p_blank))
+                    .collect()
+            })
+            .collect(),
+        decoded: Py::new(py, decoded_py(&scan.decoded))?,
+    }))
+}
+
+fn prior_board(
+    prior: Option<Vec<Vec<char>>>,
+    blanks: Option<Vec<Vec<bool>>>,
+) -> PyResult<Option<ScanBoard>> {
+    let Some(letters) = prior else {
+        return Ok(None);
+    };
+    Ok(Some(ScanBoard {
+        letters: grid_of(&letters, "prior", |&ch| ch)?,
+        blanks: match &blanks {
+            Some(b) => grid_of(b, "prior_blanks", |&x| x)?,
+            None => [[false; SIZE]; SIZE],
+        },
+    }))
+}
+
+fn decoded_py(out: &scan_decode::Decoded) -> DecodedScanPy {
+    DecodedScanPy {
+        letters: rows_of(&out.board.letters),
+        blanks: rows_of(&out.board.blanks),
+        corrected: rows_of(&out.corrected),
+        flagged: rows_of(&out.flagged),
+        legal: out.legal,
+        complete: out.complete,
+        cost: out.cost,
+        work: out.work,
+    }
+}
+
 /// The board `decode_scan` settled on.
 #[pyclass(name = "DecodedScan", frozen)]
 struct DecodedScanPy {
@@ -702,16 +837,7 @@ fn decode_scan(
             p_blank: *p_blank,
         }
     })?;
-    let prior = match prior {
-        None => None,
-        Some(letters) => Some(ScanBoard {
-            letters: grid_of(&letters, "prior", |&ch| ch)?,
-            blanks: match &prior_blanks {
-                Some(b) => grid_of(b, "prior_blanks", |&x| x)?,
-                None => [[false; SIZE]; SIZE],
-            },
-        }),
-    };
+    let prior = prior_board(prior, prior_blanks)?;
     let d = DecodeOptions::default();
     let options = DecodeOptions {
         min_p_tile: min_p_tile.unwrap_or(d.min_p_tile),
@@ -724,16 +850,7 @@ fn decode_scan(
     let out = py
         .detach(|| scan_decode::decode(&dawg.inner, &readings, prior.as_ref(), &options))
         .map_err(to_py)?;
-    Ok(DecodedScanPy {
-        letters: rows_of(&out.board.letters),
-        blanks: rows_of(&out.board.blanks),
-        corrected: rows_of(&out.corrected),
-        flagged: rows_of(&out.flagged),
-        legal: out.legal,
-        complete: out.complete,
-        cost: out.cost,
-        work: out.work,
-    })
+    Ok(decoded_py(&out))
 }
 
 /// Set how many threads parallel move generation (`get_best_words(..., parallel=True)`)
@@ -760,9 +877,12 @@ fn scrablozaur(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<LeaveNetPy>()?;
     m.add_class::<DecodedScanPy>()?;
     m.add_class::<CellReaderPy>()?;
+    m.add_class::<GridFinderPy>()?;
     m.add_function(pyo3::wrap_pyfunction!(decode_scan, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(scan_tile_tops, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(scan_straighten, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(scan_frame, m)?)?;
+    m.add_class::<FrameScanPy>()?;
     m.add_function(pyo3::wrap_pyfunction!(set_num_threads, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(num_threads, m)?)?;
     Ok(())

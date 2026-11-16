@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use crate::{Lexicon, BOARD_SIZE};
 
 pub mod decode;
+pub mod frame;
 pub mod geometry;
+pub mod grid;
 mod net;
 pub mod reader;
 

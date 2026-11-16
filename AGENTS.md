@@ -19,6 +19,7 @@ Sub-projects have their own READMEs: `board_reader/README.md`, `smart_player/REA
 | `src/game/` | Game layer for the apps: session state machine, rules, bots (levels 1–10), hints, move rating, benchmark — a Rust port of the web's Python game logic |
 | `src/scan.rs` | The scanner's dictionary pass (correction + flagging), ported from `web/scan.py` |
 | `src/scan/reader.rs` | The learned cell reader (a small CNN the engine runs itself, `scrablozaur.CellReader`): a straightened board → per-square readings. Trained by `board_reader/scripts/train_cell_reader.py`; `tests/test_cell_reader.py` checks it against PyTorch |
+| `src/scan/grid.rs`, `src/scan/geometry.rs`, `src/scan/frame.rs` | The rest of the live scanner, in the engine: the learned grid finder (`scrablozaur.GridFinder`, trained by `board_reader/scripts/train_grid_finder.py`), straightening the tiles' tops from the camera's pose, and the whole frame → board pipeline (`scrablozaur.scan_frame`). `src/scan/net.rs` is the small-CNN runtime both nets run on |
 | `src/scan/decode.rs` | The legal-board decoder: the most probable board that obeys the rules, given per-square readings (`scrablozaur.decode_scan`). `board_reader/scripts/eval_decoder.py` measures it — tune against that |
 | `tests/web_parity.py` | Records the web app's behaviour into `tests/fixtures/web_parity.json`, which `cargo test` replays against `src/game/` and `src/scan.rs` |
 | `src/main.py`, `src/strategy.py`, `src/verify_engine.py` | Self-play benchmark, bot classes, sanity checks |

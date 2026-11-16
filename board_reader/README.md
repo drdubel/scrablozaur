@@ -116,6 +116,26 @@ Its weak spot is the rarest diacritics: 'ś' (one tile in a bag, eight in the
 easy photos) is mostly read as 's'. Only one test photo shows a blank, so it
 learns blanks from tiles with their ink painted out.
 
+## The learned grid finder
+
+`scripts/train_grid_finder.py` trains a small fully-convolutional net (52k
+parameters) that draws a heatmap peaking at the playing grid's four outer
+corners in a camera frame. Of the strongest peaks, the four making the
+likeliest grid are kept, then found again on the region they outline, scaled
+up. It trains on random homographies of the exported photos -- the grid
+anywhere in the frame, at any rotation, scale and perspective. Held out by
+layout, the corners land a median 0.12 squares from where they should
+(90% within 0.20; 0.9% beyond half a square), within the cell reader's
+tolerance. Which corner is the board's top left is the reader's to say:
+the premium squares look the same from all four sides, the letters do not.
+
+The engine runs it (`src/scan/grid.rs`, `scrablozaur.GridFinder`; 10 ms a
+1080p frame on a laptop) and `tests/test_grid_finder.py` holds it to PyTorch.
+`src/scan/frame.rs` (`scrablozaur.scan_frame`) chains everything the live
+scanner does: find the grid, straighten the tiles' tops from the camera's
+pose, turn the board upright -- as the last confirmed board's tiles say, or
+as its letters read best -- read every square, decode.
+
 ## Dictionary decoding
 
 A real board obeys rules no single square knows about: every line of two or

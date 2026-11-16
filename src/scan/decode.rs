@@ -40,6 +40,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use super::{verify_and_correct, Grid, MIN_ALTERNATIVE_PROB};
 use crate::{value_error, Dawg, EngineResult, Lexicon, ALPHABET_MAX, BOARD_SIZE};
@@ -475,6 +476,35 @@ struct Words {
     frontier: BinaryHeap<Partial>,
 }
 
+/// Word-list keys are already well mixed bits; std's SipHash, built to
+/// resist adversarial keys, was a tenth of a decode. Fold the two halves and
+/// multiply, Fibonacci-style.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+
+    fn write_u128(&mut self, v: u128) {
+        self.write_u64(v as u64);
+        self.write_u64((v >> 64) as u64);
+    }
+}
+
 /// Every word list of one decode. A list depends only on its squares and the
 /// letters fixed on them, so it is shared by every branch of a search that
 /// meets the same pattern -- and by every trial toggle, which leaves most of
@@ -482,7 +512,7 @@ struct Words {
 #[derive(Default)]
 struct Lists {
     words: Vec<Words>,
-    index: HashMap<u128, u32>,
+    index: HashMap<u128, u32, BuildHasherDefault<KeyHasher>>,
 }
 
 /// Where the search may return to, see `Solver::undo`.
@@ -946,6 +976,15 @@ impl<'a> Solver<'a> {
             i += 1;
             if base + cost + open[dir] >= self.best {
                 break; // words come cheapest first
+            }
+            // Each word tried is work: on a board of real words read
+            // confidently but laid out as non-words, nodes try hundreds of
+            // cached words each, and counting only nodes let a decode run
+            // for seconds within its budget.
+            self.work += 1;
+            if self.work > self.budget {
+                self.aborted = true;
+                return;
             }
             let mark = self.mark();
             if self.assign(s, &word) {

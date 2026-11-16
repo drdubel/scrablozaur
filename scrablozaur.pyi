@@ -547,6 +547,27 @@ class CellReader:
         one square of margin around the grid, read as `decode_scan` takes it."""
 
 
+class GridFinder:
+    """The grid finder: a small fully-convolutional net, run by the engine,
+    that finds the playing grid's four outer corners in a camera frame.
+    `board_reader/scripts/train_grid_finder.py --final` writes it."""
+
+    def __init__(self, path: str) -> None:
+        """Load a SCRBGRD1 export. Raises `OSError` if it is not one."""
+
+    def raw(self, input: list[float]) -> list[float]:
+        """The heatmap's logits for a square RGB input of 0-255 values,
+        row-major: for checking against PyTorch."""
+
+    def find(
+        self, rgb: bytes, width: int, height: int
+    ) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]] | None:
+        """The grid's corners in an RGB frame (`width * height * 3` bytes),
+        clockwise from the one nearest the frame's top left -- which is the
+        board's own top left, `CellReader.upright` says. `None` if no
+        grid-like quadrilateral shows."""
+
+
 class DecodedScan:
     """The board `decode_scan` settled on. Every grid is 15x15, row-major."""
 
@@ -637,3 +658,35 @@ def scan_straighten(
     the grid with corners `corners` straightened to `17 * cell` pixels
     square, RGB, with one square of margin around it. Pass the corners
     `scan_tile_tops` gives to straighten the tiles' tops."""
+
+
+class FrameScan:
+    """What `scan_frame` made of a camera frame."""
+
+    corners: tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]
+    """The grid's corners in the frame, from the board's own top left, clockwise."""
+    image: bytes
+    """The board straightened and turned upright, as read: RGB, `side` pixels
+    square, one square of margin around the grid."""
+    side: int
+    readings: list[list[tuple[float, list[tuple[str, float]], float]]]
+    """Every square as the cell reader read it, as `decode_scan` takes it."""
+    decoded: DecodedScan
+
+
+def scan_frame(
+    finder: GridFinder,
+    reader: CellReader,
+    dawg: Dawg,
+    rgb: bytes,
+    width: int,
+    height: int,
+    focal_px: float,
+    prior: list[list[str]] | None = None,
+    prior_blanks: list[list[bool]] | None = None,
+) -> FrameScan | None:
+    """A camera frame to a decoded board, the live scanner's whole pipeline:
+    find the grid, straighten the tiles' tops (`focal_px` is the lens's focal
+    length in pixels), turn the board upright -- as `prior`, the last
+    confirmed board, says, or as its letters read best -- then read every
+    square and decode. `None` if no grid shows."""
