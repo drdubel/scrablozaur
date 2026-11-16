@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use scrablozaur_core::scan::decode::{self as scan_decode, CellReading, DecodeOptions, ScanBoard};
+use scrablozaur_core::scan::geometry;
 use scrablozaur_core::scan::reader::CellReader;
 use scrablozaur_core::{
     self as engine, BestWord, Board, EngineError, Language, LeaveNet, Lexicon, SimParams,
@@ -576,6 +577,12 @@ impl CellReaderPy {
         self.inner.raw(&crop).map_err(to_py)
     }
 
+    /// Quarter turns clockwise that stand the board's letters upright, or
+    /// None if it sees no tiles to tell by.
+    fn upright(&self, py: Python<'_>, rgb: &[u8], side: usize) -> PyResult<Option<usize>> {
+        py.detach(|| self.inner.upright(rgb, side)).map_err(to_py)
+    }
+
     /// Every square's reading, as `decode_scan` takes them.
     fn read_board(
         &self,
@@ -595,6 +602,36 @@ impl CellReaderPy {
             })
             .collect())
     }
+}
+
+type Corners = [(f64, f64); 4];
+
+fn corner_array(corners: Corners) -> [[f64; 2]; 4] {
+    corners.map(|(x, y)| [x, y])
+}
+
+/// Where the grid's corners (TL, TR, BR, BL, frame pixels) would be at the
+/// height of the tiles' tops, for a `width` x `height` frame taken with a
+/// focal length of `focal_px` pixels. None for a degenerate quadrilateral.
+#[pyfunction]
+fn scan_tile_tops(corners: Corners, width: usize, height: usize, focal_px: f64) -> Option<Corners> {
+    geometry::tile_tops(&corner_array(corners), width, height, focal_px)
+        .map(|t| t.map(|[x, y]| (x, y)))
+}
+
+/// The cell reader's image of an RGB frame: the grid with corners `corners`
+/// straightened to `17 * cell` pixels square, one square of margin around it.
+#[pyfunction]
+fn scan_straighten(
+    py: Python<'_>,
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    corners: Corners,
+    cell: usize,
+) -> PyResult<Vec<u8>> {
+    py.detach(|| geometry::straighten(rgb, width, height, &corner_array(corners), cell))
+        .map_err(to_py)
 }
 
 /// The board `decode_scan` settled on.
@@ -724,6 +761,8 @@ fn scrablozaur(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DecodedScanPy>()?;
     m.add_class::<CellReaderPy>()?;
     m.add_function(pyo3::wrap_pyfunction!(decode_scan, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(scan_tile_tops, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(scan_straighten, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(set_num_threads, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(num_threads, m)?)?;
     Ok(())

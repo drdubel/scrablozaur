@@ -18,6 +18,8 @@ use super::Grid;
 use crate::{value_error, EngineError, EngineResult, Language, BOARD_SIZE};
 
 const MAGIC: &[u8; 8] = b"SCRBCNN1";
+/// Tiles `upright` judges a board's orientation by.
+const UPRIGHT_TILES: usize = 24;
 
 /// The trained reader, loaded from a SCRBCNN1 file.
 pub struct CellReader {
@@ -143,6 +145,65 @@ impl CellReader {
         Ok(std::array::from_fn(|_| {
             std::array::from_fn(|_| it.next().unwrap())
         }))
+    }
+
+    /// How many quarter turns clockwise the board image needs for its
+    /// letters to stand upright: the turn under which the reader is surest
+    /// of the letters on the squares it most takes for tiles. A grid's
+    /// corners say nothing about which way up the board is -- its premium
+    /// squares look the same from all four sides -- but the letters do. None
+    /// if it sees no tiles to tell by.
+    pub fn upright(&self, rgb: &[u8], side: usize) -> EngineResult<Option<usize>> {
+        let readings = self.read_board(rgb, side)?;
+        let mut tiles: Vec<(f32, usize)> = readings
+            .iter()
+            .flatten()
+            .enumerate()
+            .filter(|(_, c)| c.p_tile > 0.5 && c.p_blank < 0.5)
+            .map(|(i, c)| (c.p_tile, i))
+            .collect();
+        tiles.sort_by(|a, b| b.0.total_cmp(&a.0));
+        tiles.truncate(UPRIGHT_TILES);
+        if tiles.is_empty() {
+            return Ok(None);
+        }
+        let start = |i: usize| (2 * i + 3) * self.cell / 2 - self.crop / 2;
+        let n = self.crop;
+        let scores: Vec<f32> = (0..4)
+            .into_par_iter()
+            .map(|k| {
+                let mut score = 0f32;
+                for &(_, square) in &tiles {
+                    let (y0, x0) = (start(square / BOARD_SIZE), start(square % BOARD_SIZE));
+                    // The crop turned k quarter turns clockwise: output (y, x)
+                    // comes from the source pixel that turn moves there.
+                    let mut crop = Vec::with_capacity(n * n * 3);
+                    for y in 0..n {
+                        for x in 0..n {
+                            let (sy, sx) = match k {
+                                0 => (y, x),
+                                1 => (n - 1 - x, y),
+                                2 => (n - 1 - y, n - 1 - x),
+                                _ => (x, n - 1 - y),
+                            };
+                            let at = ((y0 + sy) * side + x0 + sx) * 3;
+                            crop.extend(rgb[at..at + 3].iter().map(|&v| v as f32));
+                        }
+                    }
+                    let logits = self.forward(&crop);
+                    // The best letter's log-probability among letters.
+                    let letters = &logits[2..];
+                    let top = letters.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    let sum: f32 = letters
+                        .iter()
+                        .map(|&z| ((z - top) / self.temperature).exp())
+                        .sum();
+                    score -= sum.ln();
+                }
+                score
+            })
+            .collect();
+        Ok((0..4).max_by(|&a, &b| scores[a].total_cmp(&scores[b])))
     }
 
     /// Softmax with the calibration temperature, turned into what the

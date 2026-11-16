@@ -536,6 +536,12 @@ class CellReader:
         """The logits for one crop (`crop * crop * 3` values 0-255, row-major
         RGB), before temperature: for checking against PyTorch."""
 
+    def upright(self, rgb: bytes, side: int) -> int | None:
+        """Quarter turns clockwise that stand the letters of a straightened
+        board upright -- a grid's corners cannot say which way up it is --
+        judged by how sure the reader is of its likeliest tiles' letters
+        under each turn. `None` if it sees no tiles."""
+
     def read_board(self, rgb: bytes, side: int) -> list[list[tuple[float, list[tuple[str, float]], float]]]:
         """Every square of a straightened board, `side * side` RGB pixels with
         one square of margin around the grid, read as `decode_scan` takes it."""
@@ -604,3 +610,30 @@ def decode_scan(
     Raises `ValueError` for a grid that is not 15x15 or a `prior` letter that
     is not in the dictionary's alphabet.
     """
+
+
+def scan_tile_tops(
+    corners: tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]],
+    width: int,
+    height: int,
+    focal_px: float,
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]] | None:
+    """Where the grid's corners (top left, top right, bottom right, bottom
+    left, in frame pixels) would be at the height of the tiles' tops, for a
+    `width` x `height` frame taken with a focal length of `focal_px` pixels:
+    tiles stand a quarter of a square proud, so a camera at an angle sees
+    their letters displaced from the printed grid. `None` for a degenerate
+    quadrilateral."""
+
+
+def scan_straighten(
+    rgb: bytes,
+    width: int,
+    height: int,
+    corners: tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]],
+    cell: int,
+) -> bytes:
+    """The cell reader's image of an RGB frame (`width * height * 3` bytes):
+    the grid with corners `corners` straightened to `17 * cell` pixels
+    square, RGB, with one square of margin around it. Pass the corners
+    `scan_tile_tops` gives to straighten the tiles' tops."""
