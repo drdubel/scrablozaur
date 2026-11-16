@@ -278,7 +278,9 @@ fn unseen_total(board: &Board, rack: &str) -> usize {
         .sum()
 }
 
-/// Top `n` plays for `letters`, ordered by `sort`.
+/// Top `n` plays for `letters`, ordered by `sort`. `seed` drives a `Sim`
+/// ordering's rollouts; 0 picks one from the clock.
+#[allow(clippy::too_many_arguments)]
 pub fn rank_suggestions(
     board: &Board,
     lexicon: &Lexicon,
@@ -287,6 +289,7 @@ pub fn rank_suggestions(
     n: usize,
     sort: SortMode,
     sim_iterations: usize,
+    seed: u64,
 ) -> EngineResult<Vec<Suggestion>> {
     let net = match (sort.needs_leave_net(), net) {
         (true, None) => {
@@ -309,6 +312,7 @@ pub fn rank_suggestions(
             iterations: sim_iterations,
             plies: 1,
             batch: sim_iterations,
+            seed,
             ..SimParams::default()
         };
         let net = net.expect("checked above");

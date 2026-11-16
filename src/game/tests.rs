@@ -293,6 +293,7 @@ fn hints_and_ratings_match_the_web() {
             10,
             SortMode::Score,
             100,
+            0,
         )
         .unwrap()
         .iter()
@@ -307,6 +308,7 @@ fn hints_and_ratings_match_the_web() {
             10,
             SortMode::Smart,
             100,
+            0,
         )
         .unwrap()
         .iter()
@@ -763,4 +765,24 @@ fn a_scan_trusts_the_previous_board_over_the_photo() {
         !cells[7][9].alternatives.contains(&'e'),
         "a 5% guess is noise, not an alternative"
     );
+}
+
+#[test]
+fn a_simulating_bot_replays_from_its_seed() {
+    let pack = pack("pl");
+    let play = || {
+        let seats = vec![
+            PlayerConfig::computer("Analityk", 10, 100),
+            PlayerConfig::computer("Słabszy", 10, 60),
+        ];
+        let mut session = GameSession::new(pack.clone(), GameMode::SandboxAuto, seats, 5).unwrap();
+        for _ in 0..4 {
+            session.next_auto_move().unwrap();
+        }
+        // The game as played -- board, racks, scores, last move. (`to_json`
+        // would also hold the engine board's own bag, which a session never
+        // deals from and which is seeded from the clock.)
+        session.state()
+    };
+    assert_eq!(play(), play(), "a seeded game must replay move for move");
 }

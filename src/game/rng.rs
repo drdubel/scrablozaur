@@ -27,6 +27,14 @@ impl GameRng {
         shuffle(tiles, &mut self.state);
     }
 
+    /// A seed for a computation that keeps its own generator, such as a
+    /// simulation's rollouts: one step of this stream, never 0 (which the
+    /// engine reads as "seed from the clock").
+    pub fn next_seed(&mut self) -> u64 {
+        xorshift(&mut self.state);
+        self.state
+    }
+
     /// Uniform in `lo..=hi`, like Python's `random.randint`. Always consumes
     /// one step, even when `lo == hi`.
     pub fn randint(&mut self, lo: usize, hi: usize) -> usize {

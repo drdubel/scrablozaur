@@ -982,6 +982,9 @@ impl GameSession {
             n,
             sort,
             SUGGEST_SIM_ITERATIONS,
+            // From the clock: asking for a hint must not change how the game
+            // unfolds, which drawing from the session's stream would.
+            0,
         )?)
     }
 
@@ -1146,6 +1149,13 @@ impl GameSession {
                             .max(8),
                     ),
                 };
+            // Only a simulation draws a seed: the ranked and neural orderings
+            // use no randomness, and must leave the stream where the web has it.
+            let seed = if sort == SortMode::Sim {
+                self.rng.next_seed()
+            } else {
+                0
+            };
             let ranked = rank_suggestions(
                 &self.board,
                 &lexicon,
@@ -1154,6 +1164,7 @@ impl GameSession {
                 candidates,
                 sort,
                 iterations,
+                seed,
             )?;
             return Ok(
                 pick_in_window(&ranked, best, worst, &mut self.rng).map(|s| {
@@ -1195,8 +1206,13 @@ impl GameSession {
                 .play)
             }
             EngineMode::Sim => {
+                // Deviation: the web seeds a simulation from the clock. Seeding
+                // it from the session's own stream makes a game -- and a saved
+                // one resumed -- replay identically, and lets a benchmark compare
+                // thread counts on the same positions.
                 let opts = SimOptions {
                     endgame_max_nodes: INTERACTIVE_ENDGAME_NODES,
+                    seed: self.rng.next_seed(),
                     ..SimOptions::default()
                 };
                 let net = net.as_deref().expect("mode needs a net");
