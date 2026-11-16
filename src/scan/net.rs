@@ -7,6 +7,8 @@
 //! Feature maps are HWC: channels innermost, so a convolution's output
 //! channels are the contiguous inner loop the compiler vectorises.
 
+use rayon::prelude::*;
+
 use crate::{EngineError, EngineResult};
 
 /// How many output pixels a convolution computes together: each weight
@@ -14,6 +16,8 @@ use crate::{EngineError, EngineResult};
 const ROWS: usize = 4;
 /// The widest convolution: its accumulators live on the stack.
 const MAX_CHANNELS: usize = 256;
+/// Maps with at least this many pixels are convolved on several threads.
+const PARALLEL_PIXELS: usize = 4096;
 
 pub(crate) enum Layer {
     /// 3x3, padding = dilation, batch norm folded in. Weights are
@@ -207,7 +211,9 @@ impl Net {
 
 /// A 3x3 convolution, padding and dilation `d`. Each output pixel's 3x3xcin
 /// patch is gathered into a row of `patches`, and rows are multiplied by the
-/// weights ROWS at a time, output channels innermost.
+/// weights ROWS at a time, output channels innermost. A big map (the grid
+/// finder's whole frame) is split across threads; a small one (a cell
+/// reader's crop, read alongside 224 others) is not worth it.
 #[allow(clippy::too_many_arguments)]
 fn conv3x3(
     x: &Map,
@@ -219,40 +225,86 @@ fn conv3x3(
     b: &[f32],
     patches: &mut Vec<f32>,
 ) -> Map {
-    let (h, wd) = (x.h, x.w);
     let k = 9 * cin;
-    let pixels = h * wd;
+    let pixels = x.h * x.w;
     patches.clear();
     patches.resize(pixels * k, 0.0);
-    for y in 0..h {
-        for xx in 0..wd {
-            let row = &mut patches[(y * wd + xx) * k..(y * wd + xx + 1) * k];
-            for ky in 0..3 {
-                let sy = y as isize + (ky as isize - 1) * d as isize;
-                if sy < 0 || sy >= h as isize {
-                    continue; // zeros, as gathered
+    let mut out = vec![0f32; pixels * cout];
+    let layer = Conv {
+        k,
+        cout,
+        relu,
+        w,
+        b,
+    };
+    if pixels >= PARALLEL_PIXELS {
+        patches
+            .par_chunks_mut(x.w * k)
+            .enumerate()
+            .for_each(|(y, rows)| gather(x, cin, d, y, rows));
+        let patches = patches.as_slice();
+        out.par_chunks_mut(ROWS * cout)
+            .enumerate()
+            .for_each(|(i, chunk)| layer.multiply(patches, i * ROWS, chunk));
+    } else {
+        for (y, rows) in patches.chunks_mut(x.w * k).enumerate() {
+            gather(x, cin, d, y, rows);
+        }
+        for (i, chunk) in out.chunks_mut(ROWS * cout).enumerate() {
+            layer.multiply(patches, i * ROWS, chunk);
+        }
+    }
+    Map {
+        h: x.h,
+        w: x.w,
+        c: cout,
+        data: out,
+    }
+}
+
+/// Row `y`'s 3x3xcin patches, one after another into `rows`; zeros where a
+/// patch hangs off the map, as `rows` came.
+fn gather(x: &Map, cin: usize, d: usize, y: usize, rows: &mut [f32]) {
+    let k = 9 * cin;
+    for xx in 0..x.w {
+        let row = &mut rows[xx * k..(xx + 1) * k];
+        for ky in 0..3 {
+            let sy = y as isize + (ky as isize - 1) * d as isize;
+            if sy < 0 || sy >= x.h as isize {
+                continue;
+            }
+            for kx in 0..3 {
+                let sx = xx as isize + (kx as isize - 1) * d as isize;
+                if sx < 0 || sx >= x.w as isize {
+                    continue;
                 }
-                for kx in 0..3 {
-                    let sx = xx as isize + (kx as isize - 1) * d as isize;
-                    if sx < 0 || sx >= wd as isize {
-                        continue;
-                    }
-                    let src = (sy as usize * wd + sx as usize) * cin;
-                    let dst = (ky * 3 + kx) * cin;
-                    row[dst..dst + cin].copy_from_slice(&x.data[src..src + cin]);
-                }
+                let src = (sy as usize * x.w + sx as usize) * cin;
+                let dst = (ky * 3 + kx) * cin;
+                row[dst..dst + cin].copy_from_slice(&x.data[src..src + cin]);
             }
         }
     }
-    let mut out = vec![0f32; pixels * cout];
-    for p0 in (0..pixels).step_by(ROWS) {
-        let n = ROWS.min(pixels - p0);
+}
+
+struct Conv<'a> {
+    k: usize,
+    cout: usize,
+    relu: bool,
+    w: &'a [f32],
+    b: &'a [f32],
+}
+
+impl Conv<'_> {
+    /// Output pixels `p0..` into `out`, up to ROWS of them.
+    fn multiply(&self, patches: &[f32], p0: usize, out: &mut [f32]) {
+        let (k, cout) = (self.k, self.cout);
+        let n = out.len() / cout;
         let mut acc = [[0f32; MAX_CHANNELS]; ROWS];
         for a in acc.iter_mut().take(n) {
-            a[..cout].copy_from_slice(b);
+            a[..cout].copy_from_slice(self.b);
         }
         for kk in 0..k {
-            let wrow = &w[kk * cout..(kk + 1) * cout];
+            let wrow = &self.w[kk * cout..(kk + 1) * cout];
             for (r, a) in acc.iter_mut().enumerate().take(n) {
                 let v = patches[(p0 + r) * k + kk];
                 if v != 0.0 {
@@ -263,17 +315,10 @@ fn conv3x3(
             }
         }
         for (r, a) in acc.iter().enumerate().take(n) {
-            let dst = &mut out[(p0 + r) * cout..(p0 + r + 1) * cout];
-            for (o, &v) in dst.iter_mut().zip(&a[..cout]) {
-                *o = if relu { v.max(0.0) } else { v };
+            for (o, &v) in out[r * cout..(r + 1) * cout].iter_mut().zip(&a[..cout]) {
+                *o = if self.relu { v.max(0.0) } else { v };
             }
         }
-    }
-    Map {
-        h,
-        w: wd,
-        c: cout,
-        data: out,
     }
 }
 
