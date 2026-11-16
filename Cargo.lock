@@ -166,13 +166,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "scrablozaur"
+name = "scrablozaur-core"
 version = "2.0.0"
 dependencies = [
- "pyo3",
  "rayon",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "scrablozaur-py"
+version = "2.0.0"
+dependencies = [
+ "pyo3",
+ "scrablozaur-core",
 ]
 
 [[package]]

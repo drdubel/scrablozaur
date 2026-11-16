@@ -1,6 +1,6 @@
 ---
 name: engine-change
-description: Checklist for changing the Rust engine in src/lib.rs (DAWG, GADDAG, move generation, scoring) and keeping the PyO3 bindings, .pyi stubs, and Python callers in sync. Use whenever editing src/lib.rs, changing the PyO3 API surface, or when Python behaviour disagrees with the Rust code.
+description: Checklist for changing the Rust engine in src/lib.rs (DAWG, GADDAG, move generation, scoring) and keeping the PyO3 bindings (crates/py), .pyi stubs, and Python callers in sync. Use whenever editing src/lib.rs or crates/py, changing the PyO3 API surface, or when Python behaviour disagrees with the Rust code.
 ---
 
 # Changing the Scrablozaur engine
@@ -8,6 +8,11 @@ description: Checklist for changing the Rust engine in src/lib.rs (DAWG, GADDAG,
 The Rust engine is consumed by Python through a compiled PyO3 extension. Editing
 `src/lib.rs` alone changes nothing that Python sees until the extension is rebuilt.
 Most "impossible" bugs in this repo are a stale `.so`.
+
+The engine (`src/lib.rs`) is plain Rust. The Python module is a separate, thin
+crate, `crates/py`, that only converts arguments and maps `EngineError` onto
+`ValueError` / `OSError` / `RuntimeError`. Logic goes in the engine, never in the
+wrapper — the Android bindings (`crates/mobile`) share the engine, not the wrapper.
 
 ## 1. Rebuild, always
 
@@ -21,14 +26,16 @@ uv run maturin develop --release
 - `maturin develop` installs into the active `.venv`; if imports still look stale,
   confirm you are in that venv (`uv run python -c "import scrablozaur; print(scrablozaur.__file__)"`).
 
-`extension-module` is deliberately **off** in `Cargo.toml` so `cargo run` / `cargo test`
-can link libpython normally for the CLI binary. Maturin re-enables it via
-`[tool.maturin] features`. Don't "fix" this by flipping the default.
+`extension-module` is deliberately **off** in `crates/py/Cargo.toml` so
+`cargo build --workspace` can link libpython normally. Maturin re-enables it via
+`[tool.maturin] features` (and finds the crate via `manifest-path`). Don't "fix"
+this by flipping the default. The engine itself has no PyO3 dependency, so plain
+`cargo run` / `cargo test` never involve Python.
 
 ## 2. Keep the API surface in sync
 
 If you add, remove, or change the signature of anything exposed with `#[pyfunction]`,
-`#[pymethods]`, or `#[pyclass]`:
+`#[pymethods]`, or `#[pyclass]` in `crates/py/src/lib.rs`:
 
 1. Update `scrablozaur.pyi` by hand — it is not generated. It ships as
    `scrablozaur/__init__.pyi`, and it is the only thing giving `web/`, `smart_player/`,

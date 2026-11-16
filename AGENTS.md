@@ -11,8 +11,9 @@ Sub-projects have their own READMEs: `board_reader/README.md`, `smart_player/REA
 
 | Path | What |
 |---|---|
-| `src/lib.rs` | The engine: DAWG/GADDAG, `Board`, move search, scoring, CLI subcommands |
+| `src/lib.rs` | The engine (`scrablozaur-core`): DAWG/GADDAG, `Board`, move search, scoring, CLI subcommands. Plain Rust, no bindings |
 | `src/main.rs` | Thin binary entry point, delegates to `lib.rs` |
+| `crates/py/` | The `scrablozaur` Python module: a thin PyO3 wrapper over the engine |
 | `src/main.py`, `src/strategy.py`, `src/verify_engine.py` | Self-play benchmark, bot classes, sanity checks |
 | `web/` | FastAPI app (`web.main:app`), routes under `web/routers/`, vanilla-JS frontend in `web/static/` |
 | `board_reader/` | Photo → board-state OpenCV/torch pipeline |
@@ -30,14 +31,14 @@ Sub-projects have their own READMEs: `board_reader/README.md`, `smart_player/REA
 # Python deps (uv-managed; pyproject.toml is NOT a real package — `package = false`)
 uv sync
 
-# Build/rebuild the Python extension — REQUIRED after any change to src/lib.rs
+# Build/rebuild the Python extension — REQUIRED after any change to src/lib.rs or crates/py
 uv run maturin develop --release
 
-# Rust
-cargo build --release          # CLI binary (extension-module feature OFF by default)
-cargo test                     # includes tests/cli_build.rs
-cargo clippy --all-targets
-cargo fmt
+# Rust (a workspace: the engine at the root is the default member)
+cargo build --release          # engine + CLI binary
+cargo test                     # engine tests, includes tests/cli_build.rs
+cargo clippy --workspace --all-targets
+cargo fmt --all
 
 # Python tests / lint
 uv run pytest tests/
@@ -59,8 +60,13 @@ make bench  LANG=pl            # speed comparison         (gen-bench)
 - **`maturin develop --release` after every `src/lib.rs` edit.** Python will silently
   keep importing the stale `.so` otherwise. Always use `--release`; debug builds of the
   move generator are unusably slow.
-- `extension-module` is deliberately **off** in `Cargo.toml` so `cargo run`/`cargo test`
-  can link libpython normally. Maturin turns it on via `[tool.maturin] features`.
+- The engine has **no binding code**. Python's module is `crates/py` (built by maturin
+  via `manifest-path`); it only converts arguments and maps `EngineError` onto
+  `ValueError`/`OSError`/`RuntimeError`. Put behaviour in the engine, never in a wrapper,
+  or the bindings drift apart.
+- `extension-module` is deliberately **off** in `crates/py/Cargo.toml` so
+  `cargo build --workspace` can link libpython normally. Maturin turns it on via
+  `[tool.maturin] features`.
 - `scrablozaur.pyi` is maintained by hand — **update it whenever the PyO3 API changes**,
   or type checking of `web/`, `smart_player/`, and `src/*.py` goes stale.
 - **Alphabet, point values and tile distribution live in `languages/<code>.json`** — never

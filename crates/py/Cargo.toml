@@ -1,0 +1,18 @@
+[package]
+name = "scrablozaur-py"
+version = "2.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+# The Python module is `scrablozaur`, and PyO3 derives the module's init
+# symbol from the library name, so the two must match.
+name = "scrablozaur"
+crate-type = ["cdylib"]
+
+[dependencies]
+scrablozaur-core = { path = "../.." }
+# `extension-module` stays off here and is switched on by maturin (see
+# `[tool.maturin] features` in pyproject.toml), so `cargo build --workspace`
+# still links libpython normally.
+pyo3 = { version = "0.28.3" }

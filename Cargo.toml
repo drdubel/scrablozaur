@@ -1,10 +1,26 @@
+[workspace]
+# The engine is this root package (src/lib.rs + the CLI in src/main.rs). The
+# bindings are thin wrappers around it, one crate per host: crates/py is the
+# `scrablozaur` Python module, crates/mobile the Android library. Plain
+# `cargo build`/`cargo test`/`cargo run` stay on the engine alone, which has no
+# Python or JNI dependency of its own.
+members = [".", "crates/py"]
+default-members = ["."]
+resolver = "2"
+
 [package]
-name = "scrablozaur"
+name = "scrablozaur-core"
 version = "2.0.0"
 edition = "2021"
 
+[lib]
+name = "scrablozaur_core"
+
+[[bin]]
+name = "scrablozaur"
+path = "src/main.rs"
+
 [dependencies]
-pyo3 = { version = "0.28.3" }
 rayon = "1.12.0"
 # `languages/*.json` is the one source of truth for every alphabet, point table
 # and tile distribution. Python reads it for the web app, and the CLI
@@ -14,10 +30,3 @@ rayon = "1.12.0"
 # a data file was meant to eliminate.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-[features]
-extension-module = ["pyo3/extension-module"]
-
-[lib]
-name = "scrablozaur"
-crate-type = ["cdylib", "rlib"]

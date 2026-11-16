@@ -106,11 +106,14 @@ uv run maturin develop --release   # compiles the Rust extension into that same 
 `maturin develop` installs the extension straight into the active `.venv`
 (`.venv/lib/python3.*/site-packages/scrablozaur/`, alongside the bundled
 `__init__.pyi` stubs), so `import scrablozaur` works immediately. Re-run
-`maturin develop --release` after any change to `src/lib.rs`.
+`maturin develop --release` after any change to `src/lib.rs` or `crates/py/`.
 
-`target/release/` is Cargo's own output directory — it holds the CLI binary
-(`scrablozaur`) and the `libscrablozaur.dylib`/`.so` cdylib, neither of which
-Python imports.
+The Rust side is a Cargo workspace. The engine (`scrablozaur-core`, at the
+root) is plain Rust with no bindings; the Python module is a separate thin
+crate, `crates/py`, which maturin builds via `manifest-path` in
+`pyproject.toml`. `cargo build` / `cargo test` / `cargo run` work on the engine
+alone, and `target/release/` holds the CLI binary (`scrablozaur`), which
+Python never imports.
 
 ### Languages
 
@@ -579,13 +582,15 @@ uv run uvicorn web.main:app --reload
 ```
 scrablozaur/
 ├── src/
-│   ├── lib.rs           # Rust engine: DAWG/GADDAG, Board, move search, scoring
+│   ├── lib.rs           # Rust engine (scrablozaur-core): DAWG/GADDAG, Board, move search, scoring
 │   ├── main.rs          # thin binary entry point (delegates to lib.rs's CLI)
 │   ├── main.py          # Python self-play benchmark script (`graj()`, `benchmark()`)
 │   ├── strategy.py      # SimplePlayer / StrategicPlayer / RankedPlayer bot classes
 │   ├── rules.py         # when a game ends and how it is finally scored (one definition)
 │   ├── languages.py     # loads + validates languages/*.json (the source of truth)
 │   └── verify_engine.py # engine sanity checks
+├── crates/
+│   └── py/              # the `scrablozaur` Python module: thin PyO3 wrapper over the engine
 ├── languages/           # one JSON per language: alphabet, points, distribution, paths
 │   ├── pl.json
 │   └── en.json
@@ -609,5 +614,5 @@ scrablozaur/
 ├── Makefile             # dictionary builds + verification, per language
 ├── pyproject.toml       # uv-managed Python dependencies (web/ + board_reader/ + smart_player/)
 ├── uv.lock
-└── Cargo.toml           # Rust package manifest
+└── Cargo.toml           # Rust workspace + engine package manifest
 ```
