@@ -625,6 +625,7 @@ scrablozaur/
 │   ├── main.rs          # thin binary entry point (delegates to lib.rs's CLI)
 │   ├── game/            # the web's game logic in Rust: sessions, rules, bots, hints, benchmark
 │   ├── scan.rs          # the scanner's dictionary pass (correction + flagging)
+│   ├── scan/decode.rs   # the most probable legal board, given per-square readings
 │   ├── main.py          # Python self-play benchmark script (`graj()`, `benchmark()`)
 │   ├── strategy.py      # SimplePlayer / StrategicPlayer / RankedPlayer bot classes
 │   ├── rules.py         # when a game ends and how it is finally scored (one definition)

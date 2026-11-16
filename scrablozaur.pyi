@@ -516,3 +516,68 @@ class LeaveNet:
         Must equal `smart_player.model.ALPHABET`; if it ever diverges, every
         prediction is silently wrong, so it is asserted in the tests.
         """
+
+
+class DecodedScan:
+    """The board `decode_scan` settled on. Every grid is 15x15, row-major."""
+
+    letters: list[list[str]]
+    """The board's letters, `'-'` for an empty square."""
+    blanks: list[list[bool]]
+    """Squares holding a blank playing as the letter shown."""
+    corrected: list[list[bool]]
+    """Squares where the board differs from the readings' own best guess: a
+    letter changed, a tile added or removed, a blank seen where a letter was
+    read or the reverse."""
+    flagged: list[list[bool]]
+    """Squares still in a non-word or standing alone; only ever set when the
+    board is not `legal`."""
+    legal: bool
+    """Every rule holds. When no legal board was found, `letters` is instead
+    the readings' best guess after the web scanner's single-letter correction
+    pass, with `'?'` for a tile whose letter is unknown, and `flagged` set."""
+    complete: bool
+    """The search finished within its budget."""
+    cost: float
+    """The board's cost minus that of the readings' best guess, in nats: how
+    far the rules forced the decoder from the readings. `inf` unless legal."""
+    work: int
+    """Work done, in the units of `budget`."""
+
+
+def decode_scan(
+    dawg: Dawg,
+    readings: list[list[tuple[float, list[tuple[str, float]], float]]],
+    prior: list[list[str]] | None = None,
+    prior_blanks: list[list[bool]] | None = None,
+    *,
+    min_p_tile: float | None = None,
+    max_p_tile: float | None = None,
+    letter_floor: float | None = None,
+    blank_floor: float | None = None,
+    max_flips: int | None = None,
+    budget: int | None = None,
+) -> DecodedScan:
+    """The most probable legal board given what a scanner read of each square.
+
+    `readings` is 15x15 of `(p_tile, letters, p_blank)`: the probability that
+    the square holds a tile, the probabilities of the letter such a tile shows
+    (lowercase, any order; letters left out share what the listed ones leave,
+    and an empty list says nothing about the letter), and the probability that
+    the tile is a blank. These should be calibrated probabilities, not raw
+    classifier scores: the decoder weighs them against each other and against
+    the dictionary.
+
+    The board found has every line of two or more tiles a word, no tile on its
+    own, no letter more often than the bag holds it (blanks covering any
+    excess), and every tile of `prior` -- the last confirmed board, with
+    `prior_blanks` marking its blanks -- exactly as it was.
+
+    The options, `None` for the engine's default: `p_tile` is clamped into
+    `[min_p_tile, max_p_tile]`; no letter's probability counts as less than
+    `letter_floor`, no blank's as less than `blank_floor`; up to `max_flips`
+    rounds toggle a square between tile and empty; `budget` caps the work.
+
+    Raises `ValueError` for a grid that is not 15x15 or a `prior` letter that
+    is not in the dictionary's alphabet.
+    """

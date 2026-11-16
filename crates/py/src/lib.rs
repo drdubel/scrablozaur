@@ -10,9 +10,13 @@ use std::collections::HashMap;
 
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use scrablozaur_core::scan::decode::{self as scan_decode, CellReading, DecodeOptions, ScanBoard};
 use scrablozaur_core::{
     self as engine, BestWord, Board, EngineError, Language, LeaveNet, Lexicon, SimParams,
 };
+
+/// Board side; grids cross into Python as nested lists of this size.
+const SIZE: usize = 15;
 
 fn to_py(err: EngineError) -> PyErr {
     match err {
@@ -545,6 +549,108 @@ impl LeaveNetPy {
     }
 }
 
+/// The board `decode_scan` settled on.
+#[pyclass(name = "DecodedScan", frozen)]
+struct DecodedScanPy {
+    /// 15x15, `'-'` for an empty square.
+    #[pyo3(get)]
+    letters: Vec<Vec<char>>,
+    #[pyo3(get)]
+    blanks: Vec<Vec<bool>>,
+    #[pyo3(get)]
+    corrected: Vec<Vec<bool>>,
+    #[pyo3(get)]
+    flagged: Vec<Vec<bool>>,
+    #[pyo3(get)]
+    legal: bool,
+    #[pyo3(get)]
+    complete: bool,
+    #[pyo3(get)]
+    cost: f32,
+    #[pyo3(get)]
+    work: usize,
+}
+
+/// One square's reading as Python passes it: `(p_tile, [(letter, p)], p_blank)`.
+type ReadingTuple = (f32, Vec<(char, f32)>, f32);
+
+fn grid_of<T: Clone, U>(
+    rows: &[Vec<T>],
+    what: &str,
+    f: impl Fn(&T) -> U,
+) -> PyResult<[[U; SIZE]; SIZE]> {
+    if rows.len() != SIZE || rows.iter().any(|row| row.len() != SIZE) {
+        return Err(PyValueError::new_err(format!("{what} must be 15x15")));
+    }
+    Ok(std::array::from_fn(|r| {
+        std::array::from_fn(|c| f(&rows[r][c]))
+    }))
+}
+
+fn rows_of<T: Copy>(grid: &[[T; SIZE]; SIZE]) -> Vec<Vec<T>> {
+    grid.iter().map(|row| row.to_vec()).collect()
+}
+
+/// The most probable legal board given per-square readings: see
+/// `scan::decode` in the engine. Options left as `None` take the engine's
+/// defaults.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(signature = (dawg, readings, prior=None, prior_blanks=None, *, min_p_tile=None, max_p_tile=None, letter_floor=None, blank_floor=None, max_flips=None, budget=None))]
+fn decode_scan(
+    py: Python<'_>,
+    dawg: &DawgPy,
+    readings: Vec<Vec<ReadingTuple>>,
+    prior: Option<Vec<Vec<char>>>,
+    prior_blanks: Option<Vec<Vec<bool>>>,
+    min_p_tile: Option<f32>,
+    max_p_tile: Option<f32>,
+    letter_floor: Option<f32>,
+    blank_floor: Option<f32>,
+    max_flips: Option<usize>,
+    budget: Option<usize>,
+) -> PyResult<DecodedScanPy> {
+    let readings = grid_of(&readings, "readings", |(p_tile, letters, p_blank)| {
+        CellReading {
+            p_tile: *p_tile,
+            letters: letters.clone(),
+            p_blank: *p_blank,
+        }
+    })?;
+    let prior = match prior {
+        None => None,
+        Some(letters) => Some(ScanBoard {
+            letters: grid_of(&letters, "prior", |&ch| ch)?,
+            blanks: match &prior_blanks {
+                Some(b) => grid_of(b, "prior_blanks", |&x| x)?,
+                None => [[false; SIZE]; SIZE],
+            },
+        }),
+    };
+    let d = DecodeOptions::default();
+    let options = DecodeOptions {
+        min_p_tile: min_p_tile.unwrap_or(d.min_p_tile),
+        max_p_tile: max_p_tile.unwrap_or(d.max_p_tile),
+        letter_floor: letter_floor.unwrap_or(d.letter_floor),
+        blank_floor: blank_floor.unwrap_or(d.blank_floor),
+        max_flips: max_flips.unwrap_or(d.max_flips),
+        budget: budget.unwrap_or(d.budget),
+    };
+    let out = py
+        .detach(|| scan_decode::decode(&dawg.inner, &readings, prior.as_ref(), &options))
+        .map_err(to_py)?;
+    Ok(DecodedScanPy {
+        letters: rows_of(&out.board.letters),
+        blanks: rows_of(&out.board.blanks),
+        corrected: rows_of(&out.corrected),
+        flagged: rows_of(&out.flagged),
+        legal: out.legal,
+        complete: out.complete,
+        cost: out.cost,
+        work: out.work,
+    })
+}
+
 /// Set how many threads parallel move generation (`get_best_words(..., parallel=True)`)
 /// uses. Must be called before the first generation; raises `RuntimeError` if the
 /// pool is already built. Overrides the `RAYON_NUM_THREADS` env var and the
@@ -567,6 +673,8 @@ fn scrablozaur(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DawgPy>()?;
     m.add_class::<BoardPy>()?;
     m.add_class::<LeaveNetPy>()?;
+    m.add_class::<DecodedScanPy>()?;
+    m.add_function(pyo3::wrap_pyfunction!(decode_scan, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(set_num_threads, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(num_threads, m)?)?;
     Ok(())

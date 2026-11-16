@@ -13,6 +13,8 @@ use std::collections::HashMap;
 
 use crate::{Lexicon, BOARD_SIZE};
 
+pub mod decode;
+
 pub type Grid<T> = [[T; BOARD_SIZE]; BOARD_SIZE];
 
 /// Rounds of single-letter correction: fixing one word can change a crossing

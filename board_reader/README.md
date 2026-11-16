@@ -92,6 +92,34 @@ Hard-difficulty photos are excluded by default (extreme angle/lighting that woul
 mostly just add noise to the aggregate score) -- pass `-d emh` to include them.
 Both scripts also report board-detection failures separately (currently 0).
 
+## Dictionary decoding
+
+A real board obeys rules no single square knows about: every line of two or
+more tiles is a word, the tiles form one group through the centre, no letter
+appears more often than the bag holds it. The engine's `src/scan/decode.rs`
+(`scrablozaur.decode_scan` from Python) finds the most probable board obeying
+all of them, weighing each square's calibrated tile and letter probabilities
+against the dictionary: it corrects letters, restores missed tiles, drops
+false ones and works out which letter each blank plays. The web's scan flow
+still uses the older single-letter pass in `web/scan.py`; the live scanner is
+to use the decoder.
+
+`scripts/eval_decoder.py` scores it. Most test layouts are deliberate
+non-words, so it uses legal self-play boards instead, giving each square a
+reading this pipeline really produced on a test photo of the same difficulty.
+Squares are drawn independently, which is kinder than a real photo, whose
+errors cluster. Wrong squares per board, over 213 boards (median 67 tiles):
+
+| photos | first scan of a game | later scans, previous board confirmed |
+|---|---|---|
+| easy | 2.72 → 0.54 (exact boards 6% → 62%) | 0.30 → 0.03 (76% → 98%) |
+| medium | 5.13 → 1.89 (2% → 31%) | 0.58 → 0.13 (56% → 90%) |
+| hard | 42.9 → 39.8 | 7.75 → 2.78 (0% → 18%) |
+
+`web/scan.py`'s pass changes nothing on these readings: this classifier's
+second guesses rarely reach its 0.15 threshold. A decode takes a few
+milliseconds on average on a laptop, 0.2 s at worst.
+
 ## Tuning
 
 Every detection stage's parameters can be tuned interactively against

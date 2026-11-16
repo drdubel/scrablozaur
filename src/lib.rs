@@ -1070,6 +1070,9 @@ impl Dawg {
 pub struct Lexicon {
     dawg: Dawg,
     gaddag: Option<Dawg>,
+    /// Per DAWG node, bit `k` set when a word ends exactly `k` letters below
+    /// it. Only the scan decoder needs it, so it is built on first use.
+    word_lengths: OnceLock<Vec<u16>>,
 }
 
 /// If `path` is `.../dawg.bin`, the sibling `.../gaddag.bin`; otherwise `None`.
@@ -1104,7 +1107,21 @@ impl Lexicon {
                 _ => None,
             },
         };
-        Ok(Lexicon { dawg, gaddag })
+        Ok(Lexicon::from_parts(dawg, gaddag))
+    }
+
+    fn from_parts(dawg: Dawg, gaddag: Option<Dawg>) -> Self {
+        Lexicon {
+            dawg,
+            gaddag,
+            word_lengths: OnceLock::new(),
+        }
+    }
+
+    /// See the `word_lengths` field.
+    pub(crate) fn word_lengths(&self) -> &[u16] {
+        self.word_lengths
+            .get_or_init(|| scan::decode::word_lengths(&self.dawg))
     }
 
     /// The language this lexicon was loaded under. Its edge letters were
@@ -4251,10 +4268,7 @@ fn cmd_gen_verify(
 ) -> io::Result<()> {
     let dawg = Dawg::load_kind(dawg_path, lang, KIND_DAWG)?;
     let gaddag = Dawg::load_kind(gaddag_path, lang, KIND_GADDAG)?;
-    let lexicon = Lexicon {
-        dawg,
-        gaddag: Some(gaddag),
-    };
+    let lexicon = Lexicon::from_parts(dawg, Some(gaddag));
     let gad = lexicon.gaddag.as_ref().unwrap();
 
     let mut positions = 0usize;
@@ -4372,10 +4386,7 @@ fn cmd_gen_bench(
 ) -> io::Result<()> {
     let dawg = Dawg::load_kind(dawg_path, lang, KIND_DAWG)?;
     let gaddag = Dawg::load_kind(gaddag_path, lang, KIND_GADDAG)?;
-    let lexicon = Lexicon {
-        dawg,
-        gaddag: Some(gaddag),
-    };
+    let lexicon = Lexicon::from_parts(dawg, Some(gaddag));
     let gad = lexicon.gaddag.as_ref().unwrap();
 
     let mut positions = 0usize;
