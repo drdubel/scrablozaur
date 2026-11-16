@@ -172,6 +172,13 @@ fn real_letter_counts(letters: &str) -> HashMap<char, u32> {
     freq
 }
 
+/// `(letter_multiplier, word_multiplier)` of the square at (row, col) -- the
+/// board's premium layout, for anything that draws it. Read from the same
+/// table scoring uses, so a board on screen cannot disagree with the score.
+pub fn square_bonus(row: usize, col: usize) -> (u8, u8) {
+    quadrant_bonus(row.min(BOARD_SIZE - 1), col.min(BOARD_SIZE - 1))
+}
+
 /// Letter- and word-multiplier for the board square at (row, col), read via
 /// the BONUS_TABLE's single quadrant (the table is symmetric, so every
 /// square maps to one of its 8x8 entries by mirroring across the centre).

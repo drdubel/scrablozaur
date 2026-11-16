@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The web UI's Polish wording, kept word for word wherever the web has the
+     same control, so moving between the two is not a translation exercise. -->
+<resources>
+    <string name="app_name">Scrablozaur</string>
+
+    <!-- Loading -->
+    <string name="loading_engine">Przygotowuję słownik…</string>
+    <string name="loading_failed">Nie udało się wczytać słownika: %1$s</string>
+    <string name="retry">Spróbuj ponownie</string>
+
+    <!-- Setup -->
+    <string name="new_game">Nowa gra</string>
+    <string name="continue_game">Kontynuuj grę</string>
+    <string name="mode_competitive">Rywalizacja</string>
+    <string name="mode_sandbox">Sandbox</string>
+    <string name="mode_scan">Skanuj</string>
+    <string name="language">Język</string>
+    <string name="sandbox_manual">Ręczny</string>
+    <string name="sandbox_auto">Automatyczny</string>
+    <string name="sandbox_manual_desc">Ty sterujesz każdym graczem — wpisujesz słowa albo litery komputera ręcznie.</string>
+    <string name="sandbox_auto_desc">Obserwuj grę komputerów lub uruchom benchmark.</string>
+    <string name="player_count">Liczba graczy</string>
+    <string name="player_n">Gracz %1$d</string>
+    <string name="computer">Komputer</string>
+    <string name="your_name">Twoje imię</string>
+    <string name="default_human_name">Gracz</string>
+    <string name="advanced">Zaawansowane</string>
+    <string name="computer_strength">Siła komputera</string>
+    <string name="neural_net">Sieć neuronowa</string>
+    <string name="simulation">Symulacja odpowiedzi</string>
+    <string name="defaults">Domyślne</string>
+    <string name="note_no_model">Brak modelu dla tego języka.</string>
+    <string name="note_sim">Sieć + symulacja</string>
+    <string name="note_smart">Sieć neuronowa</string>
+    <string name="note_ranked">Najlepsza punktacja</string>
+    <string name="games_count">Ile gier?</string>
+    <string name="run_benchmark">Benchmark</string>
+    <string name="play">Graj</string>
+    <string name="exactly_one_computer">Dokładnie jeden gracz musi być komputerem.</string>
+
+    <!-- Difficulty levels 1-10, named as web/difficulty.py names them. The
+         engine owns what each level does; the words live here. -->
+    <string-array name="level_names">
+        <item>Wprowadzający</item>
+        <item>Początkujący</item>
+        <item>Rekreacyjny</item>
+        <item>Towarzyski</item>
+        <item>Klubowy</item>
+        <item>Zaawansowany</item>
+        <item>Ekspert</item>
+        <item>Maksymalizator</item>
+        <item>Strateg</item>
+        <item>Analityk</item>
+    </string-array>
+    <string name="level_label">%1$s · %2$d/10</string>
+
+    <!-- Game: header and scoreboard -->
+    <string name="board_description">Plansza</string>
+    <string name="scan_coming_soon">Skaner planszy pojawi się w kolejnej wersji aplikacji.</string>
+    <string name="undo">Cofnij</string>
+    <string name="scan">Skanuj</string>
+    <string name="move_n">Ruch %1$d</string>
+    <string name="bag">Worek</string>
+    <string name="points_short">%1$d pkt</string>
+
+    <!-- Game: human turn -->
+    <string name="your_letters">Twoje litery</string>
+    <string name="direction">Kierunek</string>
+    <string name="horizontal">Poziomo</string>
+    <string name="vertical">Pionowo</string>
+    <string name="word">Słowo</string>
+    <string name="points">Punkty</string>
+    <string name="confirm">Zatwierdź</string>
+    <string name="cancel">Anuluj</string>
+    <string name="backspace">Usuń literę</string>
+    <string name="hints">Podpowiedzi</string>
+    <string name="hide">Ukryj</string>
+    <string name="exchange">Wymień litery</string>
+    <string name="skip">Pomiń</string>
+    <string name="resign">Poddaj się</string>
+    <string name="resign_confirm">Czy na pewno chcesz się poddać? Gra zostanie zakończona.</string>
+    <string name="how_to_exchange">Jak wymienić litery?</string>
+    <string name="exchange_help">Anuluj układanie, zaznacz litery na stojaku i wybierz „Wymień litery”.</string>
+    <string name="tap_start_square">Kliknij pole startowe na planszy i ułóż słowo.</string>
+    <string name="select_exchange_tiles">Kliknij na stojaku litery, które chcesz wymienić.</string>
+    <string name="blank_letter_title">Jaką literę reprezentuje pusty kafelek?</string>
+    <string name="computer_passes">Komputer pasuje.</string>
+    <string name="computer_thinking">Komputer myśli…</string>
+    <string name="your_turn">Twój ruch — %1$s</string>
+    <string name="player_turn">Ruch gracza — %1$s</string>
+    <string name="computer_turn">Ruch komputera — %1$s</string>
+
+    <!-- Hints and suggestions -->
+    <string name="sort_score">Punkty</string>
+    <string name="sort_smart">Strateg</string>
+    <string name="sort_sim">Analityk</string>
+    <string name="place">Połóż</string>
+    <string name="preview">Podgląd</string>
+    <string name="no_moves">Brak możliwych ruchów.</string>
+    <string name="no_moves_for_letters">Brak możliwych ruchów dla podanych liter.</string>
+    <string name="computer_letters">Litery komputera</string>
+    <string name="computer_letters_hint">np. aeinrst</string>
+    <string name="search">Szukaj</string>
+    <string name="change_letters">Zmień litery</string>
+    <string name="hint_position">w%1$d k%2$d %3$s</string>
+
+    <!-- Automatic game -->
+    <string name="auto_game">Gra automatyczna</string>
+    <string name="auto_on_move">Na ruchu: %1$s (%2$d%%)</string>
+    <string name="auto_next">Kolejny ruch</string>
+    <string name="auto_play">Autoodtwarzanie</string>
+    <string name="auto_stop">Zatrzymaj</string>
+    <string name="passed">spasował</string>
+
+    <!-- Rating -->
+    <string name="last_move">Ostatni ruch</string>
+    <string name="rating_value">%1$d/100</string>
+    <string name="history">Historia</string>
+    <string name="rating_great">Świetny ruch!</string>
+    <string name="rating_good">Dobry ruch</string>
+    <string name="rating_ok">Można lepiej</string>
+    <string name="rating_missed">Stracona okazja</string>
+
+    <!-- Game over -->
+    <string name="tie">Remis!</string>
+    <string name="winner">Wygrał: %1$s!</string>
+
+    <!-- Definitions -->
+    <string name="definition_loading">Szukam definicji…</string>
+    <string name="definition_none">Brak definicji dla tego słowa.</string>
+    <string name="definition_failed">Nie udało się pobrać definicji.</string>
+    <string name="definition_offline">Brak połączenia z internetem.</string>
+    <string name="close">Zamknij</string>
+
+    <!-- Benchmark -->
+    <string name="benchmark_results">Wyniki benchmarku</string>
+    <string name="benchmark_running">Rozgrywam gry… (%1$d/%2$d)</string>
+    <!-- Polish needs all three forms: 1 gra, 2–4 gry, 5+ gier. -->
+    <plurals name="benchmark_games">
+        <item quantity="one">%d gra</item>
+        <item quantity="few">%d gry</item>
+        <item quantity="many">%d gier</item>
+        <item quantity="other">%d gry</item>
+    </plurals>
+    <string name="benchmark_seconds">%1$s s</string>
+    <!-- Always shown with one decimal, which Polish counts in the genitive singular. -->
+    <string name="benchmark_avg_length">śr. długość gry: %1$s ruchu</string>
+    <string name="benchmark_longest">najdłuższe słowo: %1$s (%2$d pkt)</string>
+    <string name="benchmark_highest">najlepszy pojedynczy ruch: %1$d pkt</string>
+    <string name="benchmark_best_game">Najlepsza gra — %1$s (%2$d pkt)</string>
+    <string name="benchmark_rerun">Nowy benchmark</string>
+    <string name="benchmark_back">Wróć do sandboxa</string>
+    <string name="stat_games">Gry</string>
+    <string name="stat_wins">Wygrane</string>
+    <string name="stat_wins_value">%1$d (%2$d%%)</string>
+    <string name="stat_ties">Remisy</string>
+    <string name="stat_avg_score">Śr. wynik</string>
+    <string name="stat_high">Najlepszy</string>
+    <string name="stat_low">Najgorszy</string>
+    <string name="stat_avg_word">Śr. pkt/słowo</string>
+    <string name="replay_start">Początek gry.</string>
+    <string name="replay_move">Ruch %1$d/%2$d</string>
+    <string name="replay_passed">%1$s spasował.</string>
+    <string name="replay_played">%1$s: %2$s — %3$d pkt</string>
+    <string name="replay_play">Odtwórz</string>
+    <string name="replay_prev">Poprzedni ruch</string>
+    <string name="replay_next">Następny ruch</string>
+    <string name="back">Wróć</string>
+
+    <!-- Engine refusals (MoveException), worded as the web words them -->
+    <string name="err_not_in_dictionary">„%1$s” nie ma w słowniku.</string>
+    <string name="err_first_move_centre">Pierwsze słowo musi przechodzić przez środek planszy (pole oznaczone ★).</string>
+    <string name="err_not_connected">Słowo musi być połączone z już istniejącym słowem na planszy.</string>
+    <string name="err_too_short">Słowo musi mieć co najmniej 2 litery.</string>
+    <string name="err_out_of_bounds">Słowo nie mieści się na planszy.</string>
+    <string name="err_letter_mismatch">Na polu w%1$d k%2$d leży „%3$s”, a słowo ma tam „%4$s”.</string>
+    <string name="err_cross_word">Słowo „%1$s”, które powstaje w poprzek, nie istnieje w słowniku.</string>
+    <string name="err_no_new_tiles">Ułóż przynajmniej jedną nową płytkę.</string>
+    <string name="err_word_not_whole">Słowo musi obejmować płytki, które z nim sąsiadują.</string>
+    <string name="err_missing_tiles">Nie masz wymaganych liter na stojaku.</string>
+    <string name="err_tiles_not_on_rack">Nie masz tych liter na stojaku.</string>
+    <string name="err_bag_too_small">Za mało liter w worku, żeby wymienić (potrzeba co najmniej 7).</string>
+    <string name="err_game_over">Gra już się zakończyła.</string>
+    <string name="err_nothing_to_undo">Brak ruchów do cofnięcia.</string>
+    <string name="err_wrong_mode">Ta akcja nie jest dostępna w tym trybie gry.</string>
+    <string name="err_sort_unavailable">Ten sposób sortowania nie jest dostępny dla tego języka (brak wytrenowanego modelu).</string>
+    <string name="err_invalid_players">Nieprawidłowa konfiguracja graczy.</string>
+    <string name="err_rack_too_long">Stojak mieści najwyżej 7 liter.</string>
+    <string name="err_invalid_save">Nie udało się wczytać zapisanej gry.</string>
+    <string name="err_engine">Błąd silnika: %1$s</string>
+</resources>

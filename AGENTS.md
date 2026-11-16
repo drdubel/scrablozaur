@@ -14,6 +14,8 @@ Sub-projects have their own READMEs: `board_reader/README.md`, `smart_player/REA
 | `src/lib.rs` | The engine (`scrablozaur-core`): DAWG/GADDAG, `Board`, move search, scoring, CLI subcommands. Plain Rust, no bindings |
 | `src/main.rs` | Thin binary entry point, delegates to `lib.rs` |
 | `crates/py/` | The `scrablozaur` Python module: a thin PyO3 wrapper over the engine |
+| `crates/mobile/` | The Android bindings: a thin UniFFI wrapper over the engine and `src/game/` (Kotlin package `pl.scrablozaur.engine`) |
+| `android/` | The sideloaded Android app (Kotlin + Compose). Gradle cross-compiles the engine, generates the bindings and packs the dictionaries from this repo |
 | `src/game/` | Game layer for the apps: session state machine, rules, bots (levels 1–10), hints, move rating, benchmark — a Rust port of the web's Python game logic |
 | `src/scan.rs` | The scanner's dictionary pass (correction + flagging), ported from `web/scan.py` |
 | `tests/web_parity.py` | Records the web app's behaviour into `tests/fixtures/web_parity.json`, which `cargo test` replays against `src/game/` and `src/scan.rs` |
@@ -50,6 +52,11 @@ uv run mypy .
 
 # Web app
 uv run uvicorn web.main:app --reload
+
+# Android app (JDK 17, Android SDK 37 + NDK 28.2, rustup toolchain with the android targets)
+cd android && ./gradlew :app:assembleDebug        # → app/build/outputs/apk/debug/app-debug.apk
+cd android && ./gradlew :app:testDebugUnitTest
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 # Engine CLI (see README "CLI" section)
 make dicts  LANG=pl            # rebuild both binaries (build + build-gaddag)
@@ -94,6 +101,19 @@ make bench  LANG=pl            # speed comparison         (gen-bench)
   trained on a different alphabet does not fail, it returns confident nonsense. The
   loaders refuse a mismatch (`get_model`, `_check_classes`, `LeaveNet::load`) — that is
   a guard to keep, not an obstacle to work around.
+- **The Android app plays through `crates/mobile`, which only converts types.** Rules,
+  bots and wording-free refusals live in `src/game/`; the app words them (Polish strings in
+  `android/app/src/main/res/values/strings.xml`, matching the web's). UniFFI error fields
+  are never named `message` — they become Kotlin exceptions and collide with
+  `Throwable.message`.
+- The APK's engine data is staged from this repo by `android/app/build.gradle.kts`
+  (`languages/`, `words/<code>/`, `smart_player/models/<code>/`, with a SHA-256 manifest).
+  Never copy a dictionary into `android/` by hand.
+- Gradle builds the Android library with rustup's toolchain (`scrablozaur.rustToolchain` /
+  `scrablozaur.rustupBin` in `android/gradle.properties`): Homebrew's `rustc` has no Android
+  standard library. `android/local.properties` (SDK path) and `android/keystore.properties`
+  (release signing) are machine-local and git-ignored; a sideloaded update must be signed
+  with the same key as the installed app.
 - `smart_player`'s pipeline picks its language from the `SCRABLOZAUR_LANGUAGE` env var,
   not a flag, because its process-pool workers re-import `model.py`.
 - Rayon pool is capped at `min(8, cores)`; override with `set_num_threads(n)` or
@@ -108,7 +128,7 @@ make bench  LANG=pl            # speed comparison         (gen-bench)
 
 ## Do not touch
 
-`target/`, `.venv/`, `__pycache__/`, `.mypy_cache/`, `.ruff_cache/`, generated profile
+`target/`, `android/**/build/`, `.venv/`, `__pycache__/`, `.mypy_cache/`, `.ruff_cache/`, generated profile
 artifacts (`profile*.json.gz`, `profile.svg`, `*.pstats`), and the committed binaries
 `words/<code>/dawg.bin` / `words/<code>/gaddag.bin` (regenerate with `make dicts` instead
 of editing).

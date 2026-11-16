@@ -346,9 +346,9 @@ fn scan_correction_matches_the_web() {
         }
         let cells = |flags: [[bool; BOARD_SIZE]; BOARD_SIZE]| -> Vec<(usize, usize)> {
             let mut v = Vec::new();
-            for r in 0..BOARD_SIZE {
-                for c in 0..BOARD_SIZE {
-                    if flags[r][c] {
+            for (r, row) in flags.iter().enumerate() {
+                for (c, &flagged) in row.iter().enumerate() {
+                    if flagged {
                         v.push((r, c));
                     }
                 }

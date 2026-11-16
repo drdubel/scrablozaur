@@ -577,6 +577,34 @@ uv run maturin develop --release
 uv run uvicorn web.main:app --reload
 ```
 
+## Android App
+
+`android/` is a sideloaded Android app with the web app's game modes —
+competitive play against a bot at any level, the sandbox referee board,
+automatic bot games and the benchmark with its best-game replay — running fully
+on the phone, with no server. Only word definitions come from the internet, from
+the same providers the web uses. The live board scanner is still to come.
+
+The game logic is not rewritten in Kotlin. `src/game/` is a Rust port of the
+web's Python game layer, checked against the web itself: `tests/web_parity.py`
+records whole games played through the real HTTP API, and `cargo test` replays
+them against the port. `crates/mobile` exposes it to Kotlin through UniFFI as a
+thin conversion layer. A game is saved after every action, so it survives
+Android killing the app.
+
+```bash
+cd android
+./gradlew :app:assembleDebug          # engine for arm64 + bindings + dictionaries → APK
+./gradlew :app:testDebugUnitTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+The build needs JDK 17, the Android SDK (platform 37) with NDK 28.2, and a rustup
+toolchain with the `aarch64-linux-android` target, which also covers the emulator
+on Apple Silicon (an x86_64 emulator image needs `x86_64-linux-android` too, and
+`-Pscrablozaur.abis=arm64-v8a,x86_64`). Which toolchain and where rustup lives
+are set in `android/gradle.properties`.
+
 ## Project Structure
 
 ```
@@ -584,13 +612,17 @@ scrablozaur/
 ├── src/
 │   ├── lib.rs           # Rust engine (scrablozaur-core): DAWG/GADDAG, Board, move search, scoring
 │   ├── main.rs          # thin binary entry point (delegates to lib.rs's CLI)
+│   ├── game/            # the web's game logic in Rust: sessions, rules, bots, hints, benchmark
+│   ├── scan.rs          # the scanner's dictionary pass (correction + flagging)
 │   ├── main.py          # Python self-play benchmark script (`graj()`, `benchmark()`)
 │   ├── strategy.py      # SimplePlayer / StrategicPlayer / RankedPlayer bot classes
 │   ├── rules.py         # when a game ends and how it is finally scored (one definition)
 │   ├── languages.py     # loads + validates languages/*.json (the source of truth)
 │   └── verify_engine.py # engine sanity checks
 ├── crates/
-│   └── py/              # the `scrablozaur` Python module: thin PyO3 wrapper over the engine
+│   ├── py/              # the `scrablozaur` Python module: thin PyO3 wrapper over the engine
+│   └── mobile/          # the Android bindings: thin UniFFI wrapper over the engine and src/game
+├── android/             # the Android app (Kotlin + Compose; Gradle builds the engine into it)
 ├── languages/           # one JSON per language: alphabet, points, distribution, paths
 │   ├── pl.json
 │   └── en.json

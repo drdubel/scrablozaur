@@ -4,9 +4,20 @@
 # `scrablozaur` Python module, crates/mobile the Android library. Plain
 # `cargo build`/`cargo test`/`cargo run` stay on the engine alone, which has no
 # Python or JNI dependency of its own.
-members = [".", "crates/py"]
+members = [".", "crates/py", "crates/mobile"]
 default-members = ["."]
 resolver = "2"
+
+# The Android library's build (`cargo build --profile mobile`): whole-program
+# optimisation for the shipped .so, without slowing the everyday `release`
+# builds maturin and the CLI use. Unwinding stays on so a Rust panic surfaces in
+# Kotlin as an exception instead of killing the app.
+[profile.mobile]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"
 
 [package]
 name = "scrablozaur-core"

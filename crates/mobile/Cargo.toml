@@ -1,0 +1,23 @@
+[package]
+name = "scrablozaur-mobile"
+version = "2.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+# Loaded by the Kotlin bindings (JNA) as libscrablozaur_mobile.so.
+name = "scrablozaur_mobile"
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+# Generates the Kotlin bindings from a built library: see android/app/build.gradle.kts.
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+scrablozaur-core = { path = "../.." }
+uniffi = "0.32.2"

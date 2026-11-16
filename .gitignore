@@ -18,14 +18,30 @@
 !*.json
 !*/
 !*.pt
+# The Android app (android/): Kotlin, Gradle and resources.
+!*.kt
+!*.kts
+!*.xml
+!*.properties
+!*.pro
+!gradlew
+!gradlew.bat
+!gradle-wrapper.jar
 _*
 
 # Added by cargo
 
 /target
-test
+# board_reader's photo fixtures (not in git, see board_reader/README.md).
+# Anchored: a bare `test` would also swallow every Android src/test folder.
+/board_reader/test/
 ocr
 .*/
+
+# Android build output, machine-local SDK paths, and signing secrets.
+/android/**/build/
+/android/local.properties
+/android/keystore.properties
 
 # pi coding agent: share project config (settings, prompts, extensions)
 !.pi/
