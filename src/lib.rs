@@ -4089,11 +4089,13 @@ fn usage(prog: &str) {
                     {prog} gen-verify    <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
                     {prog} gen-bench     <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
                     {prog} bot-bench     <lang> <dawg.bin>  <gaddag.bin>  <leave_value.bin|-> <level> [games]\n  \
-                    {prog} scan-bench    <lang> <dawg.bin>  <cases.json>\n\n\
+                    {prog} scan-bench    <lang> <dawg.bin>  <cases.json>\n  \
+                    {prog} frame-bench   <lang> <dawg.bin>  <grid_finder.bin> <cell_reader.bin> <frames.bin>\n\n\
          <lang> is a language code with a definition in languages/<lang>.json\n\
          (e.g. `pl`), searched for in the current directory and its parents.\n\
          bot-bench times a bot's moves at a level (1-10) with RAYON_NUM_THREADS threads.\n\
-         scan-bench times the scan decoder on the cases `eval_decoder.py --dump` writes."
+         scan-bench times the scan decoder on the cases `eval_decoder.py --dump` writes.\n\
+         frame-bench times the whole live scan on raw RGB frames (see cmd_frame_bench)."
     );
 }
 
@@ -4626,6 +4628,86 @@ fn cmd_scan_bench(lang: &'static Language, dawg_path: &str, cases_path: &str) ->
     Ok(())
 }
 
+/// `frame-bench`: the live scanner's pipeline timed on camera frames, so it
+/// can be timed on a phone. `frames.bin` is `SCRBFRM1`, a frame count, then
+/// per frame its width, height (u32) and focal length in pixels (f32), then
+/// its RGB bytes. Times finding the grid alone, as a preview would every
+/// frame, and the whole scan: find, straighten, turn upright, read, decode.
+fn cmd_frame_bench(
+    lang: &'static Language,
+    dawg_path: &str,
+    finder_path: &str,
+    reader_path: &str,
+    frames_path: &str,
+) -> io::Result<()> {
+    use scan::decode::DecodeOptions;
+    use scan::frame::scan_frame;
+    use scan::grid::GridFinder;
+    use scan::reader::CellReader;
+
+    let invalid = |e: &dyn fmt::Display| io::Error::new(io::ErrorKind::InvalidInput, e.to_string());
+    let lexicon = Lexicon::open(lang, dawg_path, None).map_err(|e| invalid(&e))?;
+    let finder = GridFinder::open(finder_path).map_err(|e| invalid(&e))?;
+    let reader = CellReader::open(lang, reader_path).map_err(|e| invalid(&e))?;
+    let data = fs::read(frames_path)?;
+    if data.len() < 12 || &data[..8] != b"SCRBFRM1" {
+        return Err(invalid(&"not a SCRBFRM1 file"));
+    }
+    let u32_at = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+    let count = u32_at(8);
+    let mut at = 12;
+    let (mut finding, mut scanning) = (Vec::new(), Vec::new());
+    let options = DecodeOptions::default();
+    for i in 0..count {
+        if at + 12 > data.len() {
+            return Err(invalid(&"truncated frames file"));
+        }
+        let (w, h) = (u32_at(at), u32_at(at + 4));
+        let focal = f32::from_le_bytes(data[at + 8..at + 12].try_into().unwrap()) as f64;
+        at += 12;
+        let rgb = data
+            .get(at..at + w * h * 3)
+            .ok_or_else(|| invalid(&"truncated frame"))?;
+        at += w * h * 3;
+        let t = Instant::now();
+        let found = finder.find(rgb, w, h).map_err(|e| invalid(&e))?;
+        finding.push(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        let scan = scan_frame(&finder, &reader, &lexicon, rgb, w, h, focal, None, &options)
+            .map_err(|e| invalid(&e))?;
+        scanning.push(t.elapsed().as_secs_f64() * 1e3);
+        let tiles = scan.as_ref().map(|s| {
+            s.decoded
+                .board
+                .letters
+                .iter()
+                .flatten()
+                .filter(|&&c| c != '-')
+                .count()
+        });
+        println!(
+            "  frame {i}: {w}x{h}, grid {}, {} tiles, find {:.0} ms, whole scan {:.0} ms",
+            if found.is_some() {
+                "found"
+            } else {
+                "not found"
+            },
+            tiles.unwrap_or(0),
+            finding.last().unwrap(),
+            scanning.last().unwrap()
+        );
+    }
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    println!(
+        "frame-bench {}, {count} frames, {} threads: find {:.0} ms, whole scan {:.0} ms on average",
+        lang.code(),
+        num_threads(),
+        mean(&finding),
+        mean(&scanning)
+    );
+    Ok(())
+}
+
 pub fn main_cli() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // Every command that reads a `.bin` needs the alphabet to decode its edges,
@@ -4657,6 +4739,9 @@ pub fn main_cli() -> io::Result<()> {
         }
         Some("scan-bench") if args.len() == 5 => {
             cmd_scan_bench(lang(&args[2])?, &args[3], &args[4])
+        }
+        Some("frame-bench") if args.len() == 7 => {
+            cmd_frame_bench(lang(&args[2])?, &args[3], &args[4], &args[5], &args[6])
         }
         _ => {
             usage(&args[0]);
