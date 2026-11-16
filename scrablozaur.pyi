@@ -518,6 +518,29 @@ class LeaveNet:
         """
 
 
+class CellReader:
+    """The cell reader: a small CNN, run by the engine, that reads every
+    square of a straightened board -- empty, a blank, or which letter.
+    `board_reader/scripts/train_cell_reader.py --final` writes it; the `.pt`
+    stays the source of truth."""
+
+    def __init__(self, lang: Language, path: str) -> None:
+        """Load a reader for `lang`. Raises `OSError` if the file is not a
+        SCRBCNN1 export or was trained on another alphabet."""
+
+    @property
+    def cell_size(self) -> int:
+        """Pixels per square: the board image is `17 * cell_size` square."""
+
+    def raw(self, crop: list[float]) -> list[float]:
+        """The logits for one crop (`crop * crop * 3` values 0-255, row-major
+        RGB), before temperature: for checking against PyTorch."""
+
+    def read_board(self, rgb: bytes, side: int) -> list[list[tuple[float, list[tuple[str, float]], float]]]:
+        """Every square of a straightened board, `side * side` RGB pixels with
+        one square of margin around the grid, read as `decode_scan` takes it."""
+
+
 class DecodedScan:
     """The board `decode_scan` settled on. Every grid is 15x15, row-major."""
 

@@ -18,6 +18,7 @@ Sub-projects have their own READMEs: `board_reader/README.md`, `smart_player/REA
 | `android/` | The sideloaded Android app (Kotlin + Compose). Gradle cross-compiles the engine, generates the bindings and packs the dictionaries from this repo |
 | `src/game/` | Game layer for the apps: session state machine, rules, bots (levels 1–10), hints, move rating, benchmark — a Rust port of the web's Python game logic |
 | `src/scan.rs` | The scanner's dictionary pass (correction + flagging), ported from `web/scan.py` |
+| `src/scan/reader.rs` | The learned cell reader (a small CNN the engine runs itself, `scrablozaur.CellReader`): a straightened board → per-square readings. Trained by `board_reader/scripts/train_cell_reader.py`; `tests/test_cell_reader.py` checks it against PyTorch |
 | `src/scan/decode.rs` | The legal-board decoder: the most probable board that obeys the rules, given per-square readings (`scrablozaur.decode_scan`). `board_reader/scripts/eval_decoder.py` measures it — tune against that |
 | `tests/web_parity.py` | Records the web app's behaviour into `tests/fixtures/web_parity.json`, which `cargo test` replays against `src/game/` and `src/scan.rs` |
 | `src/main.py`, `src/strategy.py`, `src/verify_engine.py` | Self-play benchmark, bot classes, sanity checks |

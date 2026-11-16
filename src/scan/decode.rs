@@ -97,7 +97,11 @@ impl ScanBoard {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecodeOptions {
     /// `p_tile` is clamped into `[min_p_tile, max_p_tile]`: how far one
-    /// square's tile-or-empty verdict is trusted against the rules.
+    /// square's tile-or-empty verdict is trusted against the rules. A tile
+    /// read with conviction must cost more to delete than a letter costs to
+    /// change (`letter_floor`): words ending in 'ś' mostly stay words without
+    /// it ("coś", "ktoś"), and a reader unsure of an 'ś' had the decoder
+    /// dropping the tile instead of mending the letter.
     pub min_p_tile: f32,
     pub max_p_tile: f32,
     /// The least probability any letter gets, however sure the reader is.
@@ -117,7 +121,7 @@ impl Default for DecodeOptions {
     fn default() -> Self {
         DecodeOptions {
             min_p_tile: 0.005,
-            max_p_tile: 0.995,
+            max_p_tile: 0.9999,
             letter_floor: 1e-3,
             blank_floor: 1e-4,
             max_flips: 6,
@@ -242,7 +246,7 @@ impl Model {
         let letters = lang.letters.clone();
         let n = letters.len();
         let lo = finite_or(o.min_p_tile, 0.005).clamp(1e-6, 0.5);
-        let hi = finite_or(o.max_p_tile, 0.995).clamp(0.5, 1.0 - 1e-6);
+        let hi = finite_or(o.max_p_tile, 0.9999).clamp(0.5, 1.0 - 1e-6);
         let letter_floor = finite_or(o.letter_floor, 1e-3).clamp(1e-12, 1.0);
         let blank_floor = finite_or(o.blank_floor, 1e-4).clamp(1e-12, 1.0);
 

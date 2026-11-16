@@ -92,6 +92,30 @@ Hard-difficulty photos are excluded by default (extreme angle/lighting that woul
 mostly just add noise to the aggregate score) -- pass `-d emh` to include them.
 Both scripts also report board-detection failures separately (currently 0).
 
+## The learned cell reader
+
+`scripts/train_cell_reader.py` trains a small CNN (150k parameters) that reads
+every square of a straightened board -- empty, a blank, or which letter --
+from a crop one and a half squares wide. It is the live scanner's reader: the
+engine runs it itself (`src/scan/reader.rs`, `scrablozaur.CellReader`),
+matching PyTorch to within 1e-7, at about 30 ms a board on a laptop. Its
+training images come from `scripts/export_scan_dataset.py`, which straightens
+the tiles' *top faces*: tiles stand a quarter of a square proud, so the
+camera's pose displaces them from the printed grid.
+
+Held out by layout, squares read wrong against the classical pipeline on the
+same 81 boards:
+
+| photos | classical | learned | learned: tiles found, letters right |
+|---|---|---|---|
+| easy (44) | 38 | 21 | 100%, 99.1% |
+| medium (28) | 73 | 5 | 100%, 99.6% |
+| hard (9) | 105 | 3 | 100%, 99.2% |
+
+Its weak spot is the rarest diacritics: 'ś' (one tile in a bag, eight in the
+easy photos) is mostly read as 's'. Only one test photo shows a blank, so it
+learns blanks from tiles with their ink painted out.
+
 ## Dictionary decoding
 
 A real board obeys rules no single square knows about: every line of two or
@@ -106,19 +130,26 @@ to use the decoder.
 
 `scripts/eval_decoder.py` scores it. Most test layouts are deliberate
 non-words, so it uses legal self-play boards instead, giving each square a
-reading this pipeline really produced on a test photo of the same difficulty.
-Squares are drawn independently, which is kinder than a real photo, whose
-errors cluster. Wrong squares per board, over 213 boards (median 67 tiles):
+reading a reader really produced on a test photo of the same difficulty --
+the classical pipeline's, or the learned reader's while that photo was held
+out (`--reader`). Squares are drawn independently, which is kinder than a
+real photo, whose errors cluster. Wrong squares per board, over 213 boards
+(median 67 tiles), readings → decoded:
 
-| photos | first scan of a game | later scans, previous board confirmed |
-|---|---|---|
-| easy | 2.72 → 0.49 (exact boards 6% → 64%) | 0.30 → 0.01 (76% → 99%) |
-| medium | 5.13 → 1.58 (2% → 36%) | 0.58 → 0.09 (56% → 92%) |
-| hard | 18.6 → 17.2 (0% → 0.5%) | 1.03 → 0.71 (34% → 59%) |
+| photos | reader | first scan of a game | later scans, previous board confirmed |
+|---|---|---|---|
+| easy | classical | 2.72 → 0.49 (exact boards 6% → 64%) | 0.30 → 0.03 (76% → 98%) |
+| easy | learned | 2.59 → 0.47 (3% → 63%) | 0.21 → 0.06 (81% → 94%) |
+| medium | classical | 5.13 → 1.52 (2% → 37%) | 0.58 → 0.09 (56% → 92%) |
+| medium | learned | 2.29 → 0.38 (5% → 66%) | 0.10 → 0.03 (91% → 97%) |
+| hard | classical | 18.6 → 17.2 (0% → 0.5%) | 1.03 → 0.71 (34% → 59%) |
+| hard | learned | 2.31 → 0.38 (5% → 66%) | 0.10 → 0.03 (91% → 97%) |
 
-`web/scan.py`'s pass changes nothing on these readings: this classifier's
-second guesses rarely reach its 0.15 threshold. A decode takes a few
-milliseconds on average on a laptop, 0.2 s at worst.
+Most of what the learned reader leaves is blanks -- a blank shows no letter,
+so where its words allow several, the decoder can only guess -- and 'ś'.
+`web/scan.py`'s pass changes nothing on these readings: neither reader's
+second guesses reach its 0.15 threshold. A decode takes a few milliseconds
+on average on a laptop, 0.2 s at worst.
 
 ## Tuning
 

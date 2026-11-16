@@ -36,6 +36,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
@@ -181,6 +183,97 @@ class Pools:
         return (is_tile, conf, (None, 0.0, []) if is_tile else None)
 
 
+class Classical:
+    """Readings the classical pipeline produced, calibrated."""
+
+    def __init__(self, records):
+        self.calibration = Calibration(records)
+        self.pools = Pools(records)
+
+    def tile(self, letter, tier, rng):
+        return self.pools.tile(letter, tier, rng)
+
+    def blank(self, tier, rng):
+        return self.pools.blank(tier, rng)
+
+    def empty(self, tier, rng):
+        pool = self.pools.empty[tier]
+        return pool[rng.randrange(len(pool))]
+
+    def reading(self, raw):
+        return self.calibration.reading(raw)
+
+    def read(self, raw) -> str:
+        """The square as read: '-', '?' for a tile with no legible letter, or the letter."""
+        is_tile, _, rd = raw
+        return "-" if not is_tile else (rd[0] if rd and rd[0] else "?")
+
+    def alternatives(self, raw):
+        is_tile, _, rd = raw
+        return rd[2] if is_tile and rd else []
+
+
+class Learned:
+    """Readings the cell reader made of the test photos while they were held
+    out of its training: `train_cell_reader.py --dump`. A reading is the
+    softmax over (empty, blank, every letter), already calibrated."""
+
+    def __init__(self, records, dump_path: Path):
+        dump = json.loads(dump_path.read_text(encoding="utf-8"))
+        self.letters = dump["alphabet"]
+        probs = dict(zip(dump["boards"], dump["probs"]))
+        self.tiles = {t: collections.defaultdict(list) for t in TIERS}
+        self.empties = {t: [] for t in TIERS}
+        self.blanks = [np.array(p) for p in dump["blank_probs"]]
+        for rec in records:
+            board = int(rec["photo"][3:].split("_")[0])
+            if board not in probs:
+                continue
+            tier = rec["difficulty"]
+            for r in range(GRID):
+                for c in range(GRID):
+                    p = np.array(probs[board][r * GRID + c])
+                    truth = rec["truth"][r][c].lower()
+                    if truth == "-":
+                        self.empties[tier].append(p)
+                    elif truth == "?":
+                        self.blanks.append(p)
+                    else:
+                        self.tiles[tier][truth].append(p)
+
+    def tile(self, letter, tier, rng):
+        pool = self.tiles[tier][letter]
+        if len(pool) >= 3:
+            return rng.choice(pool)
+        # Too rare in this tier: another letter's reading, the two swapped.
+        donor = rng.choice([x for x, p in self.tiles[tier].items() if len(p) >= 3])
+        p = rng.choice(self.tiles[tier][donor]).copy()
+        i, j = 2 + self.letters.index(letter), 2 + self.letters.index(donor)
+        p[i], p[j] = p[j], p[i]
+        return p
+
+    def blank(self, tier, rng):
+        return rng.choice(self.blanks)
+
+    def empty(self, tier, rng):
+        pool = self.empties[tier]
+        return pool[rng.randrange(len(pool))]
+
+    def reading(self, p):
+        p_tile = max(1e-6, 1 - float(p[0]))
+        lettered = max(1e-6, p_tile - float(p[1]))
+        best = np.argsort(p[2:])[::-1][:8]
+        return (p_tile, [(self.letters[i], float(p[2 + i]) / lettered) for i in best], float(p[1]) / p_tile)
+
+    def read(self, p) -> str:
+        k = int(np.argmax(p))
+        return "-" if k == 0 else "?" if k == 1 else self.letters[k - 2]
+
+    def alternatives(self, p):
+        _, letters, _ = self.reading(p)
+        return letters
+
+
 def parse_board(board) -> list[list[str]]:
     return [line.split() for line in str(board).splitlines()]
 
@@ -224,30 +317,30 @@ def cases(histories, every: int):
                 yield history[m - 1], history[m]
 
 
-def synthesize(board, blanks, tier, pools: Pools, rng) -> list[list[Raw]]:
+def synthesize(board, blanks, tier, source, rng):
     return [
         [
-            pools.empty[tier][rng.randrange(len(pools.empty[tier]))]
+            source.empty(tier, rng)
             if board[r][c] == "-"
-            else pools.blank(tier, rng)
+            else source.blank(tier, rng)
             if blanks[r][c]
-            else pools.tile(board[r][c], tier, rng)
+            else source.tile(board[r][c], tier, rng)
             for c in range(GRID)
         ]
         for r in range(GRID)
     ]
 
 
-def as_read(raw) -> list[list[str]]:
-    return [["-" if not t else (rd[0] if rd and rd[0] else "?") for t, _, rd in row] for row in raw]
+def as_read(raw, source) -> list[list[str]]:
+    return [[source.read(x) for x in row] for row in raw]
 
 
-def greedy(dawg, raw, prior, letters):
+def greedy(dawg, raw, prior, letters, source):
     """`web/scan.py`'s `scan_board_image` after the vision stage."""
-    grid = as_read(raw)
+    grid = as_read(raw, source)
     grid = [[ch if ch in letters or ch == "-" else "?" for ch in row] for row in grid]
     alternatives = [
-        [[a for a, p in (rd[2] if t and rd else []) if p >= _MIN_ALTERNATIVE_PROB and a in letters] for t, _, rd in row]
+        [[a for a, p in source.alternatives(x) if p >= _MIN_ALTERNATIVE_PROB and a in letters] for x in row]
         for row in raw
     ]
     locked = set()
@@ -272,6 +365,11 @@ def main():
     ap.add_argument("--every", type=int, default=4, help="score every n-th position of a game")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--tiers", default=TIERS)
+    ap.add_argument(
+        "--reader",
+        default="classical",
+        help="'classical', or the held-out readings `train_cell_reader.py --dump` wrote",
+    )
     for name in ("min_p_tile", "max_p_tile", "letter_floor", "blank_floor"):
         ap.add_argument(f"--{name.replace('_', '-')}", dest=name, type=float)
     ap.add_argument("--max-flips", type=int)
@@ -291,8 +389,7 @@ def main():
     dawg = scrablozaur.Dawg(lang, str(spec.dawg), str(spec.gaddag))
     letters = set(spec.alphabet)
     records = load_records(args.dataset)
-    calibration = Calibration(records)
-    pools = Pools(records)
+    source = Classical(records) if args.reader == "classical" else Learned(records, Path(args.reader))
     start = time.time()
     histories = self_play(dawg, lang, args.games, args.seed)
     pairs = list(cases(histories, args.every))
@@ -308,15 +405,15 @@ def main():
         for scenario in ("cold", "warm"):
             stats = collections.defaultdict(list)
             for (prev, prev_blanks), (board, blanks) in pairs:
-                raw = synthesize(board, blanks, tier, pools, rng)
+                raw = synthesize(board, blanks, tier, source, rng)
                 prior = prev if scenario == "warm" else None
-                read = as_read(raw)
+                read = as_read(raw, source)
                 if prior is not None:
                     read = [
                         [prior[r][c] if prior[r][c] != "-" else read[r][c] for c in range(GRID)] for r in range(GRID)
                     ]
-                fixed = greedy(dawg, raw, prior, letters)
-                readings = [[calibration.reading(x) for x in row] for row in raw]
+                fixed = greedy(dawg, raw, prior, letters, source)
+                readings = [[source.reading(x) for x in row] for row in raw]
                 if args.dump:
                     dumped.append(
                         {

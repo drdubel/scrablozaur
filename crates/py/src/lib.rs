@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use scrablozaur_core::scan::decode::{self as scan_decode, CellReading, DecodeOptions, ScanBoard};
+use scrablozaur_core::scan::reader::CellReader;
 use scrablozaur_core::{
     self as engine, BestWord, Board, EngineError, Language, LeaveNet, Lexicon, SimParams,
 };
@@ -549,6 +550,53 @@ impl LeaveNetPy {
     }
 }
 
+/// The cell reader: a small CNN, run by the engine, that reads every square
+/// of a straightened board.
+#[pyclass(name = "CellReader")]
+struct CellReaderPy {
+    inner: CellReader,
+}
+
+#[pymethods]
+impl CellReaderPy {
+    /// Load `train_cell_reader.py --final`'s `.bin` for `lang`.
+    #[new]
+    fn new(lang: &LanguagePy, path: &str) -> PyResult<Self> {
+        let inner = CellReader::open(lang.inner, path).map_err(to_py)?;
+        Ok(CellReaderPy { inner })
+    }
+
+    #[getter]
+    fn cell_size(&self) -> usize {
+        self.inner.cell_size()
+    }
+
+    /// The logits for one crop, before temperature.
+    fn raw(&self, crop: Vec<f32>) -> PyResult<Vec<f32>> {
+        self.inner.raw(&crop).map_err(to_py)
+    }
+
+    /// Every square's reading, as `decode_scan` takes them.
+    fn read_board(
+        &self,
+        py: Python<'_>,
+        rgb: &[u8],
+        side: usize,
+    ) -> PyResult<Vec<Vec<ReadingTuple>>> {
+        let grid = py
+            .detach(|| self.inner.read_board(rgb, side))
+            .map_err(to_py)?;
+        Ok(grid
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|c| (c.p_tile, c.letters.clone(), c.p_blank))
+                    .collect()
+            })
+            .collect())
+    }
+}
+
 /// The board `decode_scan` settled on.
 #[pyclass(name = "DecodedScan", frozen)]
 struct DecodedScanPy {
@@ -674,6 +722,7 @@ fn scrablozaur(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BoardPy>()?;
     m.add_class::<LeaveNetPy>()?;
     m.add_class::<DecodedScanPy>()?;
+    m.add_class::<CellReaderPy>()?;
     m.add_function(pyo3::wrap_pyfunction!(decode_scan, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(set_num_threads, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(num_threads, m)?)?;
