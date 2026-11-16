@@ -112,9 +112,9 @@ errors cluster. Wrong squares per board, over 213 boards (median 67 tiles):
 
 | photos | first scan of a game | later scans, previous board confirmed |
 |---|---|---|
-| easy | 2.72 → 0.54 (exact boards 6% → 62%) | 0.30 → 0.03 (76% → 98%) |
-| medium | 5.13 → 1.89 (2% → 31%) | 0.58 → 0.13 (56% → 90%) |
-| hard | 42.9 → 39.8 | 7.75 → 2.78 (0% → 18%) |
+| easy | 2.72 → 0.49 (exact boards 6% → 64%) | 0.30 → 0.01 (76% → 99%) |
+| medium | 5.13 → 1.58 (2% → 36%) | 0.58 → 0.09 (56% → 92%) |
+| hard | 18.6 → 17.2 (0% → 0.5%) | 1.03 → 0.71 (34% → 59%) |
 
 `web/scan.py`'s pass changes nothing on these readings: this classifier's
 second guesses rarely reach its 0.15 threshold. A decode takes a few

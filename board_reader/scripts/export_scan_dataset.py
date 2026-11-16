@@ -14,6 +14,7 @@ and writes to --out (default test/derived/scan_dataset/):
                      "grid_corners": [[x, y], ...],  # TL, TR, BR, BL of the 15x15 grid, photo px
                      "mesh": 16 x 16 x [x, y],       # every grid-line intersection, photo px
                      "rotation_k": k,                # letter-based correction read_letters applied
+                     "registration": 0.97,           # see registration(); boards under 0.7 are not exported
                      "truth": [15 strings],          # '-' empty, upper-case letters
                      "tiles": {"r,c": [is_tile, confidence]},             # detector, every cell
                      "readings": {"r,c": [letter, confidence, [[alt, p]]]}  # classifier, tiles only
@@ -97,6 +98,46 @@ def _rotate_index(r, c, k):
     return r, c
 
 
+def quad_area(corners) -> float:
+    x, y = np.asarray(corners, dtype=np.float64).T
+    return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+
+def registration(straight, truth) -> float:
+    """How well the straightened grid matches the labels, from colour alone:
+    the chance that a labelled tile's square is less saturated than a labelled
+    empty one (tiles are cream, the board teal and red/blue). About 0.9-1.0
+    when they line up, whatever the lighting; near 0.5 when the grid is
+    misplaced or upside down."""
+    sat = cv2.cvtColor(straight, cv2.COLOR_BGR2HSV)[..., 1].astype(np.float32)
+    inner = CELL // 4
+    med = np.array(
+        [
+            [
+                np.median(
+                    sat[
+                        MARGIN + r * CELL + inner : MARGIN + (r + 1) * CELL - inner,
+                        MARGIN + c * CELL + inner : MARGIN + (c + 1) * CELL - inner,
+                    ]
+                )
+                for c in range(GRID)
+            ]
+            for r in range(GRID)
+        ]
+    )
+    is_tile = np.array([[ch != "-" for ch in row] for row in truth])
+    tiles, empty = med[is_tile], med[~is_tile]
+    if not len(tiles) or not len(empty):
+        return 1.0
+    return float((tiles[:, None] < empty[None, :]).mean() + 0.5 * (tiles[:, None] == empty[None, :]).mean())
+
+
+# Below this, a board's labels do not belong to the squares they name. Every
+# exported photo that fell below it was visibly wrong: corners collapsed to a
+# point, or the grid shifted or upside down; the lowest correct one scored 0.80.
+MIN_REGISTRATION = 0.7
+
+
 def straighten(photo, grid_corners):
     dst = np.array(
         [[MARGIN, MARGIN], [SIZE - MARGIN, MARGIN], [SIZE - MARGIN, SIZE - MARGIN], [MARGIN, SIZE - MARGIN]],
@@ -130,8 +171,14 @@ def export_one(idx, layout, out_dir):
     mesh = _to_photo(np.asarray(grid.mesh, dtype=np.float64), corners, photo_w, photo_h, angle)
     mesh = np.rot90(mesh, -k, axes=(0, 1))
     grid_corners = [mesh[0, 0], mesh[0, GRID], mesh[GRID, GRID], mesh[GRID, 0]]
+    if quad_area(grid_corners) < 0.05 * photo_w * photo_h:
+        return f"board{idx}: the grid collapsed ({quad_area(grid_corners):.0f} px²)"
 
     truth = ["".join(GROUND_TRUTH[idx].get((r, c), "-") for c in range(GRID)) for r in range(GRID)]
+    straight = straighten(photo, grid_corners)
+    match = registration(straight, truth)
+    if match < MIN_REGISTRATION:
+        return f"board{idx}: the grid does not match the labels (registration {match:.2f})"
     tiles = {}
     for v in verdicts:
         r, c = _rotate_index(v.row, v.col, k)
@@ -148,15 +195,14 @@ def export_one(idx, layout, out_dir):
         "grid_corners": [[round(float(x), 2), round(float(y), 2)] for x, y in grid_corners],
         "mesh": [[[round(float(x), 2), round(float(y), 2)] for x, y in row] for row in mesh],
         "rotation_k": int(k),
+        "registration": round(match, 3),
         "truth": truth,
         "tiles": tiles,
         "readings": out_readings,
     }
     with open(os.path.join(out_dir, f"board{idx}.json"), "w", encoding="utf-8") as f:
         json.dump(record, f, ensure_ascii=False)
-    cv2.imwrite(
-        os.path.join(out_dir, f"board{idx}.jpg"), straighten(photo, grid_corners), [cv2.IMWRITE_JPEG_QUALITY, 95]
-    )
+    cv2.imwrite(os.path.join(out_dir, f"board{idx}.jpg"), straight, [cv2.IMWRITE_JPEG_QUALITY, 95])
     return None
 
 
@@ -178,7 +224,13 @@ def main():
         start = time.time()
         problem = export_one(idx, layout, args.out)
         print(f"board{idx}: {'FAILED ' + problem if problem else 'ok'} ({time.time() - start:.1f} s)", flush=True)
-        if problem is None:
+        if problem is not None:
+            # Do not leave an earlier run's export of this board behind.
+            for ext in ("json", "jpg"):
+                stale = os.path.join(args.out, f"board{idx}.{ext}")
+                if os.path.exists(stale):
+                    os.remove(stale)
+        else:
             index.append({"board": idx, "difficulty": DIFFICULTY[idx], "layout": layout})
     if not args.only:
         with open(os.path.join(args.out, "index.json"), "w", encoding="utf-8") as f:
