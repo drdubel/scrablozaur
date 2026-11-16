@@ -1,6 +1,8 @@
 package pl.scrablozaur.core
 
 import android.content.Context
+import android.os.SystemClock
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -11,6 +13,9 @@ import pl.scrablozaur.engine.Premium
 import pl.scrablozaur.engine.premiumLayout
 import java.io.File
 import java.security.MessageDigest
+
+/** The app's logcat tag. */
+internal const val LOG_TAG = "Scrablozaur"
 
 /** What the app needs to know about a language before (or without) loading it. */
 data class LanguageMeta(
@@ -65,12 +70,14 @@ class EngineRepository(private val context: Context) {
             ensureExtracted()
             val meta = language(code)
             val definition = File(root, "languages/${meta.code}.json").readText()
+            val start = SystemClock.elapsedRealtime()
             val pack = LanguagePackHandle.load(
                 definition,
                 File(root, meta.dawg).path,
                 File(root, meta.gaddag).path,
                 meta.leaveNet?.let { File(root, it).path },
             )
+            Log.i(LOG_TAG, "loaded '${meta.code}' in ${SystemClock.elapsedRealtime() - start} ms")
             packs[meta.code] = pack
             pack
         }
@@ -81,6 +88,7 @@ class EngineRepository(private val context: Context) {
         val manifestText = context.assets.open("engine/manifest.json").bufferedReader().use { it.readText() }
         val stamp = File(root, "manifest.json")
         if (!stamp.exists() || stamp.readText() != manifestText) {
+            val start = SystemClock.elapsedRealtime()
             // Copy into a scratch directory and swap it in, so a copy cut short
             // by the system killing the app never looks complete.
             val staging = File(context.filesDir, "engine.partial")
@@ -109,6 +117,7 @@ class EngineRepository(private val context: Context) {
             File(staging, "manifest.json").writeText(manifestText)
             root.deleteRecursively()
             check(staging.renameTo(root)) { "could not install the engine data" }
+            Log.i(LOG_TAG, "extracted the engine data in ${SystemClock.elapsedRealtime() - start} ms")
         }
         ready = true
     }

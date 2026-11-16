@@ -1,6 +1,8 @@
 package pl.scrablozaur.ui.game
 
 import android.app.Application
+import android.os.SystemClock
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineScope
@@ -21,6 +23,7 @@ import pl.scrablozaur.R
 import pl.scrablozaur.ScrablozaurApplication
 import pl.scrablozaur.core.AutoLogEntry
 import pl.scrablozaur.core.DefinitionResult
+import pl.scrablozaur.core.LOG_TAG
 import pl.scrablozaur.core.LanguageMeta
 import pl.scrablozaur.core.RatedMove
 import pl.scrablozaur.core.SavedGame
@@ -229,7 +232,9 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         while (game === g && _ui.value.view?.computerToMove == true) {
             _ui.update { it.copy(thinking = true) }
             try {
-                withContext(engine) { g.computerTurn() }
+                val start = SystemClock.elapsedRealtime()
+                val move = withContext(engine) { g.computerTurn() }
+                Log.i(LOG_TAG, "computer played '${move.word}' after ${SystemClock.elapsedRealtime() - start} ms")
             } catch (e: MoveException) {
                 _ui.update { it.copy(thinking = false, error = e.describe(getApplication())) }
                 return
