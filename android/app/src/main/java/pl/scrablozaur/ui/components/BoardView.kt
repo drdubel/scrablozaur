@@ -1,19 +1,17 @@
 package pl.scrablozaur.ui.components
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -32,6 +30,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import kotlinx.coroutines.delay
 import pl.scrablozaur.R
 import pl.scrablozaur.engine.Premium
 import pl.scrablozaur.ui.game.Cell
@@ -127,20 +126,25 @@ fun BoardView(
     }
 }
 
+/**
+ * On for 0.4 s, off for 0.4 s: the web's 0.8 s blink, which is on/off with
+ * brief fades. Stepping instead of fading redraws the screen twice a second
+ * rather than at the display's full refresh rate -- a smooth fade cost most
+ * of a fast core on a 120 Hz phone.
+ */
 @Composable
 private fun CursorLayer(cursor: Cell, modifier: Modifier) {
-    val blink by rememberInfiniteTransition(label = "cursor").animateFloat(
-        initialValue = 1f,
-        targetValue = 0.15f,
-        animationSpec = infiniteRepeatable(tween(550), RepeatMode.Reverse),
-        label = "cursorAlpha",
-    )
+    var visible by remember(cursor) { mutableStateOf(true) }
+    LaunchedEffect(cursor) {
+        while (true) {
+            delay(400)
+            visible = !visible
+        }
+    }
     Canvas(modifier) {
+        if (!visible) return@Canvas
         val g = Geometry(size.width)
-        drawRoundRect(
-            Palette.cursor.copy(alpha = blink), g.topLeft(cursor), g.square, g.radius,
-            style = Stroke(width = g.gap * 3f),
-        )
+        drawRoundRect(Palette.cursor, g.topLeft(cursor), g.square, g.radius, style = Stroke(width = g.gap * 3f))
     }
 }
 

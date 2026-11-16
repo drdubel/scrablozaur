@@ -37,12 +37,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -79,6 +77,7 @@ import pl.scrablozaur.engine.Premium
 import pl.scrablozaur.engine.PreviewResult
 import pl.scrablozaur.ui.components.BoardOverlay
 import pl.scrablozaur.ui.components.BoardView
+import pl.scrablozaur.ui.components.EngineBusy
 import pl.scrablozaur.ui.components.LetterKeyboard
 import pl.scrablozaur.ui.components.Mark
 import pl.scrablozaur.ui.components.RackView
@@ -166,7 +165,7 @@ fun GameScreen(
         Box(Modifier.padding(padding).fillMaxSize()) {
             when {
                 ui.loading -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator()
+                    EngineBusy(Modifier.size(40.dp))
                     Spacer(Modifier.height(12.dp))
                     Text(stringResource(R.string.loading_engine))
                 }
@@ -316,7 +315,7 @@ private fun SmallButton(
         colors = outlinedButtonColors(danger),
     ) {
         if (busy) {
-            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            EngineBusy(Modifier.size(14.dp))
             Spacer(Modifier.width(6.dp))
         }
         Text(stringResource(label), fontSize = 14.sp)
@@ -326,7 +325,7 @@ private fun SmallButton(
 @Composable
 private fun ConfirmButton(ui: GameUi, onClick: () -> Unit) {
     Button(onClick = onClick, enabled = ui.idle) {
-        if (ui.busy == Busy.Move) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+        if (ui.busy == Busy.Move) EngineBusy(Modifier.size(18.dp))
         else Text(stringResource(R.string.confirm))
     }
 }
@@ -443,7 +442,7 @@ private fun CompetitivePanel(ui: GameUi, vm: GameViewModel, onResign: () -> Unit
     val last = view.lastComputerMove
     if (ui.thinking) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            EngineBusy(Modifier.size(16.dp))
             Spacer(Modifier.width(8.dp))
             Text(stringResource(R.string.computer_thinking), color = Palette.muted)
         }
@@ -507,7 +506,7 @@ private fun HintsPanel(ui: GameUi, vm: GameViewModel) {
     }
     OrderChips(ui.hintOrder, ui.language?.hasLeaveNet == true, enabled = ui.idle, onChange = vm::setHintOrder)
     ErrorLine(ui, vm)
-    if (ui.busy == Busy.Hints) LinearProgressIndicator(Modifier.fillMaxWidth())
+    if (ui.busy == Busy.Hints) EngineBusy(Modifier.size(20.dp))
     HintList(ui.hints.orEmpty(), ui.hintOrder, ui.selectedHint, enabled = ui.idle, onSelect = vm::selectHint, onPlace = vm::placeHint)
 }
 
@@ -627,7 +626,7 @@ private fun SandboxComputerPanel(ui: GameUi, vm: GameViewModel) {
             )
         }
         Button(onClick = vm::searchSuggestions, enabled = ui.idle && ui.computerLetters.isNotEmpty()) {
-            if (ui.busy == Busy.Suggest) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            if (ui.busy == Busy.Suggest) EngineBusy(Modifier.size(18.dp))
             else Text(stringResource(R.string.search))
         }
         SmallButton(R.string.skip, vm::skip, enabled = ui.idle)
@@ -645,7 +644,7 @@ private fun SandboxComputerPanel(ui: GameUi, vm: GameViewModel) {
             OrderChips(ui.suggestionOrder, ui.language?.hasLeaveNet == true, ui.idle, vm::setSuggestionOrder, Modifier.weight(1f))
             TextButton(onClick = vm::editComputerLetters) { Text(stringResource(R.string.change_letters)) }
         }
-        if (ui.busy == Busy.Suggest) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (ui.busy == Busy.Suggest) EngineBusy(Modifier.size(20.dp))
         HintList(suggestions, ui.suggestionOrder, ui.selectedHint, enabled = ui.idle, onSelect = vm::selectHint, onPlace = vm::placeSuggestion)
     }
 }
@@ -657,7 +656,7 @@ private fun AutoPanel(ui: GameUi, vm: GameViewModel) {
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Button(onClick = vm::nextAutoMove, enabled = !ui.autoplay && ui.idle) {
             if (ui.busy == Busy.Auto && !ui.autoplay) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                EngineBusy(Modifier.size(18.dp))
             } else {
                 Icon(Icons.Filled.SkipNext, null)
                 Spacer(Modifier.width(4.dp))
