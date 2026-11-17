@@ -49,6 +49,12 @@ EXPORT_CELL, EXPORT_MARGIN = 64, 32  # export_scan_dataset.py's geometry
 CELL = 32  # pixels per square the reader sees
 CROP = 48  # crop side: one and a half squares
 EMPTY, BLANK = 0, 1
+# Every letter is four classes, one per quarter turn clockwise that would
+# stand the tile upright: class 2 + TURNS * letter + turns. A board can be
+# seen from any side, and which way up it is shows only in its letters --
+# so one read of the board as it lies says both what each tile is and,
+# summed over the tiles, how far to turn the board.
+TURNS = 4
 
 
 def alphabet(code: str = "pl") -> str:
@@ -244,7 +250,7 @@ def train(boards: Boards, train_ids, epochs, device, seed, log=None):
     train_ids = list(train_ids) + [i + len(boards.meta) for i in train_ids]
     torch.manual_seed(seed)
     gen = torch.Generator(device=device).manual_seed(seed)
-    classes = 2 + len(alphabet())
+    classes = 2 + TURNS * len(alphabet())
     model = CellReader(classes).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=1e-4)
     labels = boards.labels[train_ids]
@@ -271,8 +277,16 @@ def train(boards: Boards, train_ids, epochs, device, seed, log=None):
         a = all_cells[torch.randint(len(all_cells), (128,), device=device, generator=gen)]
         pick = torch.cat([t, a])
         y = labels[pick[:, 0], pick[:, 1]]
-        x = photometric(crops(boards.images, ids[pick[:, 0]], pick[:, 1], jitter=True, gen=gen), gen)
-        loss = F.cross_entropy(model(x), y, label_smoothing=0.05)
+        x = crops(boards.images, ids[pick[:, 0]], pick[:, 1], jitter=True, gen=gen)
+        # Each crop turned a random number of quarter turns counter-clockwise,
+        # as a board seen from another side shows it: that many clockwise
+        # turns stand the tile upright again.
+        turns = torch.randint(0, TURNS, (len(y),), device=device, generator=gen)
+        for k in range(1, TURNS):
+            if (turns == k).any():
+                x[turns == k] = torch.rot90(x[turns == k], k, dims=(2, 3))
+        y = torch.where(y >= 2, 2 + (y - 2) * TURNS + turns, y)
+        loss = F.cross_entropy(model(photometric(x, gen)), y, label_smoothing=0.05)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
@@ -283,25 +297,46 @@ def train(boards: Boards, train_ids, epochs, device, seed, log=None):
 
 
 @torch.no_grad()
-def predict(model, boards: Boards, ids, device):
-    """Logits for every square of boards `ids`: (len(ids), 225, classes)."""
+def predict(model, boards: Boards, ids, device, turn: int = 0):
+    """Logits for every square of boards `ids`, each crop turned `turn`
+    quarter turns counter-clockwise: (len(ids), 225, classes). Turning every
+    crop about its centre is turning the whole board."""
     model.eval()
     out = []
     cells = torch.arange(GRID * GRID, device=device)
     for b in ids:
         x = crops(boards.images, torch.full_like(cells, b), cells, jitter=False)
-        out.append(model(x))
+        out.append(model(torch.rot90(x, turn, dims=(2, 3)) if turn else x))
     return torch.stack(out)
 
 
+def upright(logits):
+    """Logits over (empty, blank, every letter) for a board known to be
+    upright: the letters' no-turn classes."""
+    return torch.cat([logits[..., :2], logits[..., 2::TURNS]], -1)
+
+
+def vote(logits) -> int:
+    """How many quarter turns clockwise stand a board upright, from its
+    logits as it lies: the turn whose letter classes hold the most
+    probability on the squares it takes for lettered tiles."""
+    p = F.softmax(logits, -1)  # (225, classes)
+    tiles = (p[:, EMPTY] < 0.5) & (p[:, BLANK] < 0.5)
+    if not tiles.any():
+        return 0
+    per_turn = p[tiles][:, 2:].reshape(-1, p.shape[-1] // TURNS, TURNS).sum(1)  # (tiles, turns)
+    return int(per_turn.clamp(min=1e-9).log().sum(0).argmax())
+
+
 def export(model: CellReader, letters: str, temperature: float, path: Path) -> None:
-    """Write the SCRBCNN1 file the engine's reader loads (src/scan/reader.rs):
-    the alphabet, the geometry, the input normalisation and the temperature,
-    then every layer, batch norm folded into its convolution."""
-    out = bytearray(b"SCRBCNN1")
+    """Write the SCRBCNN2 file the engine's reader loads (src/scan/reader.rs):
+    the alphabet, the geometry, the input normalisation, the temperature and
+    the turns each letter's classes span, then every layer, batch norm folded
+    into its convolution."""
+    out = bytearray(b"SCRBCNN2")
     out += struct.pack("<I", len(letters)) + b"".join(struct.pack("<I", ord(ch)) for ch in letters)
     # The model normalises 0-1 input as (x - 0.5) * 4; the engine gets 0-255.
-    out += struct.pack("<IIfff", CELL, CROP, 4 / 255, -2.0, temperature)
+    out += struct.pack("<IIfffI", CELL, CROP, 4 / 255, -2.0, temperature, TURNS)
     layers = []
     with torch.no_grad():
         for m in model.features:
@@ -422,6 +457,7 @@ def main():
                 "cell": CELL,
                 "crop": CROP,
                 "temperature": args.temperature,
+                "turns": TURNS,
             },
             args.out,
         )
@@ -438,8 +474,9 @@ def main():
         folds[f].append(layout)
         load[f] += n
     n = len(boards.meta)
-    # Held-out logits for every board, and for its blank variant.
-    logits = torch.zeros(2 * n, GRID * GRID, 2 + len(letters), device=device)
+    # Held-out logits for every board, and for its blank variant, upright.
+    logits = torch.zeros(2 * n, GRID * GRID, 2 + TURNS * len(letters), device=device)
+    turned_right, turned_all = 0, 0
     start = time.time()
     for f, held in enumerate(folds):
         test = [i for i, e in enumerate(boards.meta) if e["layout"] in held]
@@ -447,16 +484,27 @@ def main():
         model = train(boards, train_ids, args.epochs, device, args.seed + f)
         both = test + [i + n for i in test]
         logits[both] = predict(model, boards, both, device)
+        # Every held-out board turned every way: is the way back found?
+        for k in range(TURNS):
+            for one in predict(model, boards, test, device, turn=k):
+                turned_right += vote(one) == k
+                turned_all += 1
         print(
             f"fold {f + 1}/{args.folds}: layouts {held}, {len(test)} boards held out ({time.time() - start:.0f} s)",
             flush=True,
         )
+    # Letters are judged with the board's orientation known: the no-turn
+    # classes. The temperature is fitted over all of them.
     labels = boards.labels[:n].reshape(-1)
-    t = fit_temperature(logits[:n].reshape(-1, logits.shape[-1]), labels)
-    print(f"held-out temperature {t:.2f}")
-    print(report(boards, logits[:n], letters))
+    full = torch.where(labels >= 2, 2 + (labels - 2) * TURNS, labels)
+    t = fit_temperature(logits[:n].reshape(-1, logits.shape[-1]), full)
+    print(f"held-out temperature {t:.2f}; orientation found for {turned_right} of {turned_all} turned boards")
+    print(report(boards, upright(logits[:n]), letters))
     if args.dump:
-        probs = F.softmax(logits / t, -1).cpu().numpy()
+        # Probabilities over (empty, blank, every letter) as an upright board
+        # gives them -- what the decoder's evaluation draws from.
+        probs = F.softmax(upright(logits) / t, -1)
+        probs = (probs / probs.sum(-1, keepdim=True)).cpu().numpy()
         variant_blanks = (boards.labels[n:] == BLANK).cpu().numpy()
         args.dump.write_text(
             json.dumps(

@@ -526,7 +526,7 @@ class CellReader:
 
     def __init__(self, lang: Language, path: str) -> None:
         """Load a reader for `lang`. Raises `OSError` if the file is not a
-        SCRBCNN1 export or was trained on another alphabet."""
+        SCRBCNN2 export or was trained on another alphabet."""
 
     @property
     def cell_size(self) -> int:
@@ -538,13 +538,14 @@ class CellReader:
 
     def upright(self, rgb: bytes, side: int) -> int | None:
         """Quarter turns clockwise that stand the letters of a straightened
-        board upright -- a grid's corners cannot say which way up it is --
-        judged by how sure the reader is of its likeliest tiles' letters
-        under each turn. `None` if it sees no tiles."""
+        board upright -- a grid's corners cannot say which way up it is. Each
+        letter is four classes, one per turn that stands its tile upright, so
+        this is one read of the board as it lies. `None` if it sees no tiles."""
 
     def read_board(self, rgb: bytes, side: int) -> list[list[tuple[float, list[tuple[str, float]], float]]]:
-        """Every square of a straightened board, `side * side` RGB pixels with
-        one square of margin around the grid, read as `decode_scan` takes it."""
+        """Every square of a straightened board already upright, `side *
+        side` RGB pixels with one square of margin around the grid, read as
+        `decode_scan` takes it."""
 
 
 class GridFinder:

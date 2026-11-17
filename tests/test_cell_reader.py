@@ -24,7 +24,7 @@ def readers(pl):
     if not MODEL.exists():
         pytest.skip("no trained cell reader")
     checkpoint = torch.load(MODEL, weights_only=True)
-    model = training.CellReader(2 + len(checkpoint["alphabet"]))
+    model = training.CellReader(2 + checkpoint["turns"] * len(checkpoint["alphabet"]))
     model.load_state_dict(checkpoint["state"])
     model.eval()
     return (
@@ -77,5 +77,8 @@ def test_a_board_reads_as_pytorch_reads_its_crops(readers):
         p_tile, letters, p_blank = read[r][c]
         assert p_tile == pytest.approx(1 - p[0], abs=1e-4)
         assert p_blank == pytest.approx(p[1] / (1 - p[0]), abs=1e-3)
+        # Read as upright: each letter's no-turn class, every `turns`-th.
         best = max(letters, key=lambda lp: lp[1])[0]
-        assert best == checkpoint["alphabet"][int(np.argmax(p[2:]))]
+        assert (
+            best == checkpoint["alphabet"][int(np.argmax(p[2 :: checkpoint["turns"]]))]
+        )

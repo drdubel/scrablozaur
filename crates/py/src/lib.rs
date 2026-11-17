@@ -582,7 +582,8 @@ impl CellReaderPy {
     /// Quarter turns clockwise that stand the board's letters upright, or
     /// None if it sees no tiles to tell by.
     fn upright(&self, py: Python<'_>, rgb: &[u8], side: usize) -> PyResult<Option<usize>> {
-        py.detach(|| self.inner.upright(rgb, side)).map_err(to_py)
+        py.detach(|| self.inner.read(rgb, side).map(|reading| reading.upright()))
+            .map_err(to_py)
     }
 
     /// Every square's reading, as `decode_scan` takes them.

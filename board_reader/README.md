@@ -98,17 +98,24 @@ Both scripts also report board-detection failures separately (currently 0).
 every square of a straightened board -- empty, a blank, or which letter --
 from a crop one and a half squares wide. It is the live scanner's reader: the
 engine runs it itself (`src/scan/reader.rs`, `scrablozaur.CellReader`),
-matching PyTorch to within 1e-7, at about 30 ms a board on a laptop. Its
-training images come from `scripts/export_scan_dataset.py`, which straightens
-the tiles' *top faces*: tiles stand a quarter of a square proud, so the
-camera's pose displaces them from the printed grid.
+matching PyTorch to within 1e-7, at about 10 ms a board on a laptop and
+160 ms on a Galaxy A54. Its training images come from
+`scripts/export_scan_dataset.py`, which straightens the tiles' *top faces*:
+tiles stand a quarter of a square proud, so the camera's pose displaces them
+from the printed grid.
+
+A board can be seen from any side, and only its letters show which way up it
+is, so every letter is four classes, one per quarter turn that would stand
+the tile upright. One read of the board as it lies says what each tile is
+and, summed over the tiles, how far to turn the board: held out, every one
+of the 324 turned boards (81 boards, four ways each) came back upright.
 
 Held out by layout, squares read wrong against the classical pipeline on the
 same 81 boards:
 
 | photos | classical | learned | learned: tiles found, letters right |
 |---|---|---|---|
-| easy (44) | 38 | 21 | 100%, 99.1% |
+| easy (44) | 38 | 22 | 100%, 99.0% |
 | medium (28) | 73 | 5 | 100%, 99.6% |
 | hard (9) | 105 | 3 | 100%, 99.2% |
 
@@ -133,8 +140,10 @@ The engine runs it (`src/scan/grid.rs`, `scrablozaur.GridFinder`; 10 ms a
 1080p frame on a laptop) and `tests/test_grid_finder.py` holds it to PyTorch.
 `src/scan/frame.rs` (`scrablozaur.scan_frame`) chains everything the live
 scanner does: find the grid, straighten the tiles' tops from the camera's
-pose, turn the board upright -- as the last confirmed board's tiles say, or
-as its letters read best -- read every square, decode.
+pose, read every square as the board lies -- which also says which way up it
+is, by the last confirmed board's tiles or, on a first scan, by its letters
+-- and decode. A 1080p frame takes about 0.24 s on a Galaxy A54
+(`scrablozaur frame-bench`).
 
 ## Dictionary decoding
 
@@ -159,11 +168,11 @@ real photo, whose errors cluster. Wrong squares per board, over 213 boards
 | photos | reader | first scan of a game | later scans, previous board confirmed |
 |---|---|---|---|
 | easy | classical | 2.72 → 0.49 (exact boards 6% → 64%) | 0.30 → 0.03 (76% → 98%) |
-| easy | learned | 2.59 → 0.47 (3% → 63%) | 0.21 → 0.06 (81% → 94%) |
+| easy | learned | 2.62 → 0.44 (3% → 62%) | 0.21 → 0.08 (81% → 93%) |
 | medium | classical | 5.13 → 1.52 (2% → 37%) | 0.58 → 0.09 (56% → 92%) |
-| medium | learned | 2.29 → 0.38 (5% → 66%) | 0.10 → 0.03 (91% → 97%) |
+| medium | learned | 2.29 → 0.43 (5% → 62%) | 0.10 → 0.03 (91% → 97%) |
 | hard | classical | 18.6 → 17.2 (0% → 0.5%) | 1.03 → 0.71 (34% → 59%) |
-| hard | learned | 2.31 → 0.38 (5% → 66%) | 0.10 → 0.03 (91% → 97%) |
+| hard | learned | 2.31 → 0.45 (5% → 64%) | 0.10 → 0.04 (91% → 96%) |
 
 Most of what the learned reader leaves is blanks -- a blank shows no letter,
 so where its words allow several, the decoder can only guess -- and 'ś'.

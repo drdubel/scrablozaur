@@ -4686,10 +4686,10 @@ fn cmd_frame_bench(
                 .map_err(|e| invalid(&e))?;
             let straighten_ms = ms(t);
             let t = Instant::now();
-            let readings = reader.read_board(&image, side).map_err(|e| invalid(&e))?;
+            let reading = reader.read(&image, side).map_err(|e| invalid(&e))?;
             let read_ms = ms(t);
             let t = Instant::now();
-            reader.upright_given(&image, side, &readings);
+            let readings = reading.cells(reading.upright().unwrap_or(0));
             let upright_ms = ms(t);
             let t = Instant::now();
             let decoded = scan::decode::decode(&lexicon, &readings, None, &options)
