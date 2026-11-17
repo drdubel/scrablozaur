@@ -159,9 +159,10 @@ appears more often than the bag holds it. The engine's `src/scan/decode.rs`
 (`scrablozaur.decode_scan` from Python) finds the most probable board obeying
 all of them, weighing each square's calibrated tile and letter probabilities
 against the dictionary: it corrects letters, restores missed tiles, drops
-false ones and works out which letter each blank plays. The web's scan flow
-still uses the older single-letter pass in `web/scan.py`; the live scanner is
-to use the decoder.
+false ones and works out which letter each blank plays. The web's photo scan
+reads through the same pipeline as the app (`scan_frame`) for a language with
+the scanner's models, and falls back on the classical pipeline and
+`web/scan.py`'s single-letter pass for the rest.
 
 `scripts/eval_decoder.py` scores it. Most test layouts are deliberate
 non-words, so it uses legal self-play boards instead, giving each square a

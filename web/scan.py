@@ -9,24 +9,31 @@ changed, any cell the previous confirmed state had a tile in should still
 have that same tile now. That's a much stronger signal than the dictionary
 alone, so it takes priority -- see scan_board_image()'s `locked` set.
 
-Also wraps board_reader's OCR pipeline (a standalone script-style package,
-not importable as a normal module) and adds a dictionary-driven correction
-pass for genuinely *new* tiles: every horizontal/vertical run of tiles is
-checked against the Dawg, and words that don't match get a single-letter
-substitution attempted from the OCR's own ranked alternatives before giving
-up and flagging the cells for the user to fix by hand.
+A language with the live scanner's models (`"scanner"` in its definition)
+is read the way the app reads camera frames: the engine's grid finder, cell
+reader and legal-board decoder (`scrablozaur.scan_frame`), which on the test
+photos gets far fewer squares wrong than the classical pipeline. Any other
+language goes through board_reader's OCR pipeline (a standalone script-style
+package, not importable as a normal module) and a dictionary-driven
+correction pass for genuinely *new* tiles: every horizontal/vertical run of
+tiles is checked against the Dawg, and words that don't match get a
+single-letter substitution attempted from the OCR's own ranked alternatives
+before giving up and flagging the cells for the user to fix by hand.
 """
 
 from __future__ import annotations
 
 import re
 import sys
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
 import numpy as np
+import scrablozaur
+from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BOARD_READER_SRC = PROJECT_ROOT / "board_reader" / "src"
@@ -40,6 +47,7 @@ from read_letters import classify_tiles  # noqa: E402
 
 from web.engine import DEFAULT_LANGUAGE, Dawg, get_pack  # noqa: E402
 
+
 def _use_language(language: str):
     """Point the classifier at `language` and return its spec.
 
@@ -49,6 +57,7 @@ def _use_language(language: str):
     spec = get_pack(language).spec
     set_ocr_language(spec)
     return spec
+
 
 # How many rounds of single-letter correction to run: fixing one word can
 # change a crossing word's letter too, so a couple of extra rounds lets
@@ -93,7 +102,9 @@ class ScanSessionStore:
         cls, board: list[list[str]] | None = None, language: str = DEFAULT_LANGUAGE
     ) -> ScanSession:
         session = ScanSession(
-            session_id=str(uuid.uuid4()), board=board or empty_board(), language=language
+            session_id=str(uuid.uuid4()),
+            board=board or empty_board(),
+            language=language,
         )
         cls._sessions[session.session_id] = session
         return session
@@ -110,27 +121,146 @@ class ScanSessionStore:
             cls._sessions.pop(sid, None)
 
 
+_NO_BOARD = (
+    "Nie udało się znaleźć planszy na zdjęciu. Spróbuj sfotografować "
+    "całą planszę z góry, przy dobrym oświetleniu."
+)
+
+# The engine's scanner nets per language, loaded on first use.
+_scanners: dict[str, tuple[scrablozaur.GridFinder, scrablozaur.CellReader]] = {}
+_scanners_lock = threading.Lock()
+# Photos are read at most this large: the scanner was checked on photos this
+# size and on 1080p frames, and a 50-megapixel upload only costs memory.
+_MAX_PHOTO_SIDE = 4096
+
+
+def _scanner(
+    language: str,
+) -> tuple[scrablozaur.GridFinder, scrablozaur.CellReader] | None:
+    """The live scanner's grid finder and cell reader for `language`, if it has them."""
+    pack = get_pack(language)
+    if not pack.spec.has_scanner:
+        return None
+    with _scanners_lock:
+        if language not in _scanners:
+            paths = pack.spec.scanner
+            _scanners[language] = (
+                scrablozaur.GridFinder(str(paths.grid_finder)),
+                scrablozaur.CellReader(pack.lang, str(paths.cell_reader)),
+            )
+        return _scanners[language]
+
+
+def _focal_px(path: str, size: tuple[int, int]) -> float:
+    """The photo's focal length in pixels at `size`, from its EXIF 35 mm
+    equivalent (a 36 mm wide frame); 26 mm, a typical phone's, without one.
+    As `board_reader/scripts/export_scan_dataset.py` computes it for training."""
+    try:
+        exif = Image.open(path).getexif().get_ifd(0x8769)
+        f35 = float(exif.get(0xA405) or 26)  # FocalLengthIn35mmFilm
+    except (OSError, ValueError):
+        f35 = 26.0
+    return f35 / 36 * max(size)
+
+
+def _scan_with_engine(
+    path: str,
+    prior_board: list[list[str]] | None,
+    language: str,
+    nets: tuple[scrablozaur.GridFinder, scrablozaur.CellReader],
+) -> dict:
+    """scan_board_image() through the engine's scanner, the app's: the most
+    probable legal board, keeping every tile of *prior_board*."""
+    bgr = cv2.imread(path)
+    if bgr is None:
+        return {"error": "Nie udało się odczytać zdjęcia."}
+    scale = _MAX_PHOTO_SIDE / max(bgr.shape[:2])
+    if scale < 1:
+        bgr = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    h, w = rgb.shape[:2]
+    prior = (
+        prior_board
+        if prior_board is not None and not board_is_empty(prior_board)
+        else None
+    )
+    finder, reader = nets
+    out = scrablozaur.scan_frame(
+        finder,
+        reader,
+        get_pack(language).dawg,
+        rgb.tobytes(),
+        w,
+        h,
+        _focal_px(path, (w, h)),
+        prior,
+    )
+    if out is None:
+        return {"error": _NO_BOARD}
+    decoded = out.decoded
+    grid = [list(row) for row in decoded.letters]
+    cells = []
+    for r in range(GRID):
+        row = []
+        for c in range(GRID):
+            p_tile, letters, p_blank = out.readings[r][c]
+            letter = grid[r][c]
+            ranked = sorted(letters, key=lambda lp: -lp[1])
+            # What this photo alone makes of the square: empty, a blank ('?'), or a letter.
+            seen = (
+                "-"
+                if p_tile < 0.5
+                else "?"
+                if p_blank > 0.5 or not ranked
+                else ranked[0][0]
+            )
+            row.append(
+                {
+                    "letter": letter,
+                    "confidence": round(
+                        1 - p_tile
+                        if letter == "-"
+                        else p_tile * dict(ranked).get(letter, 0.0),
+                        3,
+                    ),
+                    "alternatives": [
+                        ch
+                        for ch, p in ranked
+                        if p >= _MIN_ALTERNATIVE_PROB and ch != letter
+                    ][:_MAX_ALTERNATIVES_SHOWN],
+                    # In a non-word -- or, on a board made legal only by
+                    # overriding letters the reader was sure of, overridden.
+                    "flagged": decoded.to_check[r][c],
+                    # A tile of the last confirmed board this photo read otherwise.
+                    "carried_over": prior is not None
+                    and prior[r][c] != "-"
+                    and seen != prior[r][c],
+                }
+            )
+        cells.append(row)
+    return {"cells": cells, "board": grid}
+
+
 def scan_board_image(
     path: str,
     prior_board: list[list[str]] | None = None,
     language: str = DEFAULT_LANGUAGE,
 ) -> dict:
-    """Run the OCR pipeline on the photo at *path* and return either
-    {"error": str} or {"cells": [[...]], "board": [[str]]}.
+    """Read the photo at *path* and return either {"error": str} or
+    {"cells": [[...]], "board": [[str]]}.
 
     *prior_board* is the previous confirmed state from the same ScanSession,
     if any -- every cell it has a tile in overrides this photo's own
     reading (see module docstring), and is excluded from dictionary
     correction/flagging since it was already validated when first confirmed.
     """
+    nets = _scanner(language)
+    if nets is not None:
+        return _scan_with_engine(path, prior_board, language, nets)
+
     rotated, mesh, _cells, verdicts, shift = read_board(path, show=False)
     if verdicts is None:
-        return {
-            "error": (
-                "Nie udało się znaleźć planszy na zdjęciu. Spróbuj sfotografować "
-                "całą planszę z góry, przy dobrym oświetleniu."
-            )
-        }
+        return {"error": _NO_BOARD}
 
     readings = classify_tiles(rotated, mesh, verdicts, global_shift=shift)
     if not readings:
@@ -140,13 +270,17 @@ def scan_board_image(
     letters = set(spec.alphabet)
     grid = empty_board()
     confidence = [[0.0] * GRID for _ in range(GRID)]
-    alternatives: list[list[list[str]]] = [[[] for _ in range(GRID)] for _ in range(GRID)]
+    alternatives: list[list[list[str]]] = [
+        [[] for _ in range(GRID)] for _ in range(GRID)
+    ]
     for (r, c), (letter, conf, alts) in readings.items():
         lowered = letter.lower() if letter else ""
         grid[r][c] = lowered if lowered in letters else "?"
         confidence[r][c] = conf
         alternatives[r][c] = [
-            a.lower() for a, p in alts if p >= _MIN_ALTERNATIVE_PROB and a.lower() in letters
+            a.lower()
+            for a, p in alts
+            if p >= _MIN_ALTERNATIVE_PROB and a.lower() in letters
         ]
 
     locked: set[tuple[int, int]] = set()
@@ -178,7 +312,9 @@ def scan_board_image(
             {
                 "letter": grid[r][c],
                 "confidence": round(confidence[r][c], 3),
-                "alternatives": [a for a in alternatives[r][c] if a != grid[r][c]][:_MAX_ALTERNATIVES_SHOWN],
+                "alternatives": [a for a in alternatives[r][c] if a != grid[r][c]][
+                    :_MAX_ALTERNATIVES_SHOWN
+                ],
                 "flagged": (r, c) in flagged,
                 "carried_over": (r, c) in carried_over,
             }
@@ -238,14 +374,26 @@ def evaluate_raw_recognition(
 
     ratio = matched / total
     difficulty = "e" if ratio == 1.0 else ("m" if ratio >= 0.5 else "h")
-    return difficulty, {"matched": matched, "total": total, "match_ratio": round(ratio, 3)}
+    return difficulty, {
+        "matched": matched,
+        "total": total,
+        "match_ratio": round(ratio, 3),
+    }
 
 
 def _next_training_id() -> int:
     """One counter shared across test/in and test/out so the two never
     drift out of sync even if a previous save only half-completed."""
-    ids = [int(m.group(1)) for p in BOARD_READER_TEST_IN.glob("img*_*.jpg") if (m := _IMG_ID_RE.match(p.name))]
-    ids += [int(m.group(1)) for p in BOARD_READER_TEST_OUT.glob("board*.txt") if (m := _BOARD_ID_RE.match(p.name))]
+    ids = [
+        int(m.group(1))
+        for p in BOARD_READER_TEST_IN.glob("img*_*.jpg")
+        if (m := _IMG_ID_RE.match(p.name))
+    ]
+    ids += [
+        int(m.group(1))
+        for p in BOARD_READER_TEST_OUT.glob("board*.txt")
+        if (m := _BOARD_ID_RE.match(p.name))
+    ]
     return max(ids, default=-1) + 1
 
 
@@ -253,11 +401,15 @@ def _format_ground_truth(board: list[list[str]]) -> str:
     """board_reader/tests/ground_truth.py's expected format: one row per
     line, space-separated single-character tokens, uppercase letters
     (matching classify_board()'s own output alphabet), '-' for empty."""
-    lines = (" ".join(cell.upper() if cell != "-" else "-" for cell in row) for row in board)
+    lines = (
+        " ".join(cell.upper() if cell != "-" else "-" for cell in row) for row in board
+    )
     return "\n".join(lines) + "\n"
 
 
-def save_training_example(image_bytes: bytes, board: list[list[str]], difficulty: str) -> int:
+def save_training_example(
+    image_bytes: bytes, board: list[list[str]], difficulty: str
+) -> int:
     """Append this photo + its user-confirmed board to board_reader/'s test
     set. Re-encodes through cv2 rather than writing *image_bytes* verbatim
     so the file on disk is genuinely a .jpg regardless of what the browser
@@ -271,7 +423,9 @@ def save_training_example(image_bytes: bytes, board: list[list[str]], difficulty
     if img is None:
         raise ValueError("Nie udało się odczytać zdjęcia.")
     cv2.imwrite(str(BOARD_READER_TEST_IN / f"img{image_id}_{difficulty}.jpg"), img)
-    (BOARD_READER_TEST_OUT / f"board{image_id}.txt").write_text(_format_ground_truth(board), encoding="utf-8")
+    (BOARD_READER_TEST_OUT / f"board{image_id}.txt").write_text(
+        _format_ground_truth(board), encoding="utf-8"
+    )
 
     return image_id
 
@@ -309,7 +463,12 @@ def _isolated_tiles(grid: list[list[str]]) -> list[tuple[int, int]]:
     board (the minimum word length is 2), so these are almost always a
     false-positive tile detection rather than a misread letter."""
     in_run = {pos for run in _runs(grid) for pos in run}
-    return [(r, c) for r in range(GRID) for c in range(GRID) if grid[r][c] != "-" and (r, c) not in in_run]
+    return [
+        (r, c)
+        for r in range(GRID)
+        for c in range(GRID)
+        if grid[r][c] != "-" and (r, c) not in in_run
+    ]
 
 
 def _verify_and_correct(
