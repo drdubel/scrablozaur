@@ -68,7 +68,7 @@ impl LanguagePack {
         max_level_for(self.leave_net.is_some())
     }
 
-    fn net(&self) -> Option<&LeaveNet> {
+    pub(crate) fn net(&self) -> Option<&LeaveNet> {
         self.leave_net.as_deref()
     }
 }

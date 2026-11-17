@@ -143,7 +143,13 @@ scanner does: find the grid, straighten the tiles' tops from the camera's
 pose, read every square as the board lies -- which also says which way up it
 is, by the last confirmed board's tiles or, on a first scan, by its letters
 -- and decode. A 1080p frame takes about 0.24 s on a Galaxy A54
-(`scrablozaur frame-bench`).
+(`scrablozaur frame-bench`). `src/scan/live.rs` decides when the app's camera
+reads a frame -- once no corner of the grid has strayed 0.2 squares in 0.4 s
+-- and when a scan is done: two readings in a row, the board held still,
+giving the same legal board, nearly all of whose tiles the reader saw itself.
+That last check is not a formality: the decoder keeps the last confirmed
+board's tiles whatever the frame shows, so a grid found in a wall decodes to
+that board, legal.
 
 ## Dictionary decoding
 

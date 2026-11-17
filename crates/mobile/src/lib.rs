@@ -12,11 +12,16 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use scrablozaur_core::game::{
-    all_levels, run_benchmark, BenchmarkControl, BenchmarkResult, ComputerMove, EngineMode,
-    GameError, GameMode, GameSession, GameState, LanguagePack, PlayerConfig, Preview, SortMode,
-    Suggestion, Winner,
+    all_levels, run_benchmark, scan_suggestions, BenchmarkControl, BenchmarkResult, ComputerMove,
+    EngineMode, GameError, GameMode, GameSession, GameState, LanguagePack, PlayerConfig, Preview,
+    SortMode, Suggestion, Winner,
 };
-use scrablozaur_core::scan::decode::{decode, CellReading, DecodeOptions, ScanBoard};
+use scrablozaur_core::scan::decode::{decode, CellReading, DecodeOptions, Decoded, ScanBoard};
+use scrablozaur_core::scan::frame::read_frame;
+use scrablozaur_core::scan::grid::{GridFinder, Quad};
+use scrablozaur_core::scan::live::{LiveScan, Verdict, Watch};
+use scrablozaur_core::scan::reader::CellReader;
+use scrablozaur_core::scan::{flag_invalid, Grid, MAX_ALTERNATIVES_SHOWN};
 use scrablozaur_core::{square_bonus, Language, LeaveNet, Lexicon};
 
 uniffi::setup_scaffolding!();
@@ -317,14 +322,6 @@ impl LanguagePackHandle {
         prior_letters: Option<Vec<String>>,
         prior_blanks: Option<Vec<bool>>,
     ) -> Result<DecodedBoard, ScanError> {
-        let invalid = |reason: String| ScanError::Invalid { reason };
-        let one_char = |s: &str| {
-            let mut chars = s.chars();
-            match (chars.next(), chars.next()) {
-                (Some(ch), None) => Ok(ch),
-                _ => Err(invalid(format!("'{s}' is not one letter"))),
-            }
-        };
         if readings.len() != CELLS {
             return Err(invalid(format!("{} readings, not {CELLS}", readings.len())));
         }
@@ -342,25 +339,9 @@ impl LanguagePackHandle {
                 p_blank: r.p_blank,
             };
         }
-        let prior = match prior_letters {
-            None => None,
-            Some(letters) => {
-                let blanks = prior_blanks.unwrap_or_else(|| vec![false; CELLS]);
-                if letters.len() != CELLS || blanks.len() != CELLS {
-                    return Err(invalid(format!(
-                        "the previous board must have {CELLS} squares"
-                    )));
-                }
-                let mut board = ScanBoard::empty();
-                for i in 0..CELLS {
-                    if !letters[i].is_empty() {
-                        board.letters[i / 15][i % 15] = one_char(&letters[i])?;
-                    }
-                    board.blanks[i / 15][i % 15] = blanks[i];
-                }
-                Some(board)
-            }
-        };
+        let prior = prior_letters
+            .map(|letters| scan_board(letters, prior_blanks))
+            .transpose()?;
         let out = decode(
             &self.pack.lexicon,
             &grid,
@@ -368,25 +349,321 @@ impl LanguagePackHandle {
             &DecodeOptions::default(),
         )
         .map_err(|e| invalid(e.to_string()))?;
-        Ok(DecodedBoard {
-            letters: flatten(&out.board.letters, |ch| {
-                if ch == '-' {
-                    String::new()
-                } else {
-                    ch.to_string()
-                }
-            }),
-            blanks: flatten(&out.board.blanks, |b| b),
-            corrected: flatten(&out.corrected, |b| b),
-            flagged: flatten(&out.flagged, |b| b),
-            legal: out.legal,
-            complete: out.complete,
-            cost: out.cost,
-        })
+        Ok(decoded_board(&out))
+    }
+
+    /// The squares of a board under review that sit in a non-word or stand
+    /// alone, leaving out `locked` ones: the last confirmed board's tiles,
+    /// which the player already vouched for. `letters` as `decode_scan`'s
+    /// prior. See `scan::flag_invalid` in the engine.
+    pub fn flag_board(
+        &self,
+        letters: Vec<String>,
+        locked: Vec<bool>,
+    ) -> Result<Vec<bool>, ScanError> {
+        let board = scan_board(letters, None)?;
+        let locked = grid(locked)?;
+        let flagged = flag_invalid(&self.pack.lexicon, &board.letters, &locked);
+        Ok(flatten(&flagged, |b| b))
+    }
+
+    /// The ten best plays for `rack` on a scanned board, `letters` and
+    /// `blanks` as `decode_scan`'s prior.
+    pub fn suggest_on_board(
+        &self,
+        letters: Vec<String>,
+        blanks: Vec<bool>,
+        rack: String,
+        order: HintOrder,
+    ) -> Result<Vec<Hint>, MoveError> {
+        let board = scan_board(letters, Some(blanks)).map_err(|e| MoveError::Engine {
+            detail: e.to_string(),
+        })?;
+        let list = scan_suggestions(
+            &self.pack,
+            &board.letters,
+            &board.blanks,
+            &rack,
+            order.into(),
+        )?;
+        Ok(list.into_iter().map(Into::into).collect())
     }
 }
 
 // ── Scanning ─────────────────────────────────────────────────────────────────
+
+fn invalid(reason: String) -> ScanError {
+    ScanError::Invalid { reason }
+}
+
+fn one_char(s: &str) -> Result<char, ScanError> {
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(ch), None) => Ok(ch),
+        _ => Err(invalid(format!("'{s}' is not one letter"))),
+    }
+}
+
+fn grid<T: Copy + Default>(squares: Vec<T>) -> Result<Grid<T>, ScanError> {
+    if squares.len() != CELLS {
+        return Err(invalid(format!("{} squares, not {CELLS}", squares.len())));
+    }
+    Ok(std::array::from_fn(|r| {
+        std::array::from_fn(|c| squares[r * 15 + c])
+    }))
+}
+
+/// A board from 225 squares of a lowercase letter or "" for empty, and
+/// optionally which are blanks.
+fn scan_board(letters: Vec<String>, blanks: Option<Vec<bool>>) -> Result<ScanBoard, ScanError> {
+    if letters.len() != CELLS {
+        return Err(invalid(format!("the board must have {CELLS} squares")));
+    }
+    let mut board = ScanBoard::empty();
+    if let Some(blanks) = blanks {
+        board.blanks = grid(blanks)?;
+    }
+    for (i, letter) in letters.iter().enumerate() {
+        if !letter.is_empty() {
+            board.letters[i / 15][i % 15] = one_char(letter)?;
+        }
+    }
+    Ok(board)
+}
+
+fn decoded_board(out: &Decoded) -> DecodedBoard {
+    DecodedBoard {
+        letters: flatten(&out.board.letters, |ch| {
+            if ch == '-' {
+                String::new()
+            } else {
+                ch.to_string()
+            }
+        }),
+        blanks: flatten(&out.board.blanks, |b| b),
+        corrected: flatten(&out.corrected, |b| b),
+        flagged: flatten(&out.flagged, |b| b),
+        legal: out.legal,
+        complete: out.complete,
+        cost: out.cost,
+    }
+}
+
+/// A camera frame as CameraX hands it over: RGBA, `row_stride` bytes from
+/// the start of one row to the next.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CameraFrame {
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: u32,
+}
+
+impl CameraFrame {
+    /// The pixels packed three bytes each, as the engine takes frames.
+    fn rgb(&self) -> Result<Vec<u8>, ScanError> {
+        let (w, h, stride) = (
+            self.width as usize,
+            self.height as usize,
+            self.row_stride as usize,
+        );
+        if w == 0 || h == 0 || stride < 4 * w || self.rgba.len() < stride * (h - 1) + 4 * w {
+            return Err(invalid(format!(
+                "{} bytes are not a {w}x{h} RGBA frame of stride {stride}",
+                self.rgba.len()
+            )));
+        }
+        let mut rgb = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for px in self.rgba[y * stride..y * stride + 4 * w].as_chunks::<4>().0 {
+                rgb.extend_from_slice(&px[..3]);
+            }
+        }
+        Ok(rgb)
+    }
+}
+
+/// What a camera frame shows: see `scan::live::Watch`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Sighting {
+    NoBoard,
+    /// A board somewhere other than where it last rested: an earlier reading
+    /// no longer holds.
+    Moving,
+    /// A board at rest, not yet for long enough to read again.
+    Settling,
+    /// A board held still: the frame was read.
+    Steady,
+}
+
+/// One camera frame, looked at.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct Look {
+    pub sighting: Sighting,
+    /// The grid's corners as x, y pairs in frame pixels, clockwise: from the
+    /// board's own top left when the frame was read, else from the corner
+    /// nearest the frame's top left. Empty when no board shows.
+    pub corners: Vec<f32>,
+    /// The board, when it was held still long enough to read.
+    pub reading: Option<FrameReading>,
+}
+
+/// What a reading of a steady frame is worth: see `scan::live::Verdict`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ReadingVerdict {
+    /// Not a board the reader saw.
+    Unseen,
+    /// A line that is not a word, or a tile on its own.
+    Illegal,
+    /// Legal: waiting for the next reading to agree.
+    Checking,
+    /// Two readings in a row, the board held still between them, gave this
+    /// same legal board: the scan is done.
+    Accepted,
+}
+
+/// A board read off a camera frame.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FrameReading {
+    pub board: DecodedBoard,
+    /// Per square, the letters the reader found likeliest for a tile there,
+    /// best first; empty for squares it took for empty.
+    pub alternatives: Vec<Vec<String>>,
+    pub verdict: ReadingVerdict,
+}
+
+/// The live scanner: the grid finder and the cell reader for one language,
+/// and what the camera has seen so far. `look` takes a few hundred
+/// milliseconds once a board is held still: call it off the main thread.
+#[derive(uniffi::Object)]
+pub struct BoardScanner {
+    pack: LanguagePack,
+    finder: GridFinder,
+    reader: CellReader,
+    state: Mutex<Watching>,
+}
+
+struct Watching {
+    live: LiveScan,
+    /// The last confirmed board, whose tiles every reading keeps.
+    prior: Option<ScanBoard>,
+}
+
+#[uniffi::export]
+impl BoardScanner {
+    /// The scanner for `pack`'s language, from the paths of its two models.
+    #[uniffi::constructor]
+    pub fn load(
+        pack: Arc<LanguagePackHandle>,
+        grid_finder_path: String,
+        cell_reader_path: String,
+    ) -> Result<Arc<Self>, LoadError> {
+        let fail = |e: scrablozaur_core::EngineError| LoadError::Failed {
+            detail: e.to_string(),
+        };
+        let finder = GridFinder::open(&grid_finder_path).map_err(fail)?;
+        let reader = CellReader::open(pack.pack.lang, &cell_reader_path).map_err(fail)?;
+        Ok(Arc::new(BoardScanner {
+            pack: pack.pack.clone(),
+            finder,
+            reader,
+            state: Mutex::new(Watching {
+                live: LiveScan::default(),
+                prior: None,
+            }),
+        }))
+    }
+
+    /// Start watching afresh, for a board that holds the tiles of the last
+    /// confirmed one -- `prior_letters` and `prior_blanks` as
+    /// `decode_scan`'s -- if there is one.
+    pub fn restart(
+        &self,
+        prior_letters: Option<Vec<String>>,
+        prior_blanks: Option<Vec<bool>>,
+    ) -> Result<(), ScanError> {
+        let prior = prior_letters
+            .map(|letters| scan_board(letters, prior_blanks))
+            .transpose()?
+            .filter(|board| board.letters.iter().flatten().any(|&ch| ch != '-'));
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        *state = Watching {
+            live: LiveScan::default(),
+            prior,
+        };
+        Ok(())
+    }
+
+    /// Look at one camera frame, taken at `time_ms` through a lens of
+    /// `focal_px` pixels' focal length: find the grid and, once the board
+    /// has been held still, read it.
+    pub fn look(&self, frame: CameraFrame, time_ms: f64, focal_px: f32) -> Result<Look, ScanError> {
+        let rgb = frame.rgb()?;
+        let (w, h) = (frame.width as usize, frame.height as usize);
+        let found = self
+            .finder
+            .find(&rgb, w, h)
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let flat = |q: &Quad| q.iter().flatten().map(|&v| v as f32).collect::<Vec<f32>>();
+        let sighting = state.live.watch(time_ms / 1e3, found.as_ref());
+        let Some(corners) = found.filter(|_| sighting == Watch::Steady) else {
+            return Ok(Look {
+                sighting: match sighting {
+                    Watch::NoBoard => Sighting::NoBoard,
+                    Watch::Moving => Sighting::Moving,
+                    _ => Sighting::Settling,
+                },
+                corners: found.as_ref().map(flat).unwrap_or_default(),
+                reading: None,
+            });
+        };
+        let scan = read_frame(
+            &self.reader,
+            &self.pack.lexicon,
+            &rgb,
+            w,
+            h,
+            corners,
+            focal_px as f64,
+            state.prior.as_ref(),
+            &DecodeOptions::default(),
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+        let verdict = match state.live.judge(&scan.decoded, &scan.readings) {
+            Verdict::Unseen => ReadingVerdict::Unseen,
+            Verdict::Illegal => ReadingVerdict::Illegal,
+            Verdict::Checking => ReadingVerdict::Checking,
+            Verdict::Accepted => ReadingVerdict::Accepted,
+        };
+        let alternatives = scan
+            .readings
+            .iter()
+            .flatten()
+            .map(|cell| {
+                if cell.p_tile < 0.5 {
+                    return Vec::new();
+                }
+                let mut letters = cell.letters.clone();
+                letters.sort_by(|a, b| b.1.total_cmp(&a.1));
+                letters
+                    .into_iter()
+                    .take(MAX_ALTERNATIVES_SHOWN)
+                    .map(|(ch, _)| ch.to_string())
+                    .collect()
+            })
+            .collect();
+        Ok(Look {
+            sighting: Sighting::Steady,
+            corners: flat(&scan.corners),
+            reading: Some(FrameReading {
+                board: decoded_board(&scan.decoded),
+                alternatives,
+                verdict,
+            }),
+        })
+    }
+}
 
 /// One letter a scanned square may show, and how likely.
 #[derive(Clone, Debug, uniffi::Record)]

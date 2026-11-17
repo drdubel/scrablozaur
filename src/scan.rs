@@ -17,6 +17,7 @@ pub mod decode;
 pub mod frame;
 pub mod geometry;
 pub mod grid;
+pub mod live;
 mod net;
 pub mod reader;
 

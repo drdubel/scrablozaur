@@ -1,12 +1,13 @@
 //! A game of Scrabble as the apps play it: the session state machine and its
-//! rules, the bots at every difficulty level, hints, move rating, and the
-//! bot-vs-bot benchmark.
+//! rules, the bots at every difficulty level, hints, move rating, the scan
+//! assistant's suggestions, and the bot-vs-bot benchmark.
 //!
 //! The Rust port of what the web app keeps in Python -- `web/game.py`, the
-//! game and board routers, `src/rules.py`, `src/strategy.py`'s rank windows,
+//! game, board and scan routers, `src/rules.py`, `src/strategy.py`'s rank windows,
 //! `web/difficulty.py`, and `smart_player`'s `choose_move` / `choose_move_sim`.
 //! The web is the specification; where this differs it says so at the spot.
 
+mod assistant;
 mod bench;
 mod bot;
 mod difficulty;
@@ -14,6 +15,7 @@ mod rng;
 mod rules;
 mod session;
 
+pub use assistant::scan_suggestions;
 pub use bench::{
     run_benchmark, BenchmarkControl, BenchmarkMove, BenchmarkPlayerStats, BenchmarkResult, BestGame,
 };
