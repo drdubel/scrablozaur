@@ -169,7 +169,10 @@ abstract class StageEngineAssets : DefaultTask() {
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.RELATIVE)
     val sources get() = workspace.asFileTree.matching {
-        include("languages/*.json", "words/*/dawg.bin", "words/*/gaddag.bin", "smart_player/models/*/leave_value.bin")
+        include(
+            "languages/*.json", "words/*/dawg.bin", "words/*/gaddag.bin", "smart_player/models/*/leave_value.bin",
+            "board_reader/src/models/*/grid_finder.bin", "board_reader/src/models/*/cell_reader.bin",
+        )
     }
 
     @TaskAction
@@ -184,6 +187,10 @@ abstract class StageEngineAssets : DefaultTask() {
             files += json["dawg"] as String
             files += json["gaddag"] as String
             (json["leave_net"] as Map<*, *>?)?.let { files += it["weights"] as String }
+            (json["scanner"] as Map<*, *>?)?.let {
+                files += it["grid_finder"] as String
+                files += it["cell_reader"] as String
+            }
         }
         val manifest = files.map { rel ->
             val src = root.resolve(rel)

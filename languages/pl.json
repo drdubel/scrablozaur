@@ -61,5 +61,10 @@
     "use_point_prior": true
   },
 
+  "scanner": {
+    "grid_finder": "board_reader/src/models/pl/grid_finder.bin",
+    "cell_reader": "board_reader/src/models/pl/cell_reader.bin"
+  },
+
   "definitions": ["sjp", "pwn"]
 }
