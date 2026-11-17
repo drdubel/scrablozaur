@@ -78,16 +78,15 @@ import pl.scrablozaur.engine.PreviewResult
 import pl.scrablozaur.ui.components.BoardOverlay
 import pl.scrablozaur.ui.components.BoardView
 import pl.scrablozaur.ui.components.EngineBusy
+import pl.scrablozaur.ui.components.HintList
+import pl.scrablozaur.ui.components.OrderChips
+import pl.scrablozaur.ui.components.SmallButton
+import pl.scrablozaur.ui.components.cells
 import pl.scrablozaur.ui.components.LetterKeyboard
 import pl.scrablozaur.ui.components.Mark
 import pl.scrablozaur.ui.components.RackView
 import pl.scrablozaur.ui.theme.Palette
 import pl.scrablozaur.ui.theme.outlinedButtonColors
-import kotlin.math.floor
-
-private fun Hint.cells(): List<Cell> = (0 until word.length).map {
-    if (horizontal) Cell(row.toInt(), col.toInt() + it) else Cell(row.toInt() + it, col.toInt())
-}
 
 /** What the board shows on top of the position: a word being typed, a hint
  *  being previewed, or else where the computer just played. */
@@ -128,12 +127,6 @@ private fun overlayFor(ui: GameUi): BoardOverlay {
         return BoardOverlay(marks = cells.associateWith { Mark.LastMove })
     }
     return BoardOverlay()
-}
-
-/** A ranking value as the web prints it: signed, and no decimals when whole. */
-private fun formatValue(v: Double): String {
-    val text = if (v == floor(v)) v.toLong().toString() else "%.1f".format(v)
-    return if (v > 0) "+$text" else text
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -301,28 +294,6 @@ private fun Panel(ui: GameUi, vm: GameViewModel, onNewGame: () -> Unit, onResign
 // ── Shared pieces ────────────────────────────────────────────────────────────
 
 @Composable
-private fun SmallButton(
-    label: Int,
-    onClick: () -> Unit,
-    enabled: Boolean = true,
-    busy: Boolean = false,
-    danger: Boolean = false,
-) {
-    OutlinedButton(
-        onClick = onClick,
-        enabled = enabled,
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        colors = outlinedButtonColors(danger),
-    ) {
-        if (busy) {
-            EngineBusy(Modifier.size(14.dp))
-            Spacer(Modifier.width(6.dp))
-        }
-        Text(stringResource(label), fontSize = 14.sp)
-    }
-}
-
-@Composable
 private fun ConfirmButton(ui: GameUi, onClick: () -> Unit) {
     Button(onClick = onClick, enabled = ui.idle) {
         if (ui.busy == Busy.Move) EngineBusy(Modifier.size(18.dp))
@@ -370,64 +341,6 @@ private fun WordStatus(ui: GameUi, vm: GameViewModel) {
                     else -> Palette.invalidText
                 },
             )
-        }
-    }
-}
-
-@Composable
-private fun OrderChips(order: HintOrder, hasLeaveNet: Boolean, enabled: Boolean, onChange: (HintOrder) -> Unit, modifier: Modifier = Modifier) {
-    // Strateg and Analityk consult the leave net, so a language without one
-    // only offers plain score order -- as the web hides those buttons.
-    val options = buildList {
-        add(HintOrder.SCORE to R.string.sort_score)
-        if (hasLeaveNet) {
-            add(HintOrder.SMART to R.string.sort_smart)
-            add(HintOrder.SIM to R.string.sort_sim)
-        }
-    }
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        options.forEach { (o, label) ->
-            FilterChip(selected = order == o, onClick = { onChange(o) }, enabled = enabled, label = { Text(stringResource(label)) })
-        }
-    }
-}
-
-/** Tap a play to see it on the board, "Połóż" to play it. */
-@Composable
-private fun HintList(
-    hints: List<Hint>,
-    order: HintOrder,
-    selected: Hint?,
-    enabled: Boolean,
-    onSelect: (Hint) -> Unit,
-    onPlace: (Hint) -> Unit,
-) {
-    if (hints.isEmpty()) {
-        Text(stringResource(R.string.no_moves), color = Palette.muted)
-        return
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        hints.forEachIndexed { i, h ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .background(if (h == selected) Palette.highlightNew else Palette.surface, RoundedCornerShape(8.dp))
-                    .clickable { onSelect(h) }
-                    .padding(start = 10.dp, end = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text("${i + 1}.", color = Palette.muted, fontSize = 13.sp)
-                Column(Modifier.weight(1f)) {
-                    Text(h.word.uppercase(), fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    val position = stringResource(R.string.hint_position, h.row.toInt(), h.col.toInt(), if (h.horizontal) "→" else "↓")
-                    // The ordering value only says something when it is not the score.
-                    val value = if (order == HintOrder.SCORE) "" else " · ${formatValue(h.value)}"
-                    Text(position + value, fontSize = 12.sp, color = Palette.muted)
-                }
-                Text(stringResource(R.string.points_short, h.score.toInt()), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                TextButton(onClick = { onPlace(h) }, enabled = enabled) { Text(stringResource(R.string.place)) }
-            }
         }
     }
 }

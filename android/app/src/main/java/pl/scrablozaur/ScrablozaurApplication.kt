@@ -4,11 +4,14 @@ import android.app.Application
 import pl.scrablozaur.core.Definitions
 import pl.scrablozaur.core.EngineRepository
 import pl.scrablozaur.core.SavedGames
+import pl.scrablozaur.core.ScanSessions
 
 class ScrablozaurApplication : Application() {
     lateinit var engine: EngineRepository
         private set
     lateinit var saves: SavedGames
+        private set
+    lateinit var scans: ScanSessions
         private set
     val definitions by lazy { Definitions(cacheDir) }
 
@@ -16,5 +19,6 @@ class ScrablozaurApplication : Application() {
         super.onCreate()
         engine = EngineRepository(this)
         saves = SavedGames(filesDir)
+        scans = ScanSessions(filesDir, getExternalFilesDir("scans"))
     }
 }

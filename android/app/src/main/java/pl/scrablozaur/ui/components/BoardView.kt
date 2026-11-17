@@ -36,8 +36,12 @@ import pl.scrablozaur.engine.Premium
 import pl.scrablozaur.ui.game.Cell
 import pl.scrablozaur.ui.theme.Palette
 
-/** A highlight laid over a square, beneath any tile on it. */
-enum class Mark { HintNew, HintExisting, LastMove }
+/**
+ * A highlight on a square. The hint marks lie beneath any tile; the rest are
+ * outlines: where the computer just played, a scanned square still in a
+ * non-word or alone, and one the dictionary corrected.
+ */
+enum class Mark { HintNew, HintExisting, LastMove, Flagged, Corrected }
 
 /** Everything drawn on the board beyond the position itself. */
 data class BoardOverlay(
@@ -51,6 +55,8 @@ data class BoardOverlay(
     /** Whether the typed word is playable: null while unknown. */
     val typedValid: Boolean? = null,
     val marks: Map<Cell, Mark> = emptyMap(),
+    /** Scanned tiles that are new since the last confirmed board. */
+    val fresh: Set<Cell> = emptySet(),
 )
 
 private val premiumLabels = mapOf(
@@ -184,7 +190,11 @@ private fun DrawScope.drawBoard(
             letter.isNotEmpty() -> {
                 val owner = owners.getOrNull(index)?.toInt() ?: -1
                 val (bg, border) = Palette.owners.getOrNull(owner) ?: (Palette.placed to Palette.placedBorder)
-                val fill = if (mark == Mark.HintExisting || cell in overlay.typedThrough) Palette.highlightExisting else bg
+                val fill = when {
+                    mark == Mark.HintExisting || cell in overlay.typedThrough -> Palette.highlightExisting
+                    cell in overlay.fresh -> Palette.highlightNew
+                    else -> bg
+                }
                 drawRoundRect(fill, topLeft, g.square, g.radius)
                 val blank = blanks.getOrNull(index) == true
                 if (blank) {
@@ -207,8 +217,14 @@ private fun DrawScope.drawBoard(
                 }
             }
         }
-        if (mark == Mark.LastMove) {
-            drawRoundRect(Palette.primary, topLeft, g.square, g.radius, style = Stroke(width = g.gap * 1.8f))
+        when (mark) {
+            Mark.LastMove -> drawRoundRect(Palette.primary, topLeft, g.square, g.radius, style = Stroke(width = g.gap * 1.8f))
+            Mark.Flagged -> drawRoundRect(Palette.danger, topLeft, g.square, g.radius, style = Stroke(width = g.gap * 2.4f))
+            Mark.Corrected -> drawRoundRect(
+                Palette.primary, topLeft, g.square, g.radius,
+                style = Stroke(width = g.gap * 1.8f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(tile / 6, tile / 10))),
+            )
+            else -> {}
         }
     }
 }

@@ -5,27 +5,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import pl.scrablozaur.BuildConfig
-import pl.scrablozaur.R
 import pl.scrablozaur.ScrablozaurApplication
 import pl.scrablozaur.ui.benchmark.BenchmarkScreen
 import pl.scrablozaur.ui.benchmark.BenchmarkViewModel
@@ -34,6 +21,8 @@ import pl.scrablozaur.engine.Mode
 import pl.scrablozaur.engine.PlayerSetup
 import pl.scrablozaur.ui.game.GameViewModel
 import pl.scrablozaur.ui.game.NewGame
+import pl.scrablozaur.ui.scan.ScanScreen
+import pl.scrablozaur.ui.scan.ScanViewModel
 import pl.scrablozaur.ui.setup.SetupScreen
 import pl.scrablozaur.ui.theme.ScrablozaurTheme
 
@@ -56,20 +45,25 @@ class MainActivity : ComponentActivity() {
                 seed = seed.toULong(),
             )
         }
-        setContent { ScrablozaurTheme { App(app, benchGame) } }
+        // Debug builds only: `--es scan_replay <frames.bin>` opens the scanner on
+        // recorded frames (`frame-bench`'s SCRBFRM1) instead of the camera.
+        val replay = intent.getStringExtra("scan_replay").takeIf { BuildConfig.DEBUG && savedInstanceState == null }
+        setContent { ScrablozaurTheme { App(app, benchGame, replay) } }
     }
 }
 
 private enum class Screen { Setup, Game, Benchmark, Scan }
 
 @Composable
-private fun App(app: ScrablozaurApplication, benchGame: NewGame?) {
+private fun App(app: ScrablozaurApplication, benchGame: NewGame?, replay: String?) {
     val game: GameViewModel = viewModel()
     val bench: BenchmarkViewModel = viewModel()
     val premiums = app.engine.premiums
     // Saveable, so a rotation or a process restart comes back to the same
     // screen. A game in progress is resumed straight into on launch.
-    var screen by rememberSaveable { mutableStateOf(if (app.saves.hasUnfinishedGame()) Screen.Game else Screen.Setup) }
+    var screen by rememberSaveable {
+        mutableStateOf(if (replay != null) Screen.Scan else if (app.saves.hasUnfinishedGame()) Screen.Game else Screen.Setup)
+    }
     var previous by rememberSaveable { mutableStateOf(Screen.Setup) }
 
     fun go(to: Screen) {
@@ -125,21 +119,12 @@ private fun App(app: ScrablozaurApplication, benchGame: NewGame?) {
             BenchmarkScreen(bench, premiums, onBack = { go(Screen.Setup) }, onRerun = { go(Screen.Setup) })
         }
         Screen.Scan -> {
+            // Made on first use, then kept with the activity: the confirmed board
+            // and the loaded scanner outlive a trip to the game and back.
+            val scan: ScanViewModel = viewModel()
+            LaunchedEffect(replay) { if (replay != null) scan.replay(replay) }
             BackHandler { go(previous) }
-            ScannerPlaceholder { go(previous) }
+            ScanScreen(scan, premiums, onBack = { go(previous) })
         }
-    }
-}
-
-/** The live scanner lands in a later phase; until then the tab says so. */
-@Composable
-private fun ScannerPlaceholder(onBack: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().systemBarsPadding().padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(stringResource(R.string.scan_coming_soon), textAlign = TextAlign.Center)
-        Button(onClick = onBack) { Text(stringResource(R.string.back)) }
     }
 }

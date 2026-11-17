@@ -3,6 +3,9 @@
 
     <!-- Word definitions are the only thing fetched from the network. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The board scanner. Without a camera the app still plays. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:name=".ScrablozaurApplication"

@@ -57,7 +57,6 @@
 
     <!-- Game: header and scoreboard -->
     <string name="board_description">Plansza</string>
-    <string name="scan_coming_soon">Skaner planszy pojawi się w kolejnej wersji aplikacji.</string>
     <string name="undo">Cofnij</string>
     <string name="scan">Skanuj</string>
     <string name="move_n">Ruch %1$d</string>
@@ -189,4 +188,45 @@
     <string name="err_rack_too_long">Stojak mieści najwyżej 7 liter.</string>
     <string name="err_invalid_save">Nie udało się wczytać zapisanej gry.</string>
     <string name="err_engine">Błąd silnika: %1$s</string>
+
+    <!-- Scan assistant: the web's scan view, with the camera in place of a photo -->
+    <string name="scan_title">Asystent planszy</string>
+    <string name="scan_loading">Przygotowuję skaner…</string>
+    <string name="scan_unavailable">Skaner planszy nie jest jeszcze dostępny dla tego języka.</string>
+    <string name="scan_camera_needed">Skaner potrzebuje dostępu do aparatu.</string>
+    <string name="scan_camera_allow">Zezwól na dostęp</string>
+    <string name="scan_torch">Latarka</string>
+    <string name="scan_aim">Skieruj aparat z góry na całą planszę.</string>
+    <string name="scan_hold_still">Trzymaj nieruchomo…</string>
+    <string name="scan_checking">Sprawdzam odczyt… nie ruszaj aparatu.</string>
+    <string name="scan_unseen">Nie widzę dobrze płytek — skieruj aparat z góry na całą planszę.</string>
+    <string name="scan_empty_board">Pusta plansza</string>
+    <!-- 1 pole, 2–4 pola, 5+ pól. -->
+    <plurals name="scan_not_words">
+        <item quantity="one">%d pole nie składa się w słowo ze słownika. Popraw ułożenie płytek albo popraw ręcznie.</item>
+        <item quantity="few">%d pola nie składają się w słowa ze słownika. Popraw ułożenie płytek albo popraw ręcznie.</item>
+        <item quantity="many">%d pól nie składa się w słowa ze słownika. Popraw ułożenie płytek albo popraw ręcznie.</item>
+        <item quantity="other">%d pola nie składają się w słowa ze słownika. Popraw ułożenie płytek albo popraw ręcznie.</item>
+    </plurals>
+    <string name="scan_fix_by_hand">Popraw ręcznie</string>
+    <string name="scan_back_to_board">Wróć do planszy</string>
+    <string name="scan_review_title">Sprawdź odczytaną planszę</string>
+    <string name="scan_review_help">Dotknij pola, aby poprawić literę; ★ zamienia płytkę w blanka. Czerwona ramka: słowo spoza słownika. Przerywana: litera poprawiona według słownika. Zielone płytki: nowe od ostatniego skanu.</string>
+    <plurals name="scan_flagged">
+        <item quantity="one">⚠ %d pole może być odczytane błędnie — sprawdź podświetlone pola.</item>
+        <item quantity="few">⚠ %d pola mogą być odczytane błędnie — sprawdź podświetlone pola.</item>
+        <item quantity="many">⚠ %d pól może być odczytanych błędnie — sprawdź podświetlone pola.</item>
+        <item quantity="other">⚠ %d pola mogą być odczytane błędnie — sprawdź podświetlone pola.</item>
+    </plurals>
+    <string name="scan_cell">Wiersz %1$d, kolumna %2$d</string>
+    <string name="scan_clear_cell">Wyczyść pole</string>
+    <string name="scan_save_example">Zapisz do treningu OCR</string>
+    <string name="scan_example_saved">💾 Zapisano przykład treningowy %1$s.</string>
+    <string name="scan_example_failed">⚠ Nie udało się zapisać przykładu treningowego: %1$s</string>
+    <string name="scan_rescan">↺ Skanuj ponownie</string>
+    <string name="scan_next">Kolejny skan</string>
+    <string name="scan_correct_board">Popraw planszę</string>
+    <string name="scan_new_session">Nowa sesja</string>
+    <string name="scan_new_session_confirm">Czy na pewno chcesz zacząć nową sesję? Bieżąca zeskanowana plansza zostanie utracona.</string>
+    <string name="scan_bad_board">Tej planszy nie da się ułożyć z płytek jednej gry — sprawdź litery.</string>
 </resources>

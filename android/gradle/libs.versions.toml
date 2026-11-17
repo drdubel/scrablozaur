@@ -7,7 +7,6 @@ lifecycle = "2.11.0"
 core-ktx = "1.19.1"
 coroutines = "1.11.0"
 camerax = "1.6.2"
-litert = "2.3.2"
 jna = "5.19.1"
 junit = "4.13.2"
 
@@ -28,7 +27,6 @@ camera-core = { module = "androidx.camera:camera-core", version.ref = "camerax" 
 camera-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
 camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
 camera-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
-litert = { module = "com.google.ai.edge.litert:litert", version.ref = "litert" }
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 junit = { module = "junit:junit", version.ref = "junit" }
 

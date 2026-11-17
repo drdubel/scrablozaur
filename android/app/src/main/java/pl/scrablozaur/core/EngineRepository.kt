@@ -8,6 +8,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import pl.scrablozaur.engine.BoardScanner
 import pl.scrablozaur.engine.LanguagePackHandle
 import pl.scrablozaur.engine.Premium
 import pl.scrablozaur.engine.premiumLayout
@@ -30,13 +31,17 @@ data class LanguageMeta(
     internal val dawg: String,
     internal val gaddag: String,
     internal val leaveNet: String?,
-)
+    /** The live scanner's grid finder and cell reader; null where none is trained. */
+    internal val scanner: Pair<String, String>?,
+) {
+    val hasScanner get() = scanner != null
+}
 
 /**
  * The engine's data and the languages built from it.
  *
- * The APK carries every `languages/<code>.json`, the lexicons and the leave nets under
- * `assets/engine/`, laid out as in the repository so the paths inside each
+ * The APK carries every `languages/<code>.json`, the lexicons, the leave nets and the
+ * scanner's models under `assets/engine/`, laid out as in the repository so the paths inside each
  * definition resolve. They are copied out once (the engine opens files), checked
  * against the build's manifest of SHA-256s, and re-copied whenever a new build
  * ships different data.
@@ -46,6 +51,7 @@ class EngineRepository(private val context: Context) {
     private val lock = Mutex()
     private var ready = false
     private val packs = HashMap<String, LanguagePackHandle>()
+    private val scanners = HashMap<String, BoardScanner>()
 
     val premiums: List<Premium> by lazy { premiumLayout() }
 
@@ -80,6 +86,22 @@ class EngineRepository(private val context: Context) {
             Log.i(LOG_TAG, "loaded '${meta.code}' in ${SystemClock.elapsedRealtime() - start} ms")
             packs[meta.code] = pack
             pack
+        }
+    }
+
+    /** The loaded live scanner for `code`, which must have one. */
+    suspend fun scanner(code: String): BoardScanner {
+        val pack = pack(code)
+        return withContext(Dispatchers.IO) {
+            lock.withLock {
+                scanners[code]?.let { return@withLock it }
+                val (finder, reader) = checkNotNull(language(code).scanner) { "'$code' has no scanner" }
+                val start = SystemClock.elapsedRealtime()
+                val scanner = BoardScanner.load(pack, File(root, finder).path, File(root, reader).path)
+                Log.i(LOG_TAG, "loaded the '$code' scanner in ${SystemClock.elapsedRealtime() - start} ms")
+                scanners[code] = scanner
+                scanner
+            }
         }
     }
 
@@ -125,6 +147,7 @@ class EngineRepository(private val context: Context) {
     private fun parse(text: String): LanguageMeta {
         val json = JSONObject(text)
         val leave = json.optJSONObject("leave_net")
+        val scanner = json.optJSONObject("scanner")
         val defs = json.optJSONArray("definitions")
         return LanguageMeta(
             code = json.getString("code"),
@@ -137,6 +160,7 @@ class EngineRepository(private val context: Context) {
             dawg = json.getString("dawg"),
             gaddag = json.getString("gaddag"),
             leaveNet = leave?.getString("weights"),
+            scanner = scanner?.let { it.getString("grid_finder") to it.getString("cell_reader") },
         )
     }
 }

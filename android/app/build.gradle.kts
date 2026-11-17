@@ -248,6 +248,10 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.camera.core)
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
     // UniFFI's Kotlin bindings call the engine through JNA.
     implementation("${libs.jna.get().module}:${libs.jna.get().version}@aar")
     testImplementation(libs.junit)
