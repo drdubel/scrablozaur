@@ -763,6 +763,8 @@ fn decoded_py(out: &scan_decode::Decoded) -> DecodedScanPy {
         blanks: rows_of(&out.board.blanks),
         corrected: rows_of(&out.corrected),
         flagged: rows_of(&out.flagged),
+        to_check: rows_of(&out.to_check()),
+        doubtful: out.doubtful(),
         legal: out.legal,
         complete: out.complete,
         cost: out.cost,
@@ -782,6 +784,10 @@ struct DecodedScanPy {
     corrected: Vec<Vec<bool>>,
     #[pyo3(get)]
     flagged: Vec<Vec<bool>>,
+    #[pyo3(get)]
+    to_check: Vec<Vec<bool>>,
+    #[pyo3(get)]
+    doubtful: bool,
     #[pyo3(get)]
     legal: bool,
     #[pyo3(get)]

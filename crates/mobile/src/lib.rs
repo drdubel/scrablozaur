@@ -442,7 +442,7 @@ fn decoded_board(out: &Decoded) -> DecodedBoard {
         }),
         blanks: flatten(&out.board.blanks, |b| b),
         corrected: flatten(&out.corrected, |b| b),
-        flagged: flatten(&out.flagged, |b| b),
+        flagged: flatten(&out.to_check(), |b| b),
         legal: out.legal,
         complete: out.complete,
         cost: out.cost,
@@ -694,7 +694,9 @@ pub struct DecodedBoard {
     pub blanks: Vec<bool>,
     /// Where the board differs from the readings' own best guess.
     pub corrected: Vec<bool>,
-    /// Squares still in a non-word or alone; only when not `legal`.
+    /// Squares to check: in a non-word or alone or, on a board legal only by
+    /// overriding letters the reader was sure of, the ones overridden. See
+    /// `Decoded::to_check` in the engine.
     pub flagged: Vec<bool>,
     /// Every rule of a real board holds.
     pub legal: bool,

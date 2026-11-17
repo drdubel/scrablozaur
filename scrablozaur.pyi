@@ -579,10 +579,18 @@ class DecodedScan:
     corrected: list[list[bool]]
     """Squares where the board differs from the readings' own best guess: a
     letter changed, a tile added or removed, a blank seen where a letter was
-    read or the reverse."""
+    read or the reverse. Never the prior board's tiles, which are kept
+    whatever was read."""
     flagged: list[list[bool]]
     """Squares still in a non-word or standing alone; only ever set when the
     board is not `legal`."""
+    to_check: list[list[bool]]
+    """The squares a player should look at: `flagged` or, on a `doubtful`
+    board, `corrected`."""
+    doubtful: bool
+    """Legal only by overriding letters the reader was sure of: `cost` above
+    the engine's `TRUSTED_COST` (4 nats; overriding one sure letter costs about
+    6.9). What the decoder makes of a word the dictionary lacks."""
     legal: bool
     """Every rule holds. When no legal board was found, `letters` is instead
     the readings' best guess after the web scanner's single-letter correction

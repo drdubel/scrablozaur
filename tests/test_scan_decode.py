@@ -45,6 +45,33 @@ def test_a_misread_comes_back_corrected(dawg):
     assert out.cost > 0 and out.work > 0
 
 
+def test_overriding_a_letter_the_reader_was_sure_of_makes_a_board_doubtful(dawg):
+    # 'ę' at 95%: 'o' has only what the other letters share of the rest.
+    readings = sure([(7, 6, "nos", True), (7, 7, "oko", False)])
+    readings[7][7] = (0.99, [("ę", 0.95)], 0.001)
+    out = decode_scan(dawg, readings)
+    assert out.legal and out.doubtful
+    assert out.to_check[7][7] and sum(map(sum, out.to_check)) == 1
+    # Unsure between the two, the correction is the reading's own second guess.
+    readings[7][7] = (0.99, [("ę", 0.5), ("o", 0.4)], 0.001)
+    out = decode_scan(dawg, readings)
+    assert out.legal and not out.doubtful and out.letters[7][7] == "o"
+    assert not any(map(any, out.to_check))
+
+
+def test_the_previous_boards_tiles_are_never_to_check(dawg):
+    prior = letters(sure([(7, 6, "nos", True)]))
+    readings = sure([(7, 6, "nos", True), (7, 7, "oko", False)])
+    readings[7][7] = (0.99, [("ę", 0.95)], 0.001)  # an old tile, misread
+    readings[8][7] = (0.99, [("ę", 0.95)], 0.001)  # a new one, overridden
+    out = decode_scan(dawg, readings, prior)
+    assert out.legal and out.doubtful  # the new tile overridden
+    assert (
+        out.letters[7][7] == "o" and not out.corrected[7][7] and not out.to_check[7][7]
+    )
+    assert out.corrected[8][7] and out.to_check[8][7]
+
+
 def test_the_previous_board_and_its_blanks_are_kept(dawg):
     prior = letters(sure([(7, 6, "kot", True)]))
     prior_blanks = [[False] * GRID for _ in range(GRID)]

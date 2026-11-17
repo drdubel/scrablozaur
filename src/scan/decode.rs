@@ -136,7 +136,8 @@ pub struct Decoded {
     pub board: ScanBoard,
     /// Squares where the board differs from the readings' own best guess: a
     /// letter changed, a tile added or removed, a blank seen where a letter
-    /// was read or the reverse.
+    /// was read or the reverse. Never the previous board's tiles, which are
+    /// kept whatever was read.
     pub corrected: Grid<bool>,
     /// Squares still in a non-word or standing alone. Only ever set when the
     /// board is not `legal`.
@@ -153,6 +154,33 @@ pub struct Decoded {
     pub cost: f32,
     /// Work done, in the units of `DecodeOptions::budget`.
     pub work: usize,
+}
+
+/// Above this cost a legal board is the decoder's guess more than a reading:
+/// it overrode letters the reader was sure of. Overriding one costs about 6.9
+/// nats, the letter floor's -- as making a word the dictionary lacks into one
+/// it has does; a letter the reader was unsure of costs far less. On legal
+/// boards read with held-out readings, later scans cost 0 nine times in ten;
+/// with one word made a non-word, the decoder's legal rewrite costs 6.9 or
+/// more nine times in ten.
+pub const TRUSTED_COST: f32 = 4.0;
+
+impl Decoded {
+    /// Legal only by overriding letters the reader was sure of.
+    pub fn doubtful(&self) -> bool {
+        self.legal && self.cost > TRUSTED_COST
+    }
+
+    /// The squares a player should look at: those in a non-word or alone or,
+    /// on a doubtful board, those the decoder changed (never the previous
+    /// board's tiles, which it only keeps).
+    pub fn to_check(&self) -> Grid<bool> {
+        if self.doubtful() {
+            self.corrected
+        } else {
+            self.flagged
+        }
+    }
 }
 
 /// Per DAWG node, bit `k` set when some word ends exactly `k` letters below

@@ -10,11 +10,13 @@
 //! -- every word in the dictionary, every tile joined up -- so one lucky
 //! frame cannot slip a misread through.
 //!
-//! Legal is not enough on its own: the decoder keeps the last confirmed
+//! Legal is not enough on its own. The decoder keeps the last confirmed
 //! board's tiles whatever the frame shows, so a grid found in something that
 //! is not the board -- a tiled floor, a wall -- decodes to that board,
-//! legal. A reading only counts if the reader itself saw nearly all of its
-//! tiles.
+//! legal: a reading only counts if the reader itself saw nearly all of its
+//! tiles. And the decoder makes a word the dictionary lacks into one it has,
+//! legal again: a reading only counts if it is legal as read, not just
+//! after letters the reader was sure of were overridden (`Decoded::doubtful`).
 
 use super::decode::{CellReading, Decoded, ScanBoard};
 use super::grid::Quad;
@@ -53,7 +55,8 @@ pub enum Verdict {
     /// Not a board the reader saw: under two tiles, or too few of them read
     /// as tiles at all.
     Unseen,
-    /// A line that is not a word, or a tile on its own.
+    /// A line that is not a word, or a tile on its own -- or legal only by
+    /// overriding letters the reader was sure of.
     Illegal,
     /// Legal: waiting for the next reading to agree.
     Checking,
@@ -116,7 +119,7 @@ impl LiveScan {
             .count();
         let verdict = if tiles.len() < 2 || (seen as f32) < SEEN_SHARE * tiles.len() as f32 {
             Verdict::Unseen
-        } else if !decoded.legal {
+        } else if !decoded.legal || decoded.doubtful() {
             Verdict::Illegal
         } else if self.last.as_ref() == Some(&decoded.board) {
             return Verdict::Accepted;
@@ -210,6 +213,12 @@ mod tests {
         // So does the board moving.
         live.watch(1.0, Some(&grid(100.0)));
         assert_eq!(live.judge(&legal('t'), &seen), Verdict::Checking);
+        // A board made legal by overriding a letter the reader was sure of
+        // is not one to take without asking.
+        let mut forced = legal('t');
+        forced.cost = 6.9;
+        assert_eq!(live.judge(&forced, &seen), Verdict::Illegal);
+        assert_eq!(live.judge(&forced, &seen), Verdict::Illegal);
     }
 
     #[test]

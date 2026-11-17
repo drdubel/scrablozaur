@@ -146,10 +146,10 @@ is, by the last confirmed board's tiles or, on a first scan, by its letters
 (`scrablozaur frame-bench`). `src/scan/live.rs` decides when the app's camera
 reads a frame -- once no corner of the grid has strayed 0.2 squares in 0.4 s
 -- and when a scan is done: two readings in a row, the board held still,
-giving the same legal board, nearly all of whose tiles the reader saw itself.
-That last check is not a formality: the decoder keeps the last confirmed
-board's tiles whatever the frame shows, so a grid found in a wall decodes to
-that board, legal.
+giving the same board, legal as read (not `doubtful`, see below) and nearly
+all of whose tiles the reader saw itself. That last check is not a
+formality: the decoder keeps the last confirmed board's tiles whatever the
+frame shows, so a grid found in a wall decodes to that board, legal.
 
 ## Dictionary decoding
 
@@ -179,6 +179,15 @@ real photo, whose errors cluster. Wrong squares per board, over 213 boards
 | medium | learned | 2.29 → 0.43 (5% → 62%) | 0.10 → 0.03 (91% → 97%) |
 | hard | classical | 18.6 → 17.2 (0% → 0.5%) | 1.03 → 0.71 (34% → 59%) |
 | hard | learned | 2.31 → 0.45 (5% → 64%) | 0.10 → 0.04 (91% → 96%) |
+
+A legal board is not always the right one. Given a word the dictionary
+lacks, the decoder finds the nearest legal board by overriding letters the
+reader was sure of. On the self-play boards above with one word made a
+non-word, its rewrite costs 6.9 nats or more nine times in ten -- the letter
+floor's price of one sure letter -- where later scans of the legal boards
+cost 0 nine times in ten. Above `TRUSTED_COST` (4 nats) a board is
+`doubtful`: the app never takes it by itself, and `to_check` points at the
+squares the decoder changed rather than at none.
 
 Most of what the learned reader leaves is blanks -- a blank shows no letter,
 so where its words allow several, the decoder can only guess -- and 'ś'.
