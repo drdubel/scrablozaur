@@ -21,7 +21,7 @@ use scrablozaur_core::scan::frame::read_frame;
 use scrablozaur_core::scan::grid::{GridFinder, Quad};
 use scrablozaur_core::scan::live::{LiveScan, Verdict, Watch};
 use scrablozaur_core::scan::reader::CellReader;
-use scrablozaur_core::scan::{flag_invalid, Grid, MAX_ALTERNATIVES_SHOWN};
+use scrablozaur_core::scan::{flag_invalid, Grid, MAX_ALTERNATIVES_SHOWN, MIN_ALTERNATIVE_PROB};
 use scrablozaur_core::{square_bonus, Language, LeaveNet, Lexicon};
 
 uniffi::setup_scaffolding!();
@@ -526,8 +526,9 @@ pub enum ReadingVerdict {
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FrameReading {
     pub board: DecodedBoard,
-    /// Per square, the letters the reader found likeliest for a tile there,
-    /// best first; empty for squares it took for empty.
+    /// Per square, the letters the reader gave a real chance for a tile
+    /// there (15% or more, as the web offers them), best first; empty for
+    /// squares it took for empty.
     pub alternatives: Vec<Vec<String>>,
     pub verdict: ReadingVerdict,
 }
@@ -648,6 +649,7 @@ impl BoardScanner {
                 letters.sort_by(|a, b| b.1.total_cmp(&a.1));
                 letters
                     .into_iter()
+                    .filter(|&(_, p)| p >= MIN_ALTERNATIVE_PROB)
                     .take(MAX_ALTERNATIVES_SHOWN)
                     .map(|(ch, _)| ch.to_string())
                     .collect()
