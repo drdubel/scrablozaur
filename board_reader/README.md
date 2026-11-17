@@ -151,6 +151,27 @@ all of whose tiles the reader saw itself. That last check is not a
 formality: the decoder keeps the last confirmed board's tiles whatever the
 frame shows, so a grid found in a wall decodes to that board, legal.
 
+## Camera frames, and training on the app's scans
+
+A phone's camera stream is a quarter of a photo's resolution, noisier and
+softer. Simulated from the test photos -- downscaled to 1080p, then blurred
+and noised -- and read through the engine's whole pipeline by readers that
+never saw the board's layout (`train_cell_reader.py --save-folds`), they come
+out at 0.44 wrong squares per board; 0.41-0.53 with blur or noise, 0.41 at
+720p. The photo crops' own figure is 0.37. Between two noise draws of one
+frame, the grid finder's corners move a median 0.003 squares (worst 0.15),
+well inside the camera's 0.2-square stillness rule.
+
+Real frames make better training data still. Ticking "Zapisz do treningu OCR"
+before confirming a scan in the app keeps the frame and the confirmed board;
+`scripts/import_app_scans.py` brings them over (adb, or `--from DIR`) into
+`test/app/`, and `export_scan_dataset.py` exports them with the photos: the
+grid from the corners the app's grid finder found, the truth the board the
+player confirmed, difficulty `c`, one layout per game. The cell reader trains
+on them; the grid finder does not -- their corners are its own answers -- and
+`eval_decoder.py` leaves them out, as it draws on the classical pipeline's
+readings, which they lack.
+
 ## Dictionary decoding
 
 A real board obeys rules no single square knows about: every line of two or

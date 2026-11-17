@@ -73,7 +73,10 @@ class Photos:
     GPU; and its grid corners in those pixels."""
 
     def __init__(self, path: Path, device):
-        self.meta = json.loads((path / "index.json").read_text(encoding="utf-8"))
+        meta = json.loads((path / "index.json").read_text(encoding="utf-8"))
+        # Not the app's scans: their corners are this net's own answers, and
+        # learning from them would only teach it its mistakes.
+        self.meta = [e for e in meta if e["difficulty"] != "c"]
         images, corners = [], []
         for e in self.meta:
             rec = json.loads((path / f"board{e['board']}.json").read_text(encoding="utf-8"))

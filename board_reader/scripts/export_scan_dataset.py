@@ -33,6 +33,15 @@ and writes to --out (default test/derived/scan_dataset/):
 `layout` numbers boards that show the same tile arrangement: the test photos
 are a few layouts shot many times, so a fair held-out split is by layout.
 
+Scans the app saved for training ("Zapisz do treningu OCR", brought in by
+import_app_scans.py into test/app/) are exported too, numbered from
+APP_BASE, difficulty "c" (camera), "source": "app". Their grid comes from the
+corners the app's grid finder found, not from the classical pipeline -- they
+are camera frames, a quarter of a photo's resolution, at any rotation -- and
+their truth is the board the player confirmed. They carry no "tiles" or
+"readings": the classical pipeline never saw them. The scans of one game,
+each holding the last one's tiles, share a layout.
+
 Run from board_reader/:  python scripts/export_scan_dataset.py
 """
 
@@ -60,6 +69,9 @@ from tile_detector import detect_tiles  # noqa: E402
 
 GRID = 15
 CELL = 64
+APP_DIR = os.path.join(HERE, "..", "test", "app")
+# App scans are numbered from here, clear of the photos' board numbers.
+APP_BASE = 10000
 MARGIN = 32
 SIZE = GRID * CELL + 2 * MARGIN
 
@@ -210,10 +222,11 @@ def at(ext, gx, gy):
     )
 
 
-def offset(img, truth):
-    """The offset, in squares, at which square windows best separate the
-    labelled tiles from the labelled empty squares by their share of
-    tile-face pixels (bright, unsaturated): where the labels' tiles are."""
+def offset(img, truth, reach=0.9):
+    """The offset, in squares and at most `reach` each way, at which square
+    windows best separate the labelled tiles from the labelled empty squares
+    by their share of tile-face pixels (bright, unsaturated): where the
+    labels' tiles are."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     sat, val = hsv[..., 1].astype(np.float32), hsv[..., 2].astype(np.float32)
     face = ((sat < np.percentile(sat, 30) + 25) & (val > np.percentile(val, 50))).astype(np.float32)
@@ -222,8 +235,9 @@ def offset(img, truth):
     if is_tile.all() or not is_tile.any():
         return 0.0, 0.0
     best = (-np.inf, 0.0, 0.0)
-    for sy in np.arange(-0.9, 0.91, 0.05):
-        for sx in np.arange(-0.9, 0.91, 0.05):
+    steps = np.arange(-reach, reach + 0.01, 0.05)
+    for sy in steps:
+        for sx in steps:
             y0 = np.clip(np.round(MARGIN + (np.arange(GRID) + sy) * CELL).astype(int), 0, SIZE)
             x0 = np.clip(np.round(MARGIN + (np.arange(GRID) + sx) * CELL).astype(int), 0, SIZE)
             y1, x1 = np.clip(y0 + CELL, 0, SIZE), np.clip(x0 + CELL, 0, SIZE)
@@ -235,10 +249,11 @@ def offset(img, truth):
     return round(best[1], 2), round(best[2], 2)
 
 
-def straighten(photo, mesh, shift=None):
+def straighten(photo, mesh, shift=None, smooth=0.8):
     """The grid straightened through its mesh, each output pixel found in
     the photo by interpolating the mesh at its grid coordinates -- moved by
-    `shift`, per mesh point in squares (16, 16, 2), if given."""
+    `shift`, per mesh point in squares (16, 16, 2), if given. `smooth` is the
+    blur, in photo pixels, taken off first."""
     ext = extended(mesh)
     g = (np.arange(SIZE) + 0.5 - MARGIN) / CELL
     gx, gy = np.meshgrid(g, g)
@@ -247,9 +262,10 @@ def straighten(photo, mesh, shift=None):
         moved = at(s, gx, gy)
         gx, gy = gx + moved[..., 0], gy + moved[..., 1]
     pts = at(ext, gx, gy).astype(np.float32)
-    # The photo's squares are about twice the export's: smooth first, or
-    # sampling them would alias.
-    return cv2.remap(cv2.GaussianBlur(photo, (0, 0), 0.8), pts[..., 0], pts[..., 1], cv2.INTER_LINEAR)
+    # A photo's squares are about twice the export's: smooth first, or
+    # sampling them would alias. A camera frame's are about its size.
+    src = cv2.GaussianBlur(photo, (0, 0), smooth) if smooth else photo
+    return cv2.remap(src, pts[..., 0], pts[..., 1], cv2.INTER_LINEAR)
 
 
 def bend(mesh) -> float:
@@ -332,6 +348,89 @@ def export_one(idx, layout, out_dir):
     return None
 
 
+def app_scans():
+    """The app's scans in test/app/ (scan_<ms>.json and .jpg), oldest first."""
+    if not os.path.isdir(APP_DIR):
+        return []
+    return sorted(f[: -len(".json")] for f in os.listdir(APP_DIR) if f.startswith("scan_") and f.endswith(".json"))
+
+
+def app_truth(scan):
+    """The confirmed board as truth rows: upper-case letters, '?' a blank, '-' empty."""
+    letters, blanks = scan["letters"], scan["blanks"]
+
+    def square(i):
+        return "-" if not letters[i] else "?" if blanks[i] else letters[i].upper()
+
+    return ["".join(square(r * GRID + c) for c in range(GRID)) for r in range(GRID)]
+
+
+def same_game(earlier, later) -> bool:
+    """Whether `later` is `earlier` with tiles added: nearly all of its
+    tiles still there, the same letters. A confirmed board can differ from
+    the last by a correction, so not all."""
+    tiles = [(r, c) for r in range(GRID) for c in range(GRID) if earlier[r][c] != "-"]
+    kept = sum(later[r][c] == earlier[r][c] for r, c in tiles)
+    return bool(tiles) and kept >= 0.9 * len(tiles)
+
+
+def export_app(idx, name, layout, out_dir):
+    with open(os.path.join(APP_DIR, name + ".json"), encoding="utf-8") as f:
+        scan = json.load(f)
+    photo = cv2.imread(os.path.join(APP_DIR, name + ".jpg"))
+    if photo is None:
+        return f"{name}: no frame"
+    photo_h, photo_w = photo.shape[:2]
+    # The app's corners start from the board's own top left: no turning.
+    corners = np.asarray(scan["corners"], np.float32).reshape(4, 2)
+    if quad_area(corners) < 0.05 * photo_w * photo_h:
+        return f"{name}: the grid is too small in the frame ({quad_area(corners):.0f} px²)"
+    unit = np.array([[0, 0], [GRID, 0], [GRID, GRID], [0, GRID]], np.float32)
+    xy = np.stack(np.meshgrid(np.arange(GRID + 1), np.arange(GRID + 1)), -1).astype(np.float32)
+    to_frame = cv2.getPerspectiveTransform(unit, corners)
+    mesh = cv2.perspectiveTransform(xy.reshape(-1, 1, 2), to_frame).reshape(GRID + 1, GRID + 1, 2).astype(np.float64)
+
+    truth = app_truth(scan)
+    f_px = float(scan["focal_px"])
+    tops = tile_tops(mesh, (photo_w, photo_h), f_px)
+    straight = straighten(photo, mesh, tops, smooth=0)
+    match = registration(straight, truth)
+    # The grid finder's corners are within a fifth of a square nine times in
+    # ten, so the residual only ever trims. Searched further, a sparse board
+    # with glare finds spurious shifts near a whole square; so it reaches
+    # less, and is kept only where the labels then match better.
+    residual = offset(straight, truth, reach=0.4)
+    if any(residual):
+        shifted = straighten(photo, mesh, tops + np.array(residual), smooth=0)
+        better = registration(shifted, truth)
+        if better > match:
+            straight, match = shifted, better
+        else:
+            residual = (0.0, 0.0)
+    if match < MIN_REGISTRATION:
+        return f"{name}: the grid does not match the labels (registration {match:.2f})"
+    record = {
+        "source": "app",
+        "photo": "../app/" + name + ".jpg",
+        "difficulty": "c",
+        "layout": layout,
+        "photo_size": [photo_w, photo_h],
+        "grid_corners": [[round(float(x), 2), round(float(y), 2)] for x, y in corners],
+        "mesh": [[[round(float(x), 2), round(float(y), 2)] for x, y in row] for row in mesh],
+        "rotation_k": 0,
+        "registration": round(match, 3),
+        "bend": 0.0,
+        "focal_px": round(f_px, 1),
+        "parallax": [round(float(v), 3) for v in tops[GRID // 2, GRID // 2]],
+        "residual": list(residual),
+        "truth": truth,
+    }
+    with open(os.path.join(out_dir, f"board{idx}.json"), "w", encoding="utf-8") as f:
+        json.dump(record, f, ensure_ascii=False)
+    cv2.imwrite(os.path.join(out_dir, f"board{idx}.jpg"), straight, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     default_out = os.path.join(HERE, "..", "test", "derived", "scan_dataset")
@@ -342,13 +441,27 @@ def main():
 
     # Same tile arrangement -> same layout number, in board order.
     layouts, index = {}, []
+    jobs = []
     for idx in sorted(GROUND_TRUTH):
         key = tuple(sorted(GROUND_TRUTH[idx].items()))
-        layout = layouts.setdefault(key, len(layouts))
+        jobs.append((idx, layouts.setdefault(key, len(layouts)), DIFFICULTY[idx], None))
+    # Then the app's scans, one layout per game.
+    game, previous = len(layouts) - 1, None
+    for i, name in enumerate(app_scans()):
+        with open(os.path.join(APP_DIR, name + ".json"), encoding="utf-8") as f:
+            truth = app_truth(json.load(f))
+        if previous is None or not same_game(previous, truth):
+            game += 1
+        previous = truth
+        jobs.append((APP_BASE + i, game, "c", name))
+    for idx, layout, difficulty, app_name in jobs:
         if args.only and idx not in args.only:
             continue
         start = time.time()
-        problem = export_one(idx, layout, args.out)
+        if app_name is None:
+            problem = export_one(idx, layout, args.out)
+        else:
+            problem = export_app(idx, app_name, layout, args.out)
         print(f"board{idx}: {'FAILED ' + problem if problem else 'ok'} ({time.time() - start:.1f} s)", flush=True)
         if problem is not None:
             # Do not leave an earlier run's export of this board behind.
@@ -357,7 +470,7 @@ def main():
                 if os.path.exists(stale):
                     os.remove(stale)
         else:
-            index.append({"board": idx, "difficulty": DIFFICULTY[idx], "layout": layout})
+            index.append({"board": idx, "difficulty": difficulty, "layout": layout})
     if not args.only:
         with open(os.path.join(args.out, "index.json"), "w", encoding="utf-8") as f:
             json.dump(index, f, indent=1)

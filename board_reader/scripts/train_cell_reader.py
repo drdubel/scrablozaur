@@ -373,7 +373,8 @@ def fit_temperature(logits, labels):
 
 
 def report(boards: Boards, logits, letters: str):
-    """Learned against classical, per difficulty, on the same squares."""
+    """Learned against classical, per difficulty, on the same squares. The
+    app's camera scans (tier "c") have no classical readings."""
     pred = logits.argmax(-1).cpu()
     labels = boards.labels[: len(boards.meta)].cpu()
     stats = collections.defaultdict(collections.Counter)
@@ -385,8 +386,8 @@ def report(boards: Boards, logits, letters: str):
             truth = labels[i, cell].item()
             p = pred[i, cell].item()
             # classical
-            is_tile, _ = rec["tiles"][f"{r},{c}"]
-            reading = rec["readings"].get(f"{r},{c}")
+            is_tile, _ = rec["tiles"][f"{r},{c}"] if "tiles" in rec else (False, 0)
+            reading = rec["readings"].get(f"{r},{c}") if "tiles" in rec else None
             cl = (
                 EMPTY
                 if not is_tile
@@ -396,7 +397,7 @@ def report(boards: Boards, logits, letters: str):
                     else -1
                 )
             )
-            for name, guess in (("learned", p), ("classical", cl)):
+            for name, guess in (("learned", p), ("classical", cl)) if "tiles" in rec else (("learned", p),):
                 g_tile, t_tile = guess != EMPTY, truth != EMPTY
                 s[name + " tp"] += g_tile and t_tile
                 s[name + " fp"] += g_tile and not t_tile
@@ -407,11 +408,11 @@ def report(boards: Boards, logits, letters: str):
                 s[name + " cells ok"] += guess == truth
                 s[name + " cells"] += 1
     lines = []
-    for tier in "emh":
+    for tier in "emhc":
         s = stats[tier]
         if not s:
             continue
-        for name in ("classical", "learned"):
+        for name in ("classical", "learned") if s["classical cells"] else ("learned",):
             tp, fp, fn = s[name + " tp"], s[name + " fp"], s[name + " fn"]
             lines.append(
                 f"  {tier} {name:9}: precision {tp / max(1, tp + fp):.4f} recall {tp / max(1, tp + fn):.4f} "
@@ -431,6 +432,12 @@ def main():
     ap.add_argument("--final", action="store_true", help="train on every board and save the model")
     ap.add_argument("--out", type=Path, default=ROOT / "board_reader" / "src" / "models" / "pl" / "cell_reader.pt")
     ap.add_argument("--dump", type=Path, help="write the held-out probabilities here (cross-validation)")
+    ap.add_argument(
+        "--save-folds",
+        type=Path,
+        help="cross-validation: export each fold's reader here (fold<k>.bin, folds.json naming the layouts it held"
+        " out), so the engine's whole pipeline can be judged on boards its reader never saw",
+    )
     ap.add_argument(
         "--temperature",
         type=float,
@@ -482,6 +489,12 @@ def main():
         test = [i for i, e in enumerate(boards.meta) if e["layout"] in held]
         train_ids = [i for i in range(len(boards.meta)) if i not in test]
         model = train(boards, train_ids, args.epochs, device, args.seed + f)
+        if args.save_folds:
+            args.save_folds.mkdir(parents=True, exist_ok=True)
+            # The temperature only calibrates; a fold's own is not fitted yet.
+            export(model.cpu().eval(), letters, 1.0, args.save_folds / f"fold{f}.bin")
+            model.to(device)
+            (args.save_folds / "folds.json").write_text(json.dumps({"folds": folds}))
         both = test + [i + n for i in test]
         logits[both] = predict(model, boards, both, device)
         # Every held-out board turned every way: is the way back found?

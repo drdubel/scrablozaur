@@ -65,6 +65,8 @@ python3 android/tools/device_bench.py --levels 9,10 --threads 2,4,8   # bot ms/m
 # one held still per scan -- tests everything past the lens with no board in front of the phone
 adb push frames.bin /sdcard/Android/data/pl.scrablozaur/files/
 adb shell am start -n pl.scrablozaur/.ui.MainActivity --es scan_replay /sdcard/Android/data/pl.scrablozaur/files/frames.bin
+# Scans the app saved for training ("Zapisz do treningu OCR") into board_reader's data, then re-export and retrain
+uv run python board_reader/scripts/import_app_scans.py && uv run python board_reader/scripts/export_scan_dataset.py
 
 # Engine CLI (see README "CLI" section)
 make dicts  LANG=pl            # rebuild both binaries (build + build-gaddag)

@@ -72,7 +72,10 @@ def load_records(path: Path) -> list[dict]:
     files = sorted(glob.glob(str(path / "board*.json")))
     if not files:
         sys.exit(f"no dataset at {path}: run board_reader/scripts/export_scan_dataset.py first")
-    return [json.loads(Path(f).read_text(encoding="utf-8")) for f in files]
+    # Readings are drawn per difficulty from photos the classical pipeline
+    # read; the app's camera scans have no such readings.
+    records = [json.loads(Path(f).read_text(encoding="utf-8")) for f in files]
+    return [rec for rec in records if "tiles" in rec]
 
 
 def cells(rec):
