@@ -25,6 +25,8 @@ data class LanguageMeta(
     val flag: String,
     val alphabet: String,
     val blank: Char,
+    /** The vowels -- the rest of the alphabet being consonants -- for the balance a player tracking tiles watches. */
+    val vowels: String,
     /** Face value of every tile, the blank included -- for drawing a board without loading the language. */
     val points: Map<String, UInt>,
     /** Word-definition providers, in the order to try them. */
@@ -47,9 +49,13 @@ data class LanguageMeta(
  * definition resolve. They are copied out once (the engine opens files), checked
  * against the build's manifest of SHA-256s, and re-copied whenever a new build
  * ships different data.
+ *
+ * They live in `noBackupFilesDir`: the APK carries them anyway, and their ~54 MB
+ * would push the app past the 25 MB Auto Backup allows -- which then backs up
+ * nothing at all, the game history included.
  */
 class EngineRepository(private val context: Context) {
-    private val root = File(context.filesDir, "engine")
+    private val root = File(context.noBackupFilesDir, "engine")
     private val lock = Mutex()
     private var ready = false
     private val packs = HashMap<String, LanguagePackHandle>()
@@ -109,13 +115,16 @@ class EngineRepository(private val context: Context) {
 
     private fun ensureExtracted() {
         if (ready) return
+        // Where earlier builds put the data, inside what Auto Backup copies.
+        File(context.filesDir, "engine").deleteRecursively()
+        File(context.filesDir, "engine.partial").deleteRecursively()
         val manifestText = context.assets.open("engine/manifest.json").bufferedReader().use { it.readText() }
         val stamp = File(root, "manifest.json")
         if (!stamp.exists() || stamp.readText() != manifestText) {
             val start = SystemClock.elapsedRealtime()
             // Copy into a scratch directory and swap it in, so a copy cut short
             // by the system killing the app never looks complete.
-            val staging = File(context.filesDir, "engine.partial")
+            val staging = File(context.noBackupFilesDir, "engine.partial")
             staging.deleteRecursively()
             val files = JSONObject(manifestText).getJSONArray("files")
             for (i in 0 until files.length()) {
@@ -158,6 +167,7 @@ class EngineRepository(private val context: Context) {
             flag = json.optString("flag"),
             alphabet = json.getString("alphabet"),
             blank = json.getString("blank").first(),
+            vowels = json.getString("vowels"),
             points = tiles.keys().asSequence().associateWith { tiles.getJSONObject(it).getInt("points").toUInt() },
             definitions = (0 until (defs?.length() ?: 0)).map { defs!!.getString(it) },
             hasLeaveNet = leave != null,

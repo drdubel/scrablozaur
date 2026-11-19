@@ -27,11 +27,15 @@ import pl.scrablozaur.core.GameMeta
 import pl.scrablozaur.core.GameRecord
 import pl.scrablozaur.core.LOG_TAG
 import pl.scrablozaur.core.LanguageMeta
+import pl.scrablozaur.core.RecordedEndgame
+import pl.scrablozaur.core.RecordedEquity
 import pl.scrablozaur.core.RecordedPlay
 import pl.scrablozaur.core.RecordedPlayer
 import pl.scrablozaur.core.RecordedTurn
 import pl.scrablozaur.core.SavedGame
 import pl.scrablozaur.core.describe
+import pl.scrablozaur.core.playerKey
+import pl.scrablozaur.engine.BestPlay
 import pl.scrablozaur.engine.Game
 import pl.scrablozaur.engine.GameView
 import pl.scrablozaur.engine.Hint
@@ -83,16 +87,47 @@ data class GameUi(
     val thinking: Boolean = false,
     val autoplay: Boolean = false,
     val definition: DefinitionUi? = null,
-    /** The game's record in the history, once a competitive game has ended. */
+    /** The game's record in the history, once a competitive or multiplayer game has ended. */
     val gameId: String? = null,
+    /** Multiplayer: the seat the phone is being passed to, whose rack stays hidden until they take it. */
+    val handover: Int? = null,
 ) {
     val current get() = view?.players?.getOrNull(view.currentPlayer.toInt())
 
-    /** The human's rated plays, newest first. Read off the engine's turns, so undo takes them back too. */
+    /** A game played for real: against the computer, or by several people at one phone. */
+    val isMatch get() = view?.mode == Mode.COMPETITIVE || view?.mode == Mode.MULTIPLAYER
+
+    /**
+     * The seat whose rack is on screen: a competitive game's human; in a
+     * multiplayer game the person to move, once they have the phone.
+     */
+    val rackSeat: Int?
+        get() {
+            val v = view ?: return null
+            return when (v.mode) {
+                Mode.COMPETITIVE -> v.players.indexOfFirst { !it.isComputer }.takeIf { it >= 0 }
+                Mode.MULTIPLAYER -> v.currentPlayer.toInt().takeIf { !v.players[it].isComputer && handover == null && !v.gameOver }
+                else -> null
+            }
+        }
+
+    /** The rated plays of the rack's owner (in a multiplayer game, only theirs), newest first. Read off the engine's turns, so undo takes them back too. */
     val ratings: List<RatedMove>
-        get() = view?.turns.orEmpty()
-            .mapNotNull { t -> t.rating?.let { RatedMove(t.word, t.score.toInt(), it.toInt()) } }
-            .asReversed()
+        get() {
+            val seat = if (view?.mode == Mode.MULTIPLAYER) rackSeat ?: return emptyList() else null
+            return view?.turns.orEmpty()
+                .filter { seat == null || it.player.toInt() == seat }
+                .mapNotNull { t -> t.rating?.let { RatedMove(t.word, t.score.toInt(), it.toInt()) } }
+                .asReversed()
+        }
+
+    /** What the others did since the seat to move last played, oldest first. */
+    val sinceLastTurn: List<Turn>
+        get() {
+            val v = view ?: return emptyList()
+            val last = v.turns.indexOfLast { it.player == v.currentPlayer }
+            return v.turns.drop(last + 1)
+        }
 
     /** An automatic game's moves, newest first. */
     val autoLog: List<AutoLogEntry>
@@ -102,7 +137,7 @@ data class GameUi(
 
     /** Whether a human can type a word now. */
     val humanTurn get() = view != null && !view.gameOver && !view.computerToMove &&
-        view.mode != Mode.SANDBOX_AUTO && current?.isComputer == false
+        view.mode != Mode.SANDBOX_AUTO && current?.isComputer == false && handover == null
 
     /** Whether an action may start: nothing is waiting on the engine. */
     val idle get() = busy == null && !thinking
@@ -123,6 +158,8 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     private var game: Game? = null
     /** The current game as the history knows it; saved with the game. */
     private var meta = GameMeta()
+    /** Multiplayer: the seat that last took the phone, whose rack may show. */
+    private var revealed: Int? = null
     /**
      * Everything tied to the current game runs here, and is cancelled when
      * another game replaces it -- so a reply still being computed for the old
@@ -202,6 +239,9 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         val lang = repo.language(language)
         // The preferred order, where this language has the net it needs.
         val order = scrablozaur.settings.current.hintOrder.takeIf { it == HintOrder.SCORE || lang.hasLeaveNet } ?: HintOrder.SCORE
+        // Whoever holds the phone now has to say so: a game resumed after the
+        // app was closed may be in anyone's hands.
+        revealed = null
         _ui.value = GameUi(
             loading = false,
             language = lang,
@@ -209,6 +249,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
             points = points,
             hintOrder = order,
             suggestionOrder = order,
+            handover = handoverFor(view),
         ).withComputerLetters()
         persist(g)
         playComputerIfDue(g)
@@ -229,9 +270,9 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         val over = view?.gameOver == true
         val meta = meta
         withContext(Dispatchers.IO) { saves.save(SavedGame(language, session, over, meta)) }
-        // A competitive game goes into the history as it ends; ended again
+        // A game played for real goes into the history as it ends; ended again
         // after an undo, it replaces what it was.
-        if (over && view.mode == Mode.COMPETITIVE && game === g) {
+        if (over && (view.mode == Mode.COMPETITIVE || view.mode == Mode.MULTIPLAYER) && game === g) {
             history.save(record(view, language, meta))
             _ui.update { it.copy(gameId = meta.id) }
         }
@@ -244,7 +285,9 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         startedAt = meta.startedAt,
         finishedAt = System.currentTimeMillis(),
         players = view.players.map { RecordedPlayer(it.name, it.isComputer, it.difficulty.toInt(), it.strength.toInt(), it.score) },
-        human = view.players.indexOfFirst { !it.isComputer },
+        // The phone's player: under the name in the settings, else the first person.
+        human = view.players.indexOfFirst { !it.isComputer && playerKey(it.name) == playerKey(settings.value.playerName) }
+            .takeIf { it >= 0 } ?: view.players.indexOfFirst { !it.isComputer },
         winner = when (val o = view.outcome) {
             is Outcome.Winner -> o.player.toInt()
             else -> -1
@@ -268,8 +311,25 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         tiles = t.tiles.toInt(),
         rack = t.rack,
         rating = t.rating?.toInt(),
-        best = t.best?.let { RecordedPlay(it.word, it.score.toInt(), it.row.toInt(), it.col.toInt(), it.horizontal, it.used) },
+        best = t.best?.let(::recordedPlay),
+        equity = t.equity?.let { RecordedEquity(it.played, it.best, it.bestPlay?.let(::recordedPlay), it.bestExchange) },
+        endgame = t.endgame?.let { RecordedEndgame(it.played, it.best, it.exact, it.bestPlay?.let(::recordedPlay)) },
     )
+
+    private fun recordedPlay(p: BestPlay) = RecordedPlay(p.word, p.score.toInt(), p.row.toInt(), p.col.toInt(), p.horizontal, p.used)
+
+    /** Multiplayer, two people or more: the person to move takes the phone before their rack shows. */
+    private fun handoverFor(view: GameView): Int? {
+        if (view.mode != Mode.MULTIPLAYER || view.gameOver || view.players.count { !it.isComputer } < 2) return null
+        val seat = view.currentPlayer.toInt()
+        return seat.takeIf { !view.players[it].isComputer && it != revealed }
+    }
+
+    /** The person the phone was passed to has it: show their rack. */
+    fun takePhone() {
+        revealed = _ui.value.handover ?: return
+        _ui.update { it.copy(handover = null) }
+    }
 
     /** The web pre-fills the sandbox computer seat with the letters it kept. */
     private fun GameUi.withComputerLetters(): GameUi {
@@ -292,7 +352,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(
                     view = view, typing = null, typedWord = null, preview = null,
                     exchangeSelection = emptySet(), hints = null, selectedHint = null,
-                    suggestions = null, askBlank = false, busy = null,
+                    suggestions = null, askBlank = false, busy = null, handover = handoverFor(view),
                 ),
             ).withComputerLetters()
         }

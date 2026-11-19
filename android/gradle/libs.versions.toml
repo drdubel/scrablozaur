@@ -9,6 +9,8 @@ coroutines = "1.11.0"
 camerax = "1.6.2"
 jna = "5.19.1"
 junit = "4.13.2"
+# Unit tests only: Android's own org.json is a stub off the device.
+org-json = "20260814"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
@@ -29,6 +31,7 @@ camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = 
 camera-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 junit = { module = "junit:junit", version.ref = "junit" }
+org-json = { module = "org.json:json", version.ref = "org-json" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -22,9 +22,10 @@ fun formatDateTime(ms: Long): String = dateTime.format(Instant.ofEpochMilli(ms).
 
 fun formatDate(ms: Long): String = dateOnly.format(Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()))
 
-/** A computer as the level dial names it, e.g. "Analityk · 100%". */
+/** A computer as the level dial names it, e.g. "Analityk · 100%"; a person by `name`, or the name the key holds. */
 @Composable
-fun opponentLabel(o: Opponent): String {
+fun opponentLabel(o: Opponent, name: String? = null): String {
+    o.person?.let { return name ?: it }
     val names = stringArrayResource(R.array.level_names)
     return stringResource(R.string.opponent_label, names[(o.difficulty - 1).coerceIn(0, names.lastIndex)], o.strength)
 }

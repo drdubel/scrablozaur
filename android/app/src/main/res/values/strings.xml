@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- The web UI's Polish wording, kept word for word wherever the web has the
      same control, so moving between the two is not a translation exercise. -->
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:locale="pl">
     <string name="app_name">Scrablozaur</string>
 
     <!-- Loading -->
@@ -79,6 +79,7 @@
     <string name="skip">Pomiń</string>
     <string name="resign">Poddaj się</string>
     <string name="resign_confirm">Czy na pewno chcesz się poddać? Gra zostanie zakończona.</string>
+    <string name="resign_confirm_leave">Czy na pewno chcesz się poddać? Pozostali grają dalej bez Ciebie.</string>
     <string name="how_to_exchange">Jak wymienić litery?</string>
     <string name="exchange_help">Anuluj układanie, zaznacz litery na stojaku i wybierz „Wymień litery”.</string>
     <string name="tap_start_square">Kliknij pole startowe na planszy i ułóż słowo.</string>
@@ -299,7 +300,7 @@
     <string name="legend_accuracy">celność</string>
     <string name="legend_moving_average">średnia z 5 gier</string>
     <string name="legend_players">Gracze</string>
-    <string name="legend_opponent">Komputer</string>
+    <string name="legend_opponent">Przeciwnik</string>
     <string name="by_opponent">Według przeciwnika</string>
     <string name="col_opponent">Przeciwnik</string>
     <string name="col_games">Gry</string>
@@ -350,7 +351,7 @@
     <string name="settings_keep_screen_on">Nie wygaszaj ekranu podczas gry</string>
     <string name="settings_keep_screen_on_help">Przydaje się, gdy telefon leży przy planszy.</string>
     <string name="settings_definitions">Pobieraj definicje słów</string>
-    <string name="settings_definitions_help">Dotknięcie płytki pokazuje definicję słowa. To jedyne, co aplikacja pobiera z internetu.</string>
+    <string name="settings_definitions_help">Dotknięcie płytki pokazuje definicję słowa. Poza rankingiem online, jeśli go ustawisz, to jedyne, co aplikacja pobiera z internetu.</string>
     <!-- 1 gra, 2–4 gry, 5+ gier. -->
     <plurals name="settings_history_size">
         <item quantity="one">W historii jest %d gra.</item>
@@ -361,4 +362,138 @@
     <string name="settings_clear_history">Wyczyść historię gier</string>
     <string name="settings_clear_confirm">Usunąć wszystkie zapisane gry? Statystyki i ranking zaczną się od zera.</string>
     <string name="settings_version">Wersja %1$s</string>
+    <string name="settings_backup_help">Kopia historii w pliku — trzymaj ją poza telefonem. Wczytanie kopii dodaje brakujące gry i niczego nie usuwa.</string>
+    <string name="settings_export">Eksportuj historię</string>
+    <string name="settings_import">Importuj historię</string>
+    <!-- 1 grę, 2–4 gry, 5+ gier. -->
+    <plurals name="settings_exported">
+        <item quantity="one">Zapisano %d grę.</item>
+        <item quantity="few">Zapisano %d gry.</item>
+        <item quantity="many">Zapisano %d gier.</item>
+        <item quantity="other">Zapisano %d gry.</item>
+    </plurals>
+    <string name="settings_imported">Wczytano: nowe %1$d, zaktualizowane %2$d, bez zmian %3$d.</string>
+    <plurals name="settings_import_unreadable">
+        <item quantity="one">Pominięto %d nieczytelny wiersz.</item>
+        <item quantity="few">Pominięto %d nieczytelne wiersze.</item>
+        <item quantity="many">Pominięto %d nieczytelnych wierszy.</item>
+        <item quantity="other">Pominięto %d nieczytelnego wiersza.</item>
+    </plurals>
+    <string name="settings_file_failed">Nie udało się: %1$s</string>
+    <string name="settings_section_online">Ranking online</string>
+    <string name="settings_online_help">Adres serwera Scrablozaura z włączonym rankingiem. Gry trafiają tam tylko po naciśnięciu „Wyślij moje gry”: imiona, wyniki i ruchy.</string>
+    <string name="settings_server">Adres serwera</string>
+    <string name="settings_server_unencrypted">Połączenie bez szyfrowania (http): gry i klucz rankingu idą jawnym tekstem.</string>
+    <string name="settings_server_key">Klucz rankingu (jeśli serwer go wymaga)</string>
+    <string name="settings_upload">Wyślij moje gry</string>
+    <string name="settings_uploading">Wysyłam…</string>
+    <string name="settings_uploaded">Wysłano %1$d, serwer przyjął %2$d.</string>
+
+    <!-- Rywalizacja for several people at one phone -->
+    <string name="people_at_phone">Osoby przy telefonie</string>
+    <string name="with_computer">Komputer też gra</string>
+    <string name="multiplayer_help">Gracie na zmianę na jednym telefonie. Po każdym ruchu przekażcie go dalej — stojak następnej osoby pokaże się dopiero, gdy go weźmie.</string>
+    <string name="names_must_differ">Każdy gracz musi mieć inne imię.</string>
+    <string name="handover_title">Kolej: %1$s</string>
+    <string name="handover_help">Przekaż telefon. Stojak (%1$s) pokaże się po naciśnięciu przycisku.</string>
+    <string name="handover_show_rack">Pokaż mój stojak</string>
+
+    <!-- Tile tracking: the bag and the other racks -->
+    <string name="unseen_summary">Pozostałe płytki: %1$d · samogłoski %2$d · spółgłoski %3$d</string>
+    <!-- Quoted: a resource loses its leading space otherwise. -->
+    <string name="unseen_blanks">" · blanki %1$d"</string>
+
+    <!-- Elo, from the bots' calibration -->
+    <string name="tab_online">Online</string>
+    <string name="elo_title">Ranking Elo</string>
+    <plurals name="elo_basis">
+        <item quantity="one">%1$d gra z komputerem · %2$s</item>
+        <item quantity="few">%1$d gry z komputerem · %2$s</item>
+        <item quantity="many">%1$d gier z komputerem · %2$s</item>
+        <item quantity="other">%1$d gry z komputerem · %2$s</item>
+    </plurals>
+    <string name="elo_plays_like">gra jak %1$s na %2$d%%</string>
+    <string name="elo_beyond_strongest">silniej niż %1$s na 100%%</string>
+    <string name="elo_below_weakest">słabiej niż %1$s na 1%%</string>
+    <string name="elo_help">Elo z wyników gier z komputerem, którego siłę zmierzono w tysiącach gier komputerów między sobą. Punkt odniesienia: Maksymalizator na pełnej sile to 1500.</string>
+    <string name="legend_elo">Elo po kolejnych grach</string>
+    <string name="col_elo">Elo</string>
+    <string name="ranking_head_to_head">Pojedynki</string>
+    <string name="col_duel">Bilans</string>
+    <string name="ranking_head_to_head_help">Kto skończył wyżej w grach przy jednym telefonie; poddanie to porażka. W nawiasie remisy.</string>
+
+    <!-- The shared ranking on a server -->
+    <string name="online_refresh">Odśwież</string>
+    <string name="online_disabled">Ten serwer nie prowadzi rankingu (albo to nie jest serwer Scrablozaura).</string>
+    <string name="online_empty">Nikt jeszcze nie wysłał tu gier.</string>
+    <string name="online_games">Gier w rankingu: %1$d</string>
+    <string name="online_unreachable">Nie udało się połączyć z serwerem: %1$s</string>
+    <string name="online_bad_token">Serwer nie przyjął klucza rankingu — sprawdź go w ustawieniach.</string>
+    <string name="online_server_error">Błąd serwera: %1$s</string>
+
+    <!-- Game review: equity and the endgame -->
+    <string name="metric_equity_lost">Strata ekwiwalentu</string>
+    <plurals name="metric_equity_detail">
+        <item quantity="one">w %d ruchu</item>
+        <item quantity="few">w %d ruchach</item>
+        <item quantity="many">w %d ruchach</item>
+        <item quantity="other">w %d ruchu</item>
+    </plurals>
+    <string name="metric_endgame">Końcówka</string>
+    <string name="metric_endgame_detail">wg przeszukania</string>
+    <string name="col_loss">Strata</string>
+    <string name="review_equity">Ekwiwalent: %1$s, u Stratega %2$s</string>
+    <string name="review_equity_best">Ekwiwalent: %1$s — tak zagrałby Strateg</string>
+    <string name="review_show_equity_best">Strateg: %1$s · %2$d pkt</string>
+    <string name="review_better_exchange">Lepiej było wymienić: %1$s</string>
+    <string name="review_endgame">Końcówka: wynik %1$s, najlepszy możliwy %2$s</string>
+    <string name="review_endgame_best">Końcówka: wynik %1$s — najlepszy możliwy</string>
+    <string name="review_endgame_estimate">(szacunek)</string>
+    <string name="review_endgame_pass">Najlepiej było spasować.</string>
+    <string name="review_show_endgame_best">Najlepsza końcówka: %1$s · %2$d pkt</string>
+
+    <!-- Practice ("Trening") -->
+    <string name="practice_title">Trening</string>
+    <string name="practice_puzzles">Zadania</string>
+    <string name="practice_anagrams">Anagramy</string>
+    <string name="practice_words">Słownik</string>
+    <string name="puzzles_empty">Nie ma jeszcze zadań. Powstają ze słabszych ruchów w ocenianych grach — zagraj kilka gier w trybie Rywalizacja.</string>
+    <string name="puzzle_n">Zadanie %1$d z %2$d</string>
+    <string name="puzzle_help">Plansza i stojak sprzed jednego z Twoich ruchów. Znajdź lepszy: dotknij pola startowego i układaj litery ze stojaka.</string>
+    <string name="puzzle_check">Sprawdź</string>
+    <string name="puzzle_show_answer">Pokaż rozwiązanie</string>
+    <string name="puzzle_hide_answer">Ukryj rozwiązanie</string>
+    <string name="puzzle_you_played">W grze: %1$s · %2$d pkt</string>
+    <string name="puzzle_top_score">Najwięcej punktów: %1$s · %2$d pkt</string>
+    <string name="puzzle_strateg">Strateg: %1$s · %2$d pkt</string>
+    <string name="puzzle_not_a_play">%1$s nie jest tu dozwolonym ruchem.</string>
+    <string name="puzzle_scores">%1$s: %2$d pkt</string>
+    <string name="puzzle_top">Najwięcej punktów, ile się tu dało zdobyć!</string>
+    <string name="puzzle_better">Najlepszy ruch daje %1$d pkt; więcej niż Twój daje %2$d z %3$d możliwych ruchów.</string>
+    <string name="puzzle_equity">Ekwiwalent %1$s, u Stratega %2$s.</string>
+    <string name="puzzle_equity_best">Ekwiwalent %1$s — tak zagrałby Strateg.</string>
+    <string name="drill_help">Ułóż jak najwięcej słów z siedmiu płytek. Co najmniej jedno słowo zajmuje wszystkie siedem.</string>
+    <string name="drill_shuffle">Przetasuj</string>
+    <string name="drill_progress">Bingo: %1$d/%2$d · słowa: %3$d/%4$d</string>
+    <string name="drill_your_word">Twoje słowo</string>
+    <string name="drill_not_word">%1$s — nie ma w słowniku.</string>
+    <string name="drill_not_from_rack">%1$s — nie da się ułożyć z tych płytek.</string>
+    <string name="drill_already">%1$s — już znalezione.</string>
+    <string name="drill_found">✓ %1$s — nowe słowo!</string>
+    <string name="drill_show_all">Pokaż wszystkie</string>
+    <string name="drill_hide_all">Ukryj</string>
+    <string name="drill_new">Nowy stojak</string>
+    <string name="drill_all_words">Wszystkie słowa</string>
+    <string name="drill_found_words">Znalezione</string>
+    <string name="words_of_length">%1$d-literowe (%2$d)</string>
+    <string name="words_check_title">Sprawdź słowo</string>
+    <string name="words_valid">%1$s jest w słowniku.</string>
+    <string name="words_invalid">%1$s — nie ma w słowniku.</string>
+    <string name="words_search_title">Szukaj słów</string>
+    <string name="words_search_help">Słowa z podanych liter (? to blank; najwyżej 10 liter i 2 blanki). Wzorzec zawęża wynik: litera to ta litera, - to jedna litera z puli, * to dowolnie wiele. Np. *rz* — słowa z „rz”, k---- — pięcioliterowe na k.</string>
+    <string name="words_letters">Litery</string>
+    <string name="words_pattern">Wzorzec (opcjonalnie)</string>
+    <string name="words_too_many_blanks">Najwyżej %1$d blanki.</string>
+    <string name="words_found">Znaleziono: %1$d</string>
+    <string name="words_found_many">Znaleziono: %1$d (pokazano %2$d)</string>
 </resources>

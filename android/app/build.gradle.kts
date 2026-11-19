@@ -255,4 +255,5 @@ dependencies {
     // UniFFI's Kotlin bindings call the engine through JNA.
     implementation("${libs.jna.get().module}:${libs.jna.get().version}@aar")
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)
 }

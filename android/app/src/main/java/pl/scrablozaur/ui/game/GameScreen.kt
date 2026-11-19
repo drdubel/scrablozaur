@@ -2,6 +2,7 @@ package pl.scrablozaur.ui.game
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -63,12 +64,15 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import pl.scrablozaur.R
 import pl.scrablozaur.core.DefinitionResult
+import pl.scrablozaur.engine.GameView
 import pl.scrablozaur.engine.Hint
 import pl.scrablozaur.engine.HintOrder
 import pl.scrablozaur.engine.Mode
@@ -95,11 +99,11 @@ import kotlin.math.roundToInt
 private fun overlayFor(ui: GameUi): BoardOverlay {
     val typing = ui.typing
     if (typing != null) {
-        // Only a competitive game has a rack to draw blanks from; the sandbox
-        // scores every typed tile at face value.
+        // Only a game played for real has a rack to draw blanks from; the
+        // sandbox scores every typed tile at face value.
         val view = ui.view
         val blank = ui.language?.blank ?: '?'
-        val rack = if (view?.mode == Mode.COMPETITIVE) view.players.firstOrNull { !it.isComputer }?.letters.orEmpty() else ""
+        val rack = ui.rackSeat?.let { view?.players?.get(it)?.letters }.orEmpty()
         val allocation = rackAllocation(rack, typing.typedLetters, blank)
         val placed = typing.entries.filter { it.letter != null }.map { it.cell }
         return BoardOverlay(
@@ -179,7 +183,7 @@ fun GameScreen(
     if (confirmResign) {
         AlertDialog(
             onDismissRequest = { confirmResign = false },
-            text = { Text(stringResource(R.string.resign_confirm)) },
+            text = { Text(stringResource(if (ui.view?.let(::othersPlayOn) == true) R.string.resign_confirm_leave else R.string.resign_confirm)) },
             confirmButton = {
                 TextButton(onClick = { confirmResign = false; vm.resign() }) { Text(stringResource(R.string.resign)) }
             },
@@ -187,6 +191,18 @@ fun GameScreen(
         )
     }
     if (ui.askBlank) BlankDialog(ui.language?.alphabet.orEmpty(), vm::onBlankChosen)
+}
+
+/**
+ * Whether a multiplayer game goes on without the seat to move should it
+ * resign: two seats or more still in, a person among them. Otherwise
+ * resigning ends the game, as it always does in a competitive one.
+ */
+private fun othersPlayOn(view: GameView): Boolean {
+    if (view.mode != Mode.MULTIPLAYER) return false
+    val me = view.currentPlayer.toInt()
+    val left = view.players.indices.filter { i -> i != me && view.turns.none { it.kind == TurnKind.RESIGN && it.player.toInt() == i } }
+    return left.size >= 2 && left.any { !view.players[it].isComputer }
 }
 
 /** What the panel below the board leads to, beyond the view model. */
@@ -257,6 +273,8 @@ private fun Scoreboard(ui: GameUi) {
         Spacer(Modifier.weight(1f))
         view.players.forEachIndexed { i, p ->
             val active = showActive && i == view.currentPlayer.toInt() && !view.gameOver
+            // A multiplayer seat that resigned has left the game.
+            val left = view.mode == Mode.MULTIPLAYER && view.turns.any { it.kind == TurnKind.RESIGN && it.player.toInt() == i }
             Row(
                 Modifier
                     .background(if (active) Palette.highlightNew else Palette.surface, RoundedCornerShape(12.dp))
@@ -265,7 +283,15 @@ private fun Scoreboard(ui: GameUi) {
             ) {
                 Box(Modifier.size(9.dp).background(Palette.owners[i % 4].second, CircleShape))
                 Spacer(Modifier.width(4.dp))
-                Text(p.name, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Text(
+                    p.name,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (left) Palette.muted else Palette.text,
+                    textDecoration = if (left) TextDecoration.LineThrough else null,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
                 Spacer(Modifier.width(4.dp))
                 Text(p.score.toString(), fontWeight = FontWeight.Bold, fontSize = 14.sp)
             }
@@ -273,14 +299,18 @@ private fun Scoreboard(ui: GameUi) {
     }
 }
 
-private enum class PanelKind { Over, Competitive, Hints, Auto, SandboxHuman, SandboxComputer }
+private enum class PanelKind { Over, Handover, Competitive, Hints, Auto, SandboxHuman, SandboxComputer }
 
 @Composable
 private fun Panel(ui: GameUi, vm: GameViewModel, actions: PanelActions, modifier: Modifier) {
     val view = ui.view!!
     val kind = when {
         view.gameOver -> PanelKind.Over
-        view.mode == Mode.COMPETITIVE -> if (ui.hints != null) PanelKind.Hints else PanelKind.Competitive
+        ui.isMatch -> when {
+            ui.handover != null -> PanelKind.Handover
+            ui.hints != null -> PanelKind.Hints
+            else -> PanelKind.Competitive
+        }
         view.mode == Mode.SANDBOX_AUTO -> PanelKind.Auto
         ui.current?.isComputer == true -> PanelKind.SandboxComputer
         else -> PanelKind.SandboxHuman
@@ -294,6 +324,7 @@ private fun Panel(ui: GameUi, vm: GameViewModel, actions: PanelActions, modifier
         ui.definition?.let { DefinitionCard(it, vm::closeDefinition) }
         when (kind) {
             PanelKind.Over -> GameOverCard(ui, actions)
+            PanelKind.Handover -> HandoverPanel(ui, vm)
             PanelKind.Competitive -> CompetitivePanel(ui, vm, actions)
             PanelKind.Hints -> HintsPanel(ui, vm)
             PanelKind.Auto -> AutoPanel(ui, vm)
@@ -362,7 +393,9 @@ private fun WordStatus(ui: GameUi, vm: GameViewModel) {
 @Composable
 private fun CompetitivePanel(ui: GameUi, vm: GameViewModel, actions: PanelActions) {
     val view = ui.view!!
-    val letters = view.players.firstOrNull { !it.isComputer }?.letters.orEmpty()
+    val multiplayer = view.mode == Mode.MULTIPLAYER
+    val seat = ui.rackSeat
+    val letters = seat?.let { view.players[it].letters }.orEmpty()
     val blank = ui.language?.blank ?: '?'
     val last = view.lastComputerMove
     if (ui.thinking) {
@@ -371,6 +404,9 @@ private fun CompetitivePanel(ui: GameUi, vm: GameViewModel, actions: PanelAction
             Spacer(Modifier.width(8.dp))
             Text(stringResource(R.string.computer_thinking), color = Palette.muted)
         }
+    } else if (multiplayer) {
+        ui.current?.let { Text(stringResource(R.string.your_turn, it.name), fontWeight = FontWeight.SemiBold) }
+        MovesSince(ui)
     } else if (last != null) {
         Text(
             if (last.passed) stringResource(R.string.computer_passes)
@@ -378,6 +414,8 @@ private fun CompetitivePanel(ui: GameUi, vm: GameViewModel, actions: PanelAction
             color = Palette.muted,
         )
     }
+    // A computer's turn at a multiplayer table: nobody's rack is out.
+    if (seat == null) return
     RackView(
         letters = letters,
         blank = blank,
@@ -387,6 +425,7 @@ private fun CompetitivePanel(ui: GameUi, vm: GameViewModel, actions: PanelAction
         placing = ui.typing != null,
         onTap = vm::onRackTap,
     )
+    TileTracker(ui)
     WordStatus(ui, vm)
     ErrorLine(ui, vm)
     if (ui.typing != null) {
@@ -407,6 +446,89 @@ private fun CompetitivePanel(ui: GameUi, vm: GameViewModel, actions: PanelAction
         ExchangeHelp()
     }
     if (actions.showMoveRating && ui.ratings.isNotEmpty()) RatingCard(ui)
+}
+
+/** Multiplayer: the phone goes to the next person, whose rack shows once they say they have it. */
+@Composable
+private fun HandoverPanel(ui: GameUi, vm: GameViewModel) {
+    val view = ui.view!!
+    val name = view.players[ui.handover!!].name
+    Card(colors = CardDefaults.cardColors(containerColor = Palette.highlightNew)) {
+        Column(
+            Modifier.fillMaxWidth().padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(stringResource(R.string.handover_title, name), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(stringResource(R.string.handover_help, name), color = Palette.muted, textAlign = TextAlign.Center)
+            MovesSince(ui)
+            Button(onClick = vm::takePhone) { Text(stringResource(R.string.handover_show_rack)) }
+        }
+    }
+}
+
+/** What the others did since the seat to move last played, a line a turn. */
+@Composable
+private fun MovesSince(ui: GameUi) {
+    val view = ui.view ?: return
+    ui.sinceLastTurn.forEach { t ->
+        val what = when (t.kind) {
+            TurnKind.PLAY -> "${t.word.uppercase()} · ${stringResource(R.string.points_short, t.score.toInt())}"
+            TurnKind.EXCHANGE -> stringResource(R.string.turn_exchange, t.tiles.toInt())
+            TurnKind.PASS -> stringResource(R.string.turn_pass)
+            TurnKind.RESIGN -> stringResource(R.string.turn_resign)
+        }
+        Text(stringResource(R.string.turn_caption, view.players[t.player.toInt()].name, what), color = Palette.muted, fontSize = 13.sp)
+    }
+}
+
+/**
+ * The tiles the player has not seen -- the bag and the other racks -- with
+ * the vowel/consonant balance, counted as a player tracking tiles counts
+ * them. Every letter is listed, the ones all out greyed.
+ */
+@Composable
+private fun TileTracker(ui: GameUi) {
+    val unseen = ui.view?.unseen.orEmpty()
+    val total = unseen.sumOf { it.count.toInt() }
+    if (total == 0) return
+    val blank = ui.language?.blank?.toString()
+    val vowels = ui.language?.vowels.orEmpty()
+    val v = unseen.filter { it.letter.firstOrNull()?.let { ch -> ch in vowels } == true }.sumOf { it.count.toInt() }
+    val b = unseen.filter { it.letter == blank }.sumOf { it.count.toInt() }
+    var open by rememberSaveable { mutableStateOf(false) }
+    Column {
+        Text(
+            (if (open) "▾ " else "▸ ") + stringResource(R.string.unseen_summary, total, v, total - v - b) +
+                if (b > 0) stringResource(R.string.unseen_blanks, b) else "",
+            fontSize = 13.sp,
+            color = Palette.muted,
+            modifier = Modifier.clickable { open = !open }.padding(vertical = 4.dp),
+        )
+        if (open) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                unseen.forEach { t ->
+                    val gone = t.count == 0u
+                    Row(
+                        Modifier
+                            .background(Palette.surface, RoundedCornerShape(4.dp))
+                            .border(1.dp, Palette.border, RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.Bottom,
+                    ) {
+                        Text(
+                            if (t.letter == blank) "★" else t.letter.uppercase(),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = if (gone) Palette.border else Palette.text,
+                        )
+                        Spacer(Modifier.width(2.dp))
+                        Text(t.count.toString(), fontSize = 11.sp, color = Palette.muted)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -656,8 +778,9 @@ private fun GameOverCard(ui: GameUi, actions: PanelActions) {
     }
 }
 
+/** Which letter a blank stands for: the alphabet as keys, or cancel. */
 @Composable
-private fun BlankDialog(alphabet: String, onChosen: (Char?) -> Unit) {
+fun BlankDialog(alphabet: String, onChosen: (Char?) -> Unit) {
     AlertDialog(
         onDismissRequest = { onChosen(null) },
         title = { Text(stringResource(R.string.blank_letter_title)) },

@@ -22,25 +22,30 @@ import pl.scrablozaur.BuildConfig
 import pl.scrablozaur.ScrablozaurApplication
 import pl.scrablozaur.core.AppSettings
 import pl.scrablozaur.core.GameRecord
-import pl.scrablozaur.core.me
+import pl.scrablozaur.core.Leaderboard
+import pl.scrablozaur.core.allSeats
 import pl.scrablozaur.core.playerKey
 import pl.scrablozaur.engine.Mode
 import pl.scrablozaur.engine.PlayerSetup
 import pl.scrablozaur.engine.Premium
+import pl.scrablozaur.engine.botRating
 import pl.scrablozaur.ui.benchmark.BenchmarkScreen
 import pl.scrablozaur.ui.benchmark.BenchmarkViewModel
 import pl.scrablozaur.ui.game.GameScreen
 import pl.scrablozaur.ui.game.GameViewModel
 import pl.scrablozaur.ui.game.NewGame
+import pl.scrablozaur.ui.practice.PracticeScreen
 import pl.scrablozaur.ui.review.ReviewScreen
 import pl.scrablozaur.ui.scan.ScanScreen
 import pl.scrablozaur.ui.scan.ScanViewModel
+import pl.scrablozaur.ui.settings.SettingsActions
 import pl.scrablozaur.ui.settings.SettingsScreen
 import pl.scrablozaur.ui.setup.SetupActions
 import pl.scrablozaur.ui.setup.SetupScreen
 import pl.scrablozaur.ui.stats.StatsScreen
 import pl.scrablozaur.ui.stats.StatsTab
 import pl.scrablozaur.ui.theme.ScrablozaurTheme
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,8 +75,8 @@ class MainActivity : ComponentActivity() {
 
 private enum class Screen { Setup, Game, Benchmark, Scan }
 
-/** The screens opened over the others -- statistics, a game's review, the settings -- which Back closes in turn. */
-private enum class Page { Stats, Review, Settings }
+/** The screens opened over the others -- statistics, a game's review, the settings, practice -- which Back closes in turn. */
+private enum class Page { Stats, Review, Settings, Practice }
 
 /** An open page, and what it shows: the stats tab, the reviewed game's id. */
 private data class Overlay(val page: Page, val arg: String = "")
@@ -154,7 +159,7 @@ private fun App(app: ScrablozaurApplication, benchGame: NewGame?, replay: String
             BackHandler(enabled = game.hasGame) { go(Screen.Game) }
             // Everyone who played here, the latest first.
             val knownNames = remember(records) {
-                records.orEmpty().sortedByDescending { it.finishedAt }.map { it.me.name }.distinctBy(::playerKey)
+                records.orEmpty().sortedByDescending { it.finishedAt }.allSeats().map { it.name }.distinctBy(::playerKey)
             }
             SetupScreen(
                 languages = app.engine.languages,
@@ -179,6 +184,7 @@ private fun App(app: ScrablozaurApplication, benchGame: NewGame?, replay: String
                     onStats = { open(Page.Stats, StatsTab.Overview.name) },
                     onRanking = { open(Page.Stats, StatsTab.Ranking.name) },
                     onSettings = { open(Page.Settings) },
+                    onPractice = { open(Page.Practice) },
                 ),
             )
         }
@@ -224,6 +230,10 @@ private fun Page(
             languages = app.engine.languages,
             playerName = settings.playerName,
             initialTab = StatsTab.entries.firstOrNull { it.name == page.arg } ?: StatsTab.Overview,
+            botRating = { language, level, strength ->
+                botRating(language, app.engine.language(language).hasLeaveNet, level.toUByte(), strength.toUByte())
+            },
+            server = settings.leaderboardUrl,
             onOpenGame = onOpenGame,
             onBack = onClose,
         )
@@ -247,8 +257,28 @@ private fun Page(
             settings = settings,
             historySize = records?.size,
             version = BuildConfig.VERSION_NAME,
-            onChange = app.settings::update,
-            onClearHistory = app.history::clear,
+            actions = SettingsActions(
+                onChange = app.settings::update,
+                onClearHistory = app.history::clear,
+                onExport = app.history::exportText,
+                onImport = app.history::importLines,
+                onUpload = {
+                    // The phone's id on the server, made once: sending again replaces rather than adds.
+                    if (app.settings.current.deviceId.isEmpty()) app.settings.update { it.copy(deviceId = UUID.randomUUID().toString()) }
+                    val s = app.settings.current
+                    Leaderboard.upload(s.leaderboardUrl, s.leaderboardToken, s.deviceId, records.orEmpty())
+                },
+            ),
+            onBack = onClose,
+        )
+        Page.Practice -> PracticeScreen(
+            languages = app.engine.languages,
+            defaultLanguage = settings.setup.language ?: app.engine.defaultLanguage,
+            records = records,
+            playerName = settings.playerName,
+            premiums = premiums,
+            loadPack = app.engine::pack,
+            definitions = app.definitions.takeIf { settings.onlineDefinitions },
             onBack = onClose,
         )
     }

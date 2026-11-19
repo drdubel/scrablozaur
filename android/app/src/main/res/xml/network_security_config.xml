@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A ranking server is whatever address the player types in, often a computer
+     on the home network without a certificate, so plain HTTP is allowed; the
+     settings screen says when a connection is not encrypted. Everything the
+     app fetches by itself (word definitions) is HTTPS. Lint's warning about the
+     base configuration is that choice, made on purpose. -->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration" />
+</network-security-config>

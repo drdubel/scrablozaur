@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.EmojiEvents
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -85,6 +86,7 @@ class SetupActions(
     val onStats: () -> Unit,
     val onRanking: () -> Unit,
     val onSettings: () -> Unit,
+    val onPractice: () -> Unit,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -109,6 +111,10 @@ fun SetupScreen(
         mutableStateOf(List(4) { SeatConfig(choices.seatNames.getOrElse(it) { "" }, isComputer = it == choices.computerSeat) })
     }
     var autoSeats by remember { mutableStateOf(List(4) { SeatConfig(choices.autoSeatNames.getOrElse(it) { "" }, isComputer = true) }) }
+    // Rywalizacja: people at this phone; past one, they pass it round.
+    var people by remember { mutableIntStateOf(choices.people) }
+    var withComputer by remember { mutableStateOf(choices.withComputer) }
+    var tableNames by remember { mutableStateOf(List(4) { choices.tableNames.getOrElse(it) { "" } }) }
     var options by remember { mutableStateOf(BotOptions(choices.strength, choices.neural, choices.simulation)) }
     var showAdvanced by remember { mutableStateOf(false) }
     var benchmarkGames by remember { mutableStateOf("20") }
@@ -119,6 +125,7 @@ fun SetupScreen(
     val computerName = stringResource(R.string.computer)
     val seatNames = (1..4).map { stringResource(R.string.player_n, it) }
     val oneComputer = stringResource(R.string.exactly_one_computer)
+    val sameNames = stringResource(R.string.names_must_differ)
 
     fun setup(name: String, isComputer: Boolean, o: BotOptions) =
         PlayerSetup(name, isComputer, o.level(lang).toUByte(), o.strength.toUByte())
@@ -139,13 +146,31 @@ fun SetupScreen(
             seatNames = manualSeats.map { it.name },
             computerSeat = manualSeats.indexOfFirst { it.isComputer }.coerceAtLeast(0),
             autoSeatNames = autoSeats.map { it.name },
+            people = people,
+            withComputer = withComputer,
+            tableNames = tableNames,
         ),
         humanName.trim(),
     )
 
+    /** The people at the table: the first under the player's own name. */
+    fun tableSeats(): List<String> = (0 until people).map { i ->
+        (if (i == 0) humanName else tableNames[i]).trim().ifEmpty { if (i == 0) defaultName else seatNames[i] }
+    }
+
     fun start() {
         error = null
         when {
+            mode == SetupMode.Competitive && people > 1 -> {
+                val names = tableSeats()
+                // The statistics tell people apart by name.
+                if (names.map(::playerKey).distinct().size < names.size) {
+                    error = sameNames
+                    return
+                }
+                val computer = if (withComputer && people < 4) listOf(setup(computerName, true, options)) else emptyList()
+                actions.onStart(NewGame(lang.code, Mode.MULTIPLAYER, names.map { PlayerSetup(it, false, 5u, 100u) } + computer))
+            }
             mode == SetupMode.Competitive -> actions.onStart(
                 NewGame(
                     lang.code, Mode.COMPETITIVE,
@@ -174,13 +199,16 @@ fun SetupScreen(
 
     // Kept as they change, not just on "Graj": a trip to the ranking or the
     // settings takes this screen away, and it comes back from what was kept.
-    LaunchedEffect(mode, auto, count, languageCode, options, manualSeats, autoSeats, humanName) { keepChoices() }
+    LaunchedEffect(mode, auto, count, languageCode, options, manualSeats, autoSeats, humanName, people, withComputer, tableNames) {
+        keepChoices()
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.new_game), fontWeight = FontWeight.Bold) },
                 actions = {
+                    IconButton(onClick = actions.onPractice) { Icon(Icons.Filled.School, stringResource(R.string.practice_title)) }
                     IconButton(onClick = actions.onRanking) { Icon(Icons.Filled.EmojiEvents, stringResource(R.string.ranking)) }
                     IconButton(onClick = actions.onStats) { Icon(Icons.Filled.BarChart, stringResource(R.string.stats_title)) }
                     IconButton(onClick = actions.onSettings) { Icon(Icons.Filled.Settings, stringResource(R.string.settings_title)) }
@@ -210,19 +238,54 @@ fun SetupScreen(
             }
 
             if (mode == SetupMode.Competitive) {
-                OutlinedTextField(
-                    value = humanName,
-                    onValueChange = { humanName = it.take(20) },
-                    label = { Text(stringResource(R.string.your_name)) },
-                    placeholder = { Text(defaultName) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                val others = knownNames.filter { playerKey(it) != playerKey(humanName) }.take(6)
-                if (others.isNotEmpty()) {
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        others.forEach { name -> SuggestionChip(onClick = { humanName = name }, label = { Text(name) }) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.people_at_phone), color = Palette.muted)
+                    (1..4).forEach { n -> FilterChip(selected = people == n, onClick = { people = n }, label = { Text("$n") }) }
+                }
+                if (people == 1) {
+                    OutlinedTextField(
+                        value = humanName,
+                        onValueChange = { humanName = it.take(20) },
+                        label = { Text(stringResource(R.string.your_name)) },
+                        placeholder = { Text(defaultName) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    val others = knownNames.filter { playerKey(it) != playerKey(humanName) }.take(6)
+                    if (others.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            others.forEach { name -> SuggestionChip(onClick = { humanName = name }, label = { Text(name) }) }
+                        }
                     }
+                } else {
+                    for (i in 0 until people) {
+                        OutlinedTextField(
+                            value = if (i == 0) humanName else tableNames[i],
+                            onValueChange = { v ->
+                                if (i == 0) humanName = v.take(20) else tableNames = tableNames.toMutableList().also { it[i] = v.take(20) }
+                            },
+                            label = { Text(stringResource(R.string.player_n, i + 1)) },
+                            placeholder = { Text(if (i == 0) defaultName else seatNames[i]) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    // A name already played under fills the first empty seat.
+                    val taken = tableSeats().map(::playerKey).toSet()
+                    val others = knownNames.filter { playerKey(it) !in taken }.take(6)
+                    val empty = (1 until people).firstOrNull { tableNames[it].isBlank() }
+                    if (others.isNotEmpty() && empty != null) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            others.forEach { name ->
+                                SuggestionChip(onClick = { tableNames = tableNames.toMutableList().also { it[empty] = name } }, label = { Text(name) })
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = withComputer && people < 4, onCheckedChange = { withComputer = it }, enabled = people < 4)
+                        Text(stringResource(R.string.with_computer))
+                    }
+                    Text(stringResource(R.string.multiplayer_help), color = Palette.muted, fontSize = 13.sp)
                 }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

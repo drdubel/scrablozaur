@@ -40,9 +40,12 @@ fun Hint.cells(): List<Cell> = (0 until word.length).map {
 
 /** A ranking value as the web prints it: signed, and no decimals when whole. */
 fun formatValue(v: Double): String {
-    val text = if (v == floor(v)) v.toLong().toString() else "%.1f".format(v)
+    val text = formatAmount(v)
     return if (v > 0) "+$text" else text
 }
+
+/** An amount, such as the equity a move gave away: unsigned, and no decimals when whole. */
+fun formatAmount(v: Double): String = if (v == floor(v)) v.toLong().toString() else "%.1f".format(v)
 
 @Composable
 fun SmallButton(

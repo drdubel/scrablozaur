@@ -32,6 +32,11 @@ data class SetupChoices(
     val seatNames: List<String> = List(4) { "" },
     val computerSeat: Int = 1,
     val autoSeatNames: List<String> = List(4) { "" },
+    /** Rywalizacja: how many people play at this phone (1 is a game against the computer)... */
+    val people: Int = 1,
+    /** ...whether a computer joins them, and the names of the second to fourth. */
+    val withComputer: Boolean = true,
+    val tableNames: List<String> = List(4) { "" },
 )
 
 data class AppSettings(
@@ -45,6 +50,12 @@ data class AppSettings(
     /** Definitions are the one thing the app fetches from the internet. */
     val onlineDefinitions: Boolean = true,
     val setup: SetupChoices = SetupChoices(),
+    /** A Scrablozaur web server keeping a shared ranking (`web/leaderboard.py`); empty for none. */
+    val leaderboardUrl: String = "",
+    /** The key that server asks for, if it asks for one. */
+    val leaderboardToken: String = "",
+    /** This phone's id on that server, made on the first upload: sending again replaces rather than duplicates. */
+    val deviceId: String = "",
 )
 
 /** The settings, kept in shared preferences and handed out as a flow. */
@@ -74,6 +85,9 @@ class Settings(context: Context) {
             playback = enumOr(prefs.getString("playback", null), d.playback),
             keepScreenOn = prefs.getBoolean("keep_screen_on", d.keepScreenOn),
             onlineDefinitions = prefs.getBoolean("online_definitions", d.onlineDefinitions),
+            leaderboardUrl = prefs.getString("leaderboard_url", d.leaderboardUrl)!!,
+            leaderboardToken = prefs.getString("leaderboard_token", d.leaderboardToken)!!,
+            deviceId = prefs.getString("device_id", d.deviceId)!!,
             setup = SetupChoices(
                 mode = prefs.getString("setup_mode", s.mode)!!,
                 auto = prefs.getBoolean("setup_auto", s.auto),
@@ -85,6 +99,9 @@ class Settings(context: Context) {
                 seatNames = names("setup_seat_names"),
                 computerSeat = prefs.getInt("setup_computer_seat", s.computerSeat).coerceIn(0, 3),
                 autoSeatNames = names("setup_auto_seat_names"),
+                people = prefs.getInt("setup_people", s.people).coerceIn(1, 4),
+                withComputer = prefs.getBoolean("setup_with_computer", s.withComputer),
+                tableNames = names("setup_table_names"),
             ),
         )
     }
@@ -98,6 +115,9 @@ class Settings(context: Context) {
             putString("playback", a.playback.name)
             putBoolean("keep_screen_on", a.keepScreenOn)
             putBoolean("online_definitions", a.onlineDefinitions)
+            putString("leaderboard_url", a.leaderboardUrl)
+            putString("leaderboard_token", a.leaderboardToken)
+            putString("device_id", a.deviceId)
             putString("setup_mode", s.mode)
             putBoolean("setup_auto", s.auto)
             putInt("setup_count", s.count)
@@ -108,6 +128,9 @@ class Settings(context: Context) {
             putString("setup_seat_names", JSONArray(s.seatNames).toString())
             putInt("setup_computer_seat", s.computerSeat)
             putString("setup_auto_seat_names", JSONArray(s.autoSeatNames).toString())
+            putInt("setup_people", s.people)
+            putBoolean("setup_with_computer", s.withComputer)
+            putString("setup_table_names", JSONArray(s.tableNames).toString())
         }
     }
 

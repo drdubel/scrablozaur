@@ -1,0 +1,476 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The English UI. The Polish one (values/) is the original and follows the
+     web's wording; this follows it string for string, with the same format
+     arguments. -->
+<resources>
+    <string name="app_name">Scrablozaur</string>
+
+    <!-- Loading -->
+    <string name="loading_engine">Preparing the dictionary…</string>
+    <string name="loading_failed">Could not load the dictionary: %1$s</string>
+    <string name="retry">Try again</string>
+
+    <!-- Setup -->
+    <string name="new_game">New game</string>
+    <string name="continue_game">Continue game</string>
+    <string name="mode_competitive">Match</string>
+    <string name="mode_sandbox">Sandbox</string>
+    <string name="mode_scan">Scan</string>
+    <string name="language">Language</string>
+    <string name="sandbox_manual">Manual</string>
+    <string name="sandbox_auto">Automatic</string>
+    <string name="sandbox_manual_desc">You control every player — type in the words, or the computer\'s letters, by hand.</string>
+    <string name="sandbox_auto_desc">Watch the computers play, or run a benchmark.</string>
+    <string name="player_count">Players</string>
+    <string name="player_n">Player %1$d</string>
+    <string name="computer">Computer</string>
+    <string name="your_name">Your name</string>
+    <string name="default_human_name">Player</string>
+    <string name="advanced">Advanced</string>
+    <string name="computer_strength">Computer strength</string>
+    <string name="neural_net">Neural network</string>
+    <string name="simulation">Simulate replies</string>
+    <string name="defaults">Defaults</string>
+    <string name="note_no_model">No model for this language.</string>
+    <string name="note_sim">Network + simulation</string>
+    <string name="note_smart">Neural network</string>
+    <string name="note_ranked">Highest score</string>
+    <string name="games_count">How many games?</string>
+    <string name="run_benchmark">Benchmark</string>
+    <string name="play">Play</string>
+    <string name="exactly_one_computer">Exactly one player must be the computer.</string>
+
+    <!-- Difficulty levels 1-10 -->
+    <string-array name="level_names">
+        <item>Introductory</item>
+        <item>Beginner</item>
+        <item>Casual</item>
+        <item>Social</item>
+        <item>Club</item>
+        <item>Advanced</item>
+        <item>Expert</item>
+        <item>Maximizer</item>
+        <item>Strategist</item>
+        <item>Analyst</item>
+    </string-array>
+    <string name="level_label">%1$s · %2$d/10</string>
+
+    <!-- Game: header and scoreboard -->
+    <string name="board_description">Board</string>
+    <string name="undo">Undo</string>
+    <string name="scan">Scan</string>
+    <string name="move_n">Move %1$d</string>
+    <string name="bag">Bag</string>
+    <string name="points_short">%1$d pts</string>
+
+    <!-- Game: human turn -->
+    <string name="your_letters">Your tiles</string>
+    <string name="direction">Direction</string>
+    <string name="horizontal">Across</string>
+    <string name="vertical">Down</string>
+    <string name="word">Word</string>
+    <string name="points">Points</string>
+    <string name="confirm">Confirm</string>
+    <string name="cancel">Cancel</string>
+    <string name="backspace">Delete letter</string>
+    <string name="hints">Hints</string>
+    <string name="hide">Hide</string>
+    <string name="exchange">Exchange</string>
+    <string name="skip">Pass</string>
+    <string name="resign">Resign</string>
+    <string name="resign_confirm">Are you sure you want to resign? The game will end.</string>
+    <string name="resign_confirm_leave">Are you sure you want to resign? The others play on without you.</string>
+    <string name="how_to_exchange">How do I exchange tiles?</string>
+    <string name="exchange_help">Stop placing a word, tap the tiles to swap on your rack, then choose “Exchange”.</string>
+    <string name="tap_start_square">Tap a starting square on the board and lay down a word.</string>
+    <string name="select_exchange_tiles">Tap the tiles on your rack you want to exchange.</string>
+    <string name="blank_letter_title">Which letter is the blank?</string>
+    <string name="computer_passes">The computer passes.</string>
+    <string name="computer_thinking">The computer is thinking…</string>
+    <string name="your_turn">Your move — %1$s</string>
+    <string name="player_turn">Player\'s move — %1$s</string>
+    <string name="computer_turn">Computer\'s move — %1$s</string>
+
+    <!-- Hints and suggestions -->
+    <string name="sort_score">Points</string>
+    <string name="sort_smart">Strategist</string>
+    <string name="sort_sim">Analyst</string>
+    <string name="place">Place</string>
+    <string name="preview">Preview</string>
+    <string name="no_moves">No possible moves.</string>
+    <string name="no_moves_for_letters">No possible moves with these letters.</string>
+    <string name="computer_letters">Computer\'s tiles</string>
+    <string name="computer_letters_hint">e.g. aeinrst</string>
+    <string name="search">Search</string>
+    <string name="change_letters">Change tiles</string>
+    <string name="hint_position">r%1$d c%2$d %3$s</string>
+
+    <!-- Automatic game -->
+    <string name="auto_game">Automatic game</string>
+    <string name="auto_on_move">To move: %1$s (%2$d%%)</string>
+    <string name="auto_next">Next move</string>
+    <string name="auto_play">Autoplay</string>
+    <string name="auto_stop">Stop</string>
+    <string name="passed">passed</string>
+
+    <!-- Rating -->
+    <string name="last_move">Last move</string>
+    <string name="rating_value">%1$d/100</string>
+    <string name="history">History</string>
+    <string name="rating_great">Great move!</string>
+    <string name="rating_good">Good move</string>
+    <string name="rating_ok">Could be better</string>
+    <string name="rating_missed">Missed chance</string>
+
+    <!-- Game over -->
+    <string name="tie">It\'s a tie!</string>
+    <string name="winner">%1$s wins!</string>
+    <string name="game_resigned">Game resigned</string>
+    <string name="accuracy_value">Accuracy: %1$d%%</string>
+    <string name="game_review">Game review</string>
+
+    <!-- Definitions -->
+    <string name="definition_loading">Looking up the definition…</string>
+    <string name="definition_none">No definition for this word.</string>
+    <string name="definition_failed">Could not fetch the definition.</string>
+    <string name="definition_offline">No internet connection.</string>
+    <string name="close">Close</string>
+
+    <!-- Benchmark -->
+    <string name="benchmark_results">Benchmark results</string>
+    <string name="benchmark_running">Playing games… (%1$d/%2$d)</string>
+    <plurals name="benchmark_games">
+        <item quantity="one">%d game</item>
+        <item quantity="other">%d games</item>
+    </plurals>
+    <string name="benchmark_seconds">%1$s s</string>
+    <string name="benchmark_avg_length">avg game length: %1$s moves</string>
+    <string name="benchmark_longest">longest word: %1$s (%2$d pts)</string>
+    <string name="benchmark_highest">best single move: %1$d pts</string>
+    <string name="benchmark_best_game">Best game — %1$s (%2$d pts)</string>
+    <string name="benchmark_rerun">New benchmark</string>
+    <string name="benchmark_back">Back to the sandbox</string>
+    <string name="stat_games">Games</string>
+    <string name="stat_wins">Wins</string>
+    <string name="stat_wins_value">%1$d (%2$d%%)</string>
+    <string name="stat_ties">Ties</string>
+    <string name="stat_avg_score">Avg score</string>
+    <string name="stat_high">Best</string>
+    <string name="stat_low">Worst</string>
+    <string name="stat_avg_word">Avg pts/word</string>
+    <string name="replay_start">Start of the game.</string>
+    <string name="replay_move">Move %1$d/%2$d</string>
+    <string name="replay_passed">%1$s passed.</string>
+    <string name="replay_played">%1$s: %2$s — %3$d pts</string>
+    <string name="replay_play">Play</string>
+    <string name="replay_prev">Previous move</string>
+    <string name="replay_next">Next move</string>
+    <string name="back">Back</string>
+
+    <!-- Engine refusals (MoveException) -->
+    <string name="err_not_in_dictionary">“%1$s” is not in the dictionary.</string>
+    <string name="err_first_move_centre">The first word must cover the centre square (marked ★).</string>
+    <string name="err_not_connected">The word must connect to a word already on the board.</string>
+    <string name="err_too_short">A word must have at least 2 letters.</string>
+    <string name="err_out_of_bounds">The word does not fit on the board.</string>
+    <string name="err_letter_mismatch">The square at r%1$d c%2$d holds “%3$s”, but the word has “%4$s” there.</string>
+    <string name="err_cross_word">The cross word “%1$s” is not in the dictionary.</string>
+    <string name="err_no_new_tiles">Place at least one new tile.</string>
+    <string name="err_word_not_whole">The word must take in the tiles next to it.</string>
+    <string name="err_missing_tiles">You don\'t have the tiles this needs.</string>
+    <string name="err_tiles_not_on_rack">You don\'t have those tiles.</string>
+    <string name="err_bag_too_small">Too few tiles in the bag to exchange (at least 7 needed).</string>
+    <string name="err_game_over">The game is over.</string>
+    <string name="err_nothing_to_undo">Nothing to undo.</string>
+    <string name="err_wrong_mode">This isn\'t available in this game mode.</string>
+    <string name="err_sort_unavailable">This ordering isn\'t available for this language (no trained model).</string>
+    <string name="err_invalid_players">Invalid player setup.</string>
+    <string name="err_rack_too_long">A rack holds at most 7 tiles.</string>
+    <string name="err_invalid_save">Could not load the saved game.</string>
+    <string name="err_engine">Engine error: %1$s</string>
+
+    <!-- Scan assistant -->
+    <string name="scan_title">Board assistant</string>
+    <string name="scan_loading">Preparing the scanner…</string>
+    <string name="scan_unavailable">The board scanner is not available for this language yet.</string>
+    <string name="scan_camera_needed">The scanner needs access to the camera.</string>
+    <string name="scan_camera_allow">Allow access</string>
+    <string name="scan_torch">Torch</string>
+    <string name="scan_aim">Point the camera straight down at the whole board.</string>
+    <string name="scan_hold_still">Hold still…</string>
+    <string name="scan_checking">Checking the reading… keep the camera still.</string>
+    <string name="scan_unseen">I can\'t see the tiles well — point the camera straight down at the whole board.</string>
+    <string name="scan_empty_board">Empty board</string>
+    <plurals name="scan_not_words">
+        <item quantity="one">%d square does not make a dictionary word. Straighten the tiles or correct it by hand.</item>
+        <item quantity="other">%d squares do not make dictionary words. Straighten the tiles or correct them by hand.</item>
+    </plurals>
+    <string name="scan_fix_by_hand">Correct by hand</string>
+    <string name="scan_back_to_board">Back to the board</string>
+    <string name="scan_review_title">Check the board as read</string>
+    <string name="scan_review_help">Tap a square to correct its letter; ★ turns a tile into a blank. Red frame: a word not in the dictionary. Dashed: a letter corrected from the dictionary. Green tiles: new since the last scan.</string>
+    <plurals name="scan_flagged">
+        <item quantity="one">⚠ %d square may be misread — check the highlighted squares.</item>
+        <item quantity="other">⚠ %d squares may be misread — check the highlighted squares.</item>
+    </plurals>
+    <string name="scan_cell">Row %1$d, column %2$d</string>
+    <string name="scan_clear_cell">Clear square</string>
+    <string name="scan_save_example">Save for OCR training</string>
+    <string name="scan_example_saved">💾 Saved training example %1$s.</string>
+    <string name="scan_example_failed">⚠ Could not save the training example: %1$s</string>
+    <string name="scan_rescan">↺ Scan again</string>
+    <string name="scan_next">Next scan</string>
+    <string name="scan_correct_board">Correct the board</string>
+    <string name="scan_new_session">New session</string>
+    <string name="scan_new_session_confirm">Start a new session? The board scanned so far will be lost.</string>
+    <string name="scan_bad_board">This board can\'t be made from one set of tiles — check the letters.</string>
+
+    <!-- Results -->
+    <string name="result_win">Win</string>
+    <string name="result_loss">Loss</string>
+    <string name="result_tie">Tie</string>
+    <string name="result_short_win">W</string>
+    <string name="result_short_loss">L</string>
+    <string name="result_short_tie">T</string>
+    <string name="score_vs">%1$d : %2$d</string>
+    <string name="opponent_label">%1$s · %2$d%%</string>
+    <string name="percent">%1$d%%</string>
+    <string name="duration_minutes">%1$d min</string>
+
+    <!-- Game review -->
+    <string name="review_title">Game review</string>
+    <string name="review_resigned">resigned</string>
+    <string name="review_not_found">This game is not in the history.</string>
+    <string name="review_partial">This game began in an older version of the app and its first moves were not recorded, so it can\'t be replayed.</string>
+    <string name="metric_accuracy">Accuracy</string>
+    <string name="metric_found_best">Best moves</string>
+    <string name="found_best_value">%1$d of %2$d</string>
+    <string name="metric_missed">Points missed</string>
+    <string name="metric_best_move">Best move</string>
+    <string name="metric_bingos">Bingos</string>
+    <string name="metric_hints">Hints</string>
+    <string name="metric_undos_detail">undos: %1$d</string>
+    <string name="chart_score_progress">Score through the game</string>
+    <string name="chart_move_ratings">Move ratings</string>
+    <string name="review_moves">Moves</string>
+    <string name="review_show_best">Show the best: %1$s · %2$d pts</string>
+    <string name="review_was_best">✓ the best move there was</string>
+    <string name="review_rack">Rack: %1$s</string>
+    <string name="review_end">End of the game, tiles left on the racks: %1$s</string>
+    <string name="turn_pass">pass</string>
+    <string name="turn_exchange">exchange (%1$d)</string>
+    <string name="turn_resign">resigned</string>
+    <string name="turn_caption">%1$s: %2$s</string>
+    <string name="col_number">#</string>
+    <string name="col_turn">Move</string>
+    <string name="col_points">Pts</string>
+    <string name="col_rating">Rating</string>
+    <string name="col_best">Best</string>
+    <string name="review_delete">Delete from history</string>
+    <string name="review_delete_confirm">Delete this game from the history? It also disappears from the statistics and the ranking.</string>
+    <string name="delete">Delete</string>
+
+    <!-- Statistics and ranking -->
+    <string name="stats_title">Statistics</string>
+    <string name="ranking">Ranking</string>
+    <string name="tab_overview">Overview</string>
+    <string name="tab_history">History</string>
+    <string name="tab_ranking">Ranking</string>
+    <string name="stats_empty">No finished games yet. Play a Match — every finished game lands here.</string>
+    <string name="filter_everyone">Everyone</string>
+    <string name="filter_all_languages">All</string>
+    <string name="stat_win_rate">Wins</string>
+    <string name="stat_wlt_value">%1$d W · %2$d L · %3$d T</string>
+    <string name="stat_best_score">Best score</string>
+    <string name="stat_accuracy">Avg accuracy</string>
+    <string name="stat_bingos">Bingos</string>
+    <string name="chart_accuracy">Accuracy game by game</string>
+    <string name="chart_scores">Scores game by game</string>
+    <string name="legend_accuracy">accuracy</string>
+    <string name="legend_moving_average">5-game average</string>
+    <string name="legend_players">Players</string>
+    <string name="legend_opponent">Opponent</string>
+    <string name="by_opponent">By opponent</string>
+    <string name="col_opponent">Opponent</string>
+    <string name="col_games">Games</string>
+    <string name="col_wlt">W–L–T</string>
+    <string name="col_spread">Spread</string>
+    <string name="col_accuracy">Acc.</string>
+    <string name="col_player">Player</string>
+    <string name="col_win_rate">Win%</string>
+    <string name="col_average">Avg</string>
+    <string name="col_record">Best</string>
+    <string name="col_score">Score</string>
+    <string name="col_date">Date</string>
+    <string name="history_accuracy">accuracy %1$d%%</string>
+    <string name="ranking_players">Players</string>
+    <string name="ranking_players_help">Every name played under on this phone. Type a different name before a game to add someone new.</string>
+    <string name="ranking_top_scores">Top scores</string>
+    <string name="ranking_records">Records</string>
+    <string name="rank_by_wins">Wins</string>
+    <string name="rank_by_score">Avg score</string>
+    <string name="rank_by_accuracy">Accuracy</string>
+    <string name="rank_by_best">Best</string>
+    <string name="rec_high_score">Highest score</string>
+    <string name="rec_best_move">Best move</string>
+    <string name="rec_longest_word">Longest word</string>
+    <string name="rec_best_accuracy">Best accuracy</string>
+    <string name="rec_biggest_win">Biggest win</string>
+    <string name="rec_most_bingos">Most bingos in a game</string>
+    <string name="rec_word_value">%1$s · %2$d pts</string>
+    <string name="rec_margin_value">+%1$d pts</string>
+    <string name="rec_holder">%1$s · %2$s</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_section_player">Player</string>
+    <string name="settings_section_game">Game</string>
+    <string name="settings_section_dictionary">Dictionary</string>
+    <string name="settings_section_data">Data</string>
+    <string name="settings_section_about">About</string>
+    <string name="settings_name_help">Filled in for every new game; the statistics and the ranking are kept under it.</string>
+    <string name="settings_show_rating">Show each move\'s rating during the game</string>
+    <string name="settings_show_rating_help">When off, you see the ratings after the game, in “Game review”.</string>
+    <string name="settings_hint_order">Default hint order</string>
+    <string name="settings_hint_order_help">Strategist and Analyst only where the language has a trained model.</string>
+    <string name="settings_playback">Speed of automatic games and replays</string>
+    <string name="speed_slow">Slow</string>
+    <string name="speed_normal">Normal</string>
+    <string name="speed_fast">Fast</string>
+    <string name="settings_keep_screen_on">Keep the screen on during a game</string>
+    <string name="settings_keep_screen_on_help">Handy when the phone lies next to the board.</string>
+    <string name="settings_definitions">Fetch word definitions</string>
+    <string name="settings_definitions_help">Tapping a tile shows the word\'s definition. Apart from an online ranking, if you set one up, this is the only thing the app fetches from the internet.</string>
+    <plurals name="settings_history_size">
+        <item quantity="one">There is %d game in the history.</item>
+        <item quantity="other">There are %d games in the history.</item>
+    </plurals>
+    <string name="settings_clear_history">Clear game history</string>
+    <string name="settings_clear_confirm">Delete every saved game? The statistics and the ranking start again from zero.</string>
+    <string name="settings_version">Version %1$s</string>
+    <string name="settings_backup_help">A copy of the history in a file — keep it somewhere off the phone. Importing a copy adds the games missing here and removes nothing.</string>
+    <string name="settings_export">Export history</string>
+    <string name="settings_import">Import history</string>
+    <plurals name="settings_exported">
+        <item quantity="one">Saved %d game.</item>
+        <item quantity="other">Saved %d games.</item>
+    </plurals>
+    <string name="settings_imported">Imported: %1$d new, %2$d updated, %3$d unchanged.</string>
+    <plurals name="settings_import_unreadable">
+        <item quantity="one">Skipped %d unreadable line.</item>
+        <item quantity="other">Skipped %d unreadable lines.</item>
+    </plurals>
+    <string name="settings_file_failed">Failed: %1$s</string>
+    <string name="settings_section_online">Online ranking</string>
+    <string name="settings_online_help">The address of a Scrablozaur server with its ranking switched on. Games go there only when you press “Send my games”: names, scores and moves.</string>
+    <string name="settings_server">Server address</string>
+    <string name="settings_server_unencrypted">Unencrypted connection (http): your games and the ranking key travel as plain text.</string>
+    <string name="settings_server_key">Ranking key (if the server asks for one)</string>
+    <string name="settings_upload">Send my games</string>
+    <string name="settings_uploading">Sending…</string>
+    <string name="settings_uploaded">Sent %1$d, the server kept %2$d.</string>
+
+    <!-- A Match for several people at one phone -->
+    <string name="people_at_phone">People at this phone</string>
+    <string name="with_computer">The computer plays too</string>
+    <string name="multiplayer_help">You take turns on one phone. After each move pass it on — the next person\'s rack only shows once they take it.</string>
+    <string name="names_must_differ">Every player needs a different name.</string>
+    <string name="handover_title">Next: %1$s</string>
+    <string name="handover_help">Pass the phone on. The rack (%1$s) shows when the button is pressed.</string>
+    <string name="handover_show_rack">Show my rack</string>
+
+    <!-- Tile tracking -->
+    <string name="unseen_summary">Tiles left: %1$d · vowels %2$d · consonants %3$d</string>
+    <!-- Quoted: a resource loses its leading space otherwise. -->
+    <string name="unseen_blanks">" · blanks %1$d"</string>
+
+    <!-- Elo -->
+    <string name="tab_online">Online</string>
+    <string name="elo_title">Elo rating</string>
+    <plurals name="elo_basis">
+        <item quantity="one">%1$d game against the computer · %2$s</item>
+        <item quantity="other">%1$d games against the computer · %2$s</item>
+    </plurals>
+    <string name="elo_plays_like">plays like %1$s at %2$d%%</string>
+    <string name="elo_beyond_strongest">stronger than %1$s at 100%%</string>
+    <string name="elo_below_weakest">weaker than %1$s at 1%%</string>
+    <string name="elo_help">Elo from your results against the computer, whose strength was measured in thousands of games between the computers. Reference point: Maximizer at full strength is 1500.</string>
+    <string name="legend_elo">Elo game by game</string>
+    <string name="col_elo">Elo</string>
+    <string name="ranking_head_to_head">Head to head</string>
+    <string name="col_duel">Score</string>
+    <string name="ranking_head_to_head_help">Who finished higher in games at one phone; resigning counts as a loss. Ties in brackets.</string>
+
+    <!-- The shared ranking on a server -->
+    <string name="online_refresh">Refresh</string>
+    <string name="online_disabled">This server keeps no ranking (or it isn\'t a Scrablozaur server).</string>
+    <string name="online_empty">Nobody has sent any games here yet.</string>
+    <string name="online_games">Games in the ranking: %1$d</string>
+    <string name="online_unreachable">Could not reach the server: %1$s</string>
+    <string name="online_bad_token">The server refused the ranking key — check it in the settings.</string>
+    <string name="online_server_error">Server error: %1$s</string>
+
+    <!-- Game review: equity and the endgame -->
+    <string name="metric_equity_lost">Equity lost</string>
+    <plurals name="metric_equity_detail">
+        <item quantity="one">over %d move</item>
+        <item quantity="other">over %d moves</item>
+    </plurals>
+    <string name="metric_endgame">Endgame</string>
+    <string name="metric_endgame_detail">by full search</string>
+    <string name="col_loss">Lost</string>
+    <string name="review_equity">Equity: %1$s; the Strategist\'s: %2$s</string>
+    <string name="review_equity_best">Equity: %1$s — what the Strategist would have played</string>
+    <string name="review_show_equity_best">Strategist: %1$s · %2$d pts</string>
+    <string name="review_better_exchange">Exchanging was better: %1$s</string>
+    <string name="review_endgame">Endgame: result %1$s, best possible %2$s</string>
+    <string name="review_endgame_best">Endgame: result %1$s — the best possible</string>
+    <string name="review_endgame_estimate">(estimate)</string>
+    <string name="review_endgame_pass">Passing was best.</string>
+    <string name="review_show_endgame_best">Best endgame: %1$s · %2$d pts</string>
+
+    <!-- Practice -->
+    <string name="practice_title">Practice</string>
+    <string name="practice_puzzles">Puzzles</string>
+    <string name="practice_anagrams">Anagrams</string>
+    <string name="practice_words">Dictionary</string>
+    <string name="puzzles_empty">No puzzles yet. They are made from your weaker moves in rated games — play a few Matches.</string>
+    <string name="puzzle_n">Puzzle %1$d of %2$d</string>
+    <string name="puzzle_help">The board and rack from before one of your moves. Find a better one: tap a starting square and lay tiles from the rack.</string>
+    <string name="puzzle_check">Check</string>
+    <string name="puzzle_show_answer">Show the answer</string>
+    <string name="puzzle_hide_answer">Hide the answer</string>
+    <string name="puzzle_you_played">In the game: %1$s · %2$d pts</string>
+    <string name="puzzle_top_score">Most points: %1$s · %2$d pts</string>
+    <string name="puzzle_strateg">Strategist: %1$s · %2$d pts</string>
+    <string name="puzzle_not_a_play">%1$s is not a legal move here.</string>
+    <string name="puzzle_scores">%1$s: %2$d pts</string>
+    <string name="puzzle_top">The most points there were to be had!</string>
+    <string name="puzzle_better">The best move scores %1$d pts; %2$d of the %3$d legal moves score more than yours.</string>
+    <string name="puzzle_equity">Equity %1$s; the Strategist\'s: %2$s.</string>
+    <string name="puzzle_equity_best">Equity %1$s — what the Strategist would have played.</string>
+    <string name="drill_help">Make as many words as you can from seven tiles. At least one word uses all seven.</string>
+    <string name="drill_shuffle">Shuffle</string>
+    <string name="drill_progress">Bingos: %1$d/%2$d · words: %3$d/%4$d</string>
+    <string name="drill_your_word">Your word</string>
+    <string name="drill_not_word">%1$s — not in the dictionary.</string>
+    <string name="drill_not_from_rack">%1$s — can\'t be made from these tiles.</string>
+    <string name="drill_already">%1$s — already found.</string>
+    <string name="drill_found">✓ %1$s — a new word!</string>
+    <string name="drill_show_all">Show all</string>
+    <string name="drill_hide_all">Hide</string>
+    <string name="drill_new">New rack</string>
+    <string name="drill_all_words">All words</string>
+    <string name="drill_found_words">Found</string>
+    <string name="words_of_length">%1$d letters (%2$d)</string>
+    <string name="words_check_title">Check a word</string>
+    <string name="words_valid">%1$s is in the dictionary.</string>
+    <string name="words_invalid">%1$s — not in the dictionary.</string>
+    <string name="words_search_title">Find words</string>
+    <string name="words_search_help">Words from the letters given (? is a blank; up to 10 letters and 2 blanks). A pattern narrows the result: a letter is that letter, - is one letter from the pool, * any number of them. E.g. *qu* — words with “qu”, k---- — five-letter words starting with k.</string>
+    <string name="words_letters">Letters</string>
+    <string name="words_pattern">Pattern (optional)</string>
+    <string name="words_too_many_blanks">At most %1$d blanks.</string>
+    <string name="words_found">Found: %1$d</string>
+    <string name="words_found_many">Found: %1$d (showing %2$d)</string>
+</resources>
