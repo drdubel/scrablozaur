@@ -116,6 +116,11 @@ make bench  LANG=pl            # speed comparison         (gen-bench)
   `android/app/src/main/res/values/strings.xml`, matching the web's). UniFFI error fields
   are never named `message` — they become Kotlin exceptions and collide with
   `Throwable.message`.
+- **A game's turns are logged by the engine** (`TurnRecord`, `GameView.turns`), so undo and
+  saves keep them right. The app's history (`files/history.jsonl`), statistics, ranking and
+  game review all read that log, and the in-game rating card does too: never keep a second
+  move list app-side. The log is an extension the web does not have; the parity fixture
+  never sees it.
 - The APK's engine data is staged from this repo by `android/app/build.gradle.kts`
   (`languages/`, `words/<code>/`, `smart_player/models/<code>/`, with a SHA-256 manifest).
   Never copy a dictionary into `android/` by hand.

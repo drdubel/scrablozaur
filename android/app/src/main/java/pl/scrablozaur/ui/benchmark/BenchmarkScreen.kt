@@ -140,7 +140,7 @@ class BenchmarkViewModel(app: Application) : AndroidViewModel(app) {
         replay = viewModelScope.launch {
             try {
                 while (_ui.value.step < moves) {
-                    delay(700)
+                    delay(scrablozaur.settings.current.playback.replayMs)
                     stepTo(_ui.value.step + 1)
                 }
             } finally {
@@ -151,6 +151,7 @@ class BenchmarkViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun lookupDefinition(word: String) {
+        if (!scrablozaur.settings.current.onlineDefinitions) return
         val providers = _ui.value.language?.definitions ?: return
         _ui.update { it.copy(definition = DefinitionUi(word, null)) }
         viewModelScope.launch {

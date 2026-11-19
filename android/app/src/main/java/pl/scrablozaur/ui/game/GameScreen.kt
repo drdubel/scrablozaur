@@ -75,6 +75,7 @@ import pl.scrablozaur.engine.Mode
 import pl.scrablozaur.engine.Outcome
 import pl.scrablozaur.engine.Premium
 import pl.scrablozaur.engine.PreviewResult
+import pl.scrablozaur.engine.TurnKind
 import pl.scrablozaur.ui.components.BoardOverlay
 import pl.scrablozaur.ui.components.BoardView
 import pl.scrablozaur.ui.components.EngineBusy
@@ -87,6 +88,7 @@ import pl.scrablozaur.ui.components.Mark
 import pl.scrablozaur.ui.components.RackView
 import pl.scrablozaur.ui.theme.Palette
 import pl.scrablozaur.ui.theme.outlinedButtonColors
+import kotlin.math.roundToInt
 
 /** What the board shows on top of the position: a word being typed, a hint
  *  being previewed, or else where the computer just played. */
@@ -136,8 +138,10 @@ fun GameScreen(
     premiums: List<Premium>,
     onNewGame: () -> Unit,
     onScan: () -> Unit,
+    onReview: (String) -> Unit,
 ) {
     val ui by vm.ui.collectAsStateWithLifecycle()
+    val settings by vm.settings.collectAsStateWithLifecycle()
     var confirmResign by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -167,7 +171,7 @@ fun GameScreen(
                     Spacer(Modifier.height(12.dp))
                     Button(onClick = onNewGame) { Text(stringResource(R.string.new_game)) }
                 }
-                ui.view != null -> GameLayout(ui, vm, premiums, onNewGame) { confirmResign = true }
+                ui.view != null -> GameLayout(ui, vm, premiums, PanelActions(onNewGame, onReview, { confirmResign = true }, settings.showMoveRating))
             }
         }
     }
@@ -185,9 +189,17 @@ fun GameScreen(
     if (ui.askBlank) BlankDialog(ui.language?.alphabet.orEmpty(), vm::onBlankChosen)
 }
 
+/** What the panel below the board leads to, beyond the view model. */
+private class PanelActions(
+    val onNewGame: () -> Unit,
+    val onReview: (String) -> Unit,
+    val onResign: () -> Unit,
+    val showMoveRating: Boolean,
+)
+
 /** Board and controls stacked on a portrait phone, side by side in landscape. */
 @Composable
-private fun GameLayout(ui: GameUi, vm: GameViewModel, premiums: List<Premium>, onNewGame: () -> Unit, onResign: () -> Unit) {
+private fun GameLayout(ui: GameUi, vm: GameViewModel, premiums: List<Premium>, actions: PanelActions) {
     val view = ui.view!!
     val overlay = overlayFor(ui)
     @Composable
@@ -209,7 +221,7 @@ private fun GameLayout(ui: GameUi, vm: GameViewModel, premiums: List<Premium>, o
                 Board(Modifier.size(minOf(height, width * 0.6f)).padding(4.dp))
                 Column(Modifier.weight(1f).fillMaxHeight()) {
                     Scoreboard(ui)
-                    Panel(ui, vm, onNewGame, onResign, Modifier.weight(1f))
+                    Panel(ui, vm, actions, Modifier.weight(1f))
                 }
             }
         } else {
@@ -221,7 +233,7 @@ private fun GameLayout(ui: GameUi, vm: GameViewModel, premiums: List<Premium>, o
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Board(Modifier.size(board).padding(horizontal = 4.dp))
                 }
-                Panel(ui, vm, onNewGame, onResign, Modifier.weight(1f))
+                Panel(ui, vm, actions, Modifier.weight(1f))
             }
         }
     }
@@ -264,7 +276,7 @@ private fun Scoreboard(ui: GameUi) {
 private enum class PanelKind { Over, Competitive, Hints, Auto, SandboxHuman, SandboxComputer }
 
 @Composable
-private fun Panel(ui: GameUi, vm: GameViewModel, onNewGame: () -> Unit, onResign: () -> Unit, modifier: Modifier) {
+private fun Panel(ui: GameUi, vm: GameViewModel, actions: PanelActions, modifier: Modifier) {
     val view = ui.view!!
     val kind = when {
         view.gameOver -> PanelKind.Over
@@ -281,11 +293,11 @@ private fun Panel(ui: GameUi, vm: GameViewModel, onNewGame: () -> Unit, onResign
     ) {
         ui.definition?.let { DefinitionCard(it, vm::closeDefinition) }
         when (kind) {
-            PanelKind.Over -> GameOverCard(ui, onNewGame)
-            PanelKind.Competitive -> CompetitivePanel(ui, vm, onResign)
+            PanelKind.Over -> GameOverCard(ui, actions)
+            PanelKind.Competitive -> CompetitivePanel(ui, vm, actions)
             PanelKind.Hints -> HintsPanel(ui, vm)
             PanelKind.Auto -> AutoPanel(ui, vm)
-            PanelKind.SandboxHuman -> SandboxHumanPanel(ui, vm, onResign)
+            PanelKind.SandboxHuman -> SandboxHumanPanel(ui, vm, actions.onResign)
             PanelKind.SandboxComputer -> SandboxComputerPanel(ui, vm)
         }
     }
@@ -348,7 +360,7 @@ private fun WordStatus(ui: GameUi, vm: GameViewModel) {
 // ── Competitive ──────────────────────────────────────────────────────────────
 
 @Composable
-private fun CompetitivePanel(ui: GameUi, vm: GameViewModel, onResign: () -> Unit) {
+private fun CompetitivePanel(ui: GameUi, vm: GameViewModel, actions: PanelActions) {
     val view = ui.view!!
     val letters = view.players.firstOrNull { !it.isComputer }?.letters.orEmpty()
     val blank = ui.language?.blank ?: '?'
@@ -390,11 +402,11 @@ private fun CompetitivePanel(ui: GameUi, vm: GameViewModel, onResign: () -> Unit
             SmallButton(R.string.hints, vm::toggleHints, enabled = ui.idle, busy = ui.busy == Busy.Hints)
             SmallButton(R.string.exchange, vm::exchange, enabled = ui.idle, busy = ui.busy == Busy.Exchange)
             SmallButton(R.string.skip, vm::skip, enabled = ui.idle)
-            SmallButton(R.string.resign, onResign, enabled = ui.idle, danger = true)
+            SmallButton(R.string.resign, actions.onResign, enabled = ui.idle, danger = true)
         }
         ExchangeHelp()
     }
-    if (ui.ratings.isNotEmpty()) RatingCard(ui)
+    if (actions.showMoveRating && ui.ratings.isNotEmpty()) RatingCard(ui)
 }
 
 @Composable
@@ -423,14 +435,16 @@ private fun HintsPanel(ui: GameUi, vm: GameViewModel) {
     HintList(ui.hints.orEmpty(), ui.hintOrder, ui.selectedHint, enabled = ui.idle, onSelect = vm::selectHint, onPlace = vm::placeHint)
 }
 
-private fun ratingColor(r: Int) = when {
+/** The web's colours for a 0-100 rating. */
+fun ratingColor(r: Int) = when {
     r >= 70 -> Palette.ratingGood
     r >= 40 -> Palette.ratingOk
     else -> Palette.ratingBad
 }
 
+/** A half-circle gauge filled to `rating` of 100. */
 @Composable
-private fun Gauge(rating: Int, color: Color, modifier: Modifier) {
+fun Gauge(rating: Int, color: Color, modifier: Modifier) {
     Canvas(modifier) {
         val stroke = size.height * 0.26f
         val d = minOf(size.width, size.height * 2) - stroke
@@ -444,14 +458,15 @@ private fun Gauge(rating: Int, color: Color, modifier: Modifier) {
 /** How the last move compared with the best the rack allowed; tap for the history. */
 @Composable
 private fun RatingCard(ui: GameUi) {
-    val last = ui.ratings.first()
+    val ratings = ui.ratings
+    val last = ratings.first()
     var expanded by rememberSaveable { mutableStateOf(false) }
     val color = ratingColor(last.rating)
     Card(colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .clickable(enabled = ui.ratings.size > 1) { expanded = !expanded }
+                .clickable(enabled = ratings.size > 1) { expanded = !expanded }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -481,13 +496,13 @@ private fun RatingCard(ui: GameUi) {
                         )
                     }
                 }
-                if (ui.ratings.size > 1) {
+                if (ratings.size > 1) {
                     Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, stringResource(R.string.history))
                 }
             }
             if (expanded) {
                 Spacer(Modifier.height(8.dp))
-                ui.ratings.take(20).forEach { m ->
+                ratings.take(20).forEach { m ->
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(m.word.uppercase(), Modifier.width(96.dp), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(stringResource(R.string.points_short, m.score), Modifier.width(52.dp), fontSize = 12.sp)
@@ -599,14 +614,19 @@ private fun AutoPanel(ui: GameUi, vm: GameViewModel) {
 // ── Endings and dialogs ──────────────────────────────────────────────────────
 
 @Composable
-private fun GameOverCard(ui: GameUi, onNewGame: () -> Unit) {
+private fun GameOverCard(ui: GameUi, actions: PanelActions) {
     val view = ui.view!!
     val outcome = view.outcome
+    // A competitive resignation is a loss whatever the score, as the history counts it.
+    val resigned = view.mode == Mode.COMPETITIVE &&
+        view.turns.lastOrNull()?.let { it.kind == TurnKind.RESIGN && !view.players[it.player.toInt()].isComputer } == true
+    val accuracy = ui.ratings.map { it.rating }.takeIf { it.isNotEmpty() }?.average()?.roundToInt()
     Card(colors = CardDefaults.cardColors(containerColor = Palette.highlightNew)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                when (outcome) {
-                    is Outcome.Winner -> stringResource(R.string.winner, view.players[outcome.player.toInt()].name)
+                when {
+                    resigned -> stringResource(R.string.game_resigned)
+                    outcome is Outcome.Winner -> stringResource(R.string.winner, view.players[outcome.player.toInt()].name)
                     else -> stringResource(R.string.tie)
                 },
                 style = MaterialTheme.typography.headlineSmall,
@@ -619,8 +639,19 @@ private fun GameOverCard(ui: GameUi, onNewGame: () -> Unit) {
                     Text(stringResource(R.string.points_short, p.score))
                 }
             }
+            if (accuracy != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(stringResource(R.string.accuracy_value, accuracy), color = ratingColor(accuracy), fontWeight = FontWeight.SemiBold)
+            }
             Spacer(Modifier.height(12.dp))
-            Button(onClick = onNewGame) { Text(stringResource(R.string.new_game)) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ui.gameId?.let { id ->
+                    OutlinedButton(onClick = { actions.onReview(id) }, colors = outlinedButtonColors()) {
+                        Text(stringResource(R.string.game_review))
+                    }
+                }
+                Button(onClick = actions.onNewGame) { Text(stringResource(R.string.new_game)) }
+            }
         }
     }
 }

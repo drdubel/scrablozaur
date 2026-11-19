@@ -21,11 +21,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import pl.scrablozaur.R
 import pl.scrablozaur.ScrablozaurApplication
-import pl.scrablozaur.core.AutoLogEntry
+import pl.scrablozaur.core.AppSettings
 import pl.scrablozaur.core.DefinitionResult
+import pl.scrablozaur.core.GameMeta
+import pl.scrablozaur.core.GameRecord
 import pl.scrablozaur.core.LOG_TAG
 import pl.scrablozaur.core.LanguageMeta
-import pl.scrablozaur.core.RatedMove
+import pl.scrablozaur.core.RecordedPlay
+import pl.scrablozaur.core.RecordedPlayer
+import pl.scrablozaur.core.RecordedTurn
 import pl.scrablozaur.core.SavedGame
 import pl.scrablozaur.core.describe
 import pl.scrablozaur.engine.Game
@@ -34,13 +38,22 @@ import pl.scrablozaur.engine.Hint
 import pl.scrablozaur.engine.HintOrder
 import pl.scrablozaur.engine.Mode
 import pl.scrablozaur.engine.MoveException
+import pl.scrablozaur.engine.Outcome
 import pl.scrablozaur.engine.PlayerSetup
 import pl.scrablozaur.engine.PreviewResult
+import pl.scrablozaur.engine.Turn
+import pl.scrablozaur.engine.TurnKind
 
 /** A new game as the setup screen describes it. `seed` 0 deals from the clock. */
 data class NewGame(val language: String, val mode: Mode, val players: List<PlayerSetup>, val seed: ULong = 0uL)
 
 data class DefinitionUi(val word: String, val result: DefinitionResult?)
+
+/** A rated human play, for the rating card and its history. */
+data class RatedMove(val word: String, val score: Int, val rating: Int)
+
+/** One line of an automatic game's move log. */
+data class AutoLogEntry(val player: String, val word: String, val score: Int, val passed: Boolean)
 
 /** Which control is waiting on the engine, so only it shows progress. */
 enum class Busy { Move, Hints, Suggest, Exchange, Undo, Auto }
@@ -68,12 +81,24 @@ data class GameUi(
     val error: String? = null,
     val busy: Busy? = null,
     val thinking: Boolean = false,
-    val ratings: List<RatedMove> = emptyList(),
-    val autoLog: List<AutoLogEntry> = emptyList(),
     val autoplay: Boolean = false,
     val definition: DefinitionUi? = null,
+    /** The game's record in the history, once a competitive game has ended. */
+    val gameId: String? = null,
 ) {
     val current get() = view?.players?.getOrNull(view.currentPlayer.toInt())
+
+    /** The human's rated plays, newest first. Read off the engine's turns, so undo takes them back too. */
+    val ratings: List<RatedMove>
+        get() = view?.turns.orEmpty()
+            .mapNotNull { t -> t.rating?.let { RatedMove(t.word, t.score.toInt(), it.toInt()) } }
+            .asReversed()
+
+    /** An automatic game's moves, newest first. */
+    val autoLog: List<AutoLogEntry>
+        get() = view?.let { v ->
+            v.turns.map { AutoLogEntry(v.players[it.player.toInt()].name, it.word, it.score.toInt(), it.kind != TurnKind.PLAY) }
+        }.orEmpty().asReversed()
 
     /** Whether a human can type a word now. */
     val humanTurn get() = view != null && !view.gameOver && !view.computerToMove &&
@@ -90,10 +115,14 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     private val scrablozaur = app as ScrablozaurApplication
     private val repo = scrablozaur.engine
     private val saves = scrablozaur.saves
+    private val history = scrablozaur.history
+    val settings: StateFlow<AppSettings> = scrablozaur.settings.state
     /** One game is never touched by two threads at once. */
     private val engine = Dispatchers.Default.limitedParallelism(1)
 
     private var game: Game? = null
+    /** The current game as the history knows it; saved with the game. */
+    private var meta = GameMeta()
     /**
      * Everything tied to the current game runs here, and is cancelled when
      * another game replaces it -- so a reply still being computed for the old
@@ -127,7 +156,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         launchLoading {
             val pack = repo.pack(config.language)
             val g = withContext(engine) { Game(pack, config.mode, config.players, config.seed) }
-            install(g, config.language, emptyList(), emptyList())
+            install(g, config.language, GameMeta())
         }
     }
 
@@ -139,7 +168,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
             val saved = withContext(Dispatchers.IO) { saves.load() } ?: error("no saved game")
             val pack = repo.pack(saved.language)
             val g = withContext(engine) { Game.restore(pack, saved.session) }
-            install(g, saved.language, saved.ratings, saved.autoLog)
+            install(g, saved.language, saved.meta)
         }
     }
 
@@ -163,19 +192,23 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun install(g: Game, language: String, ratings: List<RatedMove>, log: List<AutoLogEntry>) {
+    private suspend fun install(g: Game, language: String, meta: GameMeta) {
         game?.close()
         game = g
+        this.meta = meta
         val pack = repo.pack(language)
         val points = withContext(engine) { pack.letterPoints() }
         val view = withContext(engine) { g.state() }
+        val lang = repo.language(language)
+        // The preferred order, where this language has the net it needs.
+        val order = scrablozaur.settings.current.hintOrder.takeIf { it == HintOrder.SCORE || lang.hasLeaveNet } ?: HintOrder.SCORE
         _ui.value = GameUi(
             loading = false,
-            language = repo.language(language),
+            language = lang,
             view = view,
             points = points,
-            ratings = ratings,
-            autoLog = log,
+            hintOrder = order,
+            suggestionOrder = order,
         ).withComputerLetters()
         persist(g)
         playComputerIfDue(g)
@@ -192,9 +225,51 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
         val language = state.language?.code ?: return
         val session = withContext(engine) { g.save() }
         if (game !== g) return
-        val over = state.view?.gameOver == true
-        withContext(Dispatchers.IO) { saves.save(SavedGame(language, session, over, state.ratings, state.autoLog)) }
+        val view = state.view
+        val over = view?.gameOver == true
+        val meta = meta
+        withContext(Dispatchers.IO) { saves.save(SavedGame(language, session, over, meta)) }
+        // A competitive game goes into the history as it ends; ended again
+        // after an undo, it replaces what it was.
+        if (over && view.mode == Mode.COMPETITIVE && game === g) {
+            history.save(record(view, language, meta))
+            _ui.update { it.copy(gameId = meta.id) }
+        }
     }
+
+    private fun record(view: GameView, language: String, meta: GameMeta) = GameRecord(
+        id = meta.id,
+        mode = view.mode,
+        language = language,
+        startedAt = meta.startedAt,
+        finishedAt = System.currentTimeMillis(),
+        players = view.players.map { RecordedPlayer(it.name, it.isComputer, it.difficulty.toInt(), it.strength.toInt(), it.score) },
+        human = view.players.indexOfFirst { !it.isComputer },
+        winner = when (val o = view.outcome) {
+            is Outcome.Winner -> o.player.toInt()
+            else -> -1
+        },
+        turns = view.turns.map(::recorded),
+        cells = view.cells,
+        blanks = view.blanks,
+        owners = view.owners.map { it.toInt() },
+        hintTurns = meta.hintTurns.size,
+        undos = meta.undos,
+    )
+
+    private fun recorded(t: Turn) = RecordedTurn(
+        player = t.player.toInt(),
+        kind = t.kind,
+        word = t.word,
+        score = t.score.toInt(),
+        row = t.row.toInt(),
+        col = t.col.toInt(),
+        horizontal = t.horizontal,
+        tiles = t.tiles.toInt(),
+        rack = t.rack,
+        rating = t.rating?.toInt(),
+        best = t.best?.let { RecordedPlay(it.word, it.score.toInt(), it.row.toInt(), it.col.toInt(), it.horizontal, it.used) },
+    )
 
     /** The web pre-fills the sandbox computer seat with the letters it kept. */
     private fun GameUi.withComputerLetters(): GameUi {
@@ -260,7 +335,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     fun onCellTap(cell: Cell) {
         val state = _ui.value
         val occupied = state.grid.at(cell.row, cell.col) != null
-        if (occupied) lookupDefinition(cell)
+        if (occupied && settings.value.onlineDefinitions) lookupDefinition(cell)
         if (!state.humanTurn || state.busy != null) return
         // Re-tapping the start square flips the direction, as on the web.
         val horizontal = if (state.typing?.start == cell) !state.horizontal else state.horizontal
@@ -338,11 +413,8 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
     fun placeHint(hint: Hint) = playWord(hint.word, hint.row.toInt(), hint.col.toInt(), hint.horizontal)
 
     private fun playWord(word: String, row: Int, col: Int, horizontal: Boolean) = act(Busy.Move) { g ->
-        val score = withContext(engine) { g.humanMove(word, row.toUInt(), col.toUInt(), horizontal) }
-        val rating = withContext(engine) { g.state() }.lastMoveRating
-        refresh(g) {
-            if (rating == null) it else it.copy(ratings = listOf(RatedMove(word, score.toInt(), rating.toInt())) + it.ratings)
-        }
+        withContext(engine) { g.humanMove(word, row.toUInt(), col.toUInt(), horizontal) }
+        refresh(g)
         playComputerIfDue(g)
     }
 
@@ -406,7 +478,8 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
             running?.join()
             act(Busy.Undo) { g ->
                 withContext(engine) { g.undo() }
-                refresh(g) { s -> if (s.view?.mode == Mode.SANDBOX_AUTO) s.copy(autoLog = s.autoLog.drop(1)) else s }
+                meta = meta.copy(undos = meta.undos + 1)
+                refresh(g)
             }
         }
     }
@@ -429,6 +502,8 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun loadHints() = act(Busy.Hints) { g ->
         val list = withContext(engine) { g.hints(_ui.value.hintOrder) }
+        // Saved with the next move: the history counts the turns helped.
+        _ui.value.view?.let { meta = meta.copy(hintTurns = meta.hintTurns + it.moveNumber.toInt()) }
         _ui.update { it.copy(hints = list, selectedHint = null, busy = null) }
     }
 
@@ -487,13 +562,10 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
 
     /** One automatic move, shown once made: stopping autoplay mid-move lets it land. */
     private suspend fun stepAuto(g: Game) = withContext(NonCancellable) {
-        val before = _ui.value.view ?: return@withContext
-        val mover = before.players[before.currentPlayer.toInt()]
         val start = SystemClock.elapsedRealtime()
         val move = withContext(engine) { g.nextAutoMove() }
         Log.i(LOG_TAG, "automatic move '${move.word}' after ${SystemClock.elapsedRealtime() - start} ms")
-        val entry = AutoLogEntry(mover.name, move.word, move.score.toInt(), move.passed)
-        refresh(g) { it.copy(autoLog = listOf(entry) + it.autoLog) }
+        refresh(g)
     }
 
     fun toggleAutoplay() {
@@ -509,7 +581,7 @@ class GameViewModel(app: Application) : AndroidViewModel(app) {
                 while (_ui.value.view?.gameOver == false) {
                     _ui.update { it.copy(busy = Busy.Auto) }
                     stepAuto(g)
-                    delay(550)
+                    delay(settings.value.playback.autoMoveMs)
                 }
             } catch (e: MoveException) {
                 _ui.update { it.copy(error = e.describe(getApplication())) }

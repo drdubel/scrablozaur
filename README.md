@@ -616,6 +616,24 @@ on Apple Silicon (an x86_64 emulator image needs `x86_64-linux-android` too, and
 `-Pscrablozaur.abis=arm64-v8a,x86_64`). Which toolchain and where rustup lives
 are set in `android/gradle.properties`.
 
+### Statistics, ranking and game review
+
+The engine logs every turn of a game as it is played (`TurnRecord` in
+`src/game/session.rs`): undo takes turns back off it, and a save carries it.
+Each of the player's competitive moves keeps its 0–100 rating and the
+highest-scoring play the rack had, which the rating was measured against. The
+app keeps every finished competitive game, log included, on the phone
+(`files/history.jsonl`, one game a line), and builds from it:
+
+| Screen | What it shows |
+|:---|:---|
+| **Ocena gry** | One game gone through again: accuracy (the mean move rating), best moves found, points left on the table, the score move by move, each move's rating, and the board at any turn with the best play laid over it |
+| **Statystyki** | A player's accuracy and scores game by game, results against each computer strength, and every game played |
+| **Ranking** | Everyone who played on this phone, by wins, average score, accuracy or best game; the ten best scores; the records |
+| **Ustawienia** | The player's name (filled in at every new game, as the setup screen's other choices are), whether ratings show during play, the default hint order, autoplay speed, keeping the screen on, online definitions |
+
+A resignation counts as a loss, whatever the score.
+
 ## Project Structure
 
 ```

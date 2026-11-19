@@ -2,6 +2,7 @@ package pl.scrablozaur.ui.setup
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -10,23 +11,32 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.EmojiEvents
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -39,6 +49,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import pl.scrablozaur.R
 import pl.scrablozaur.core.LanguageMeta
+import pl.scrablozaur.core.SetupChoices
+import pl.scrablozaur.core.playerKey
 import pl.scrablozaur.engine.Mode
 import pl.scrablozaur.engine.PlayerSetup
 import pl.scrablozaur.ui.game.NewGame
@@ -62,25 +74,42 @@ data class SeatConfig(val name: String, val isComputer: Boolean, val advanced: B
 /** A benchmark as the setup screen describes it. */
 data class BenchmarkRequest(val language: String, val players: List<PlayerSetup>, val games: Int)
 
+/** The setup screen's ways out, beyond starting something. */
+class SetupActions(
+    val onContinue: () -> Unit,
+    val onStart: (NewGame) -> Unit,
+    val onBenchmark: (BenchmarkRequest) -> Unit,
+    val onScan: () -> Unit,
+    /** The choices and the player's name, to start from next time. */
+    val onRemember: (SetupChoices, String) -> Unit,
+    val onStats: () -> Unit,
+    val onRanking: () -> Unit,
+    val onSettings: () -> Unit,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SetupScreen(
     languages: List<LanguageMeta>,
     defaultLanguage: String,
+    /** Where the screen starts: what was picked last time. */
+    choices: SetupChoices,
+    playerName: String,
+    /** Everyone who has played here, latest first: a tap puts their name in. */
+    knownNames: List<String>,
     canContinue: Boolean,
-    onContinue: () -> Unit,
-    onStart: (NewGame) -> Unit,
-    onBenchmark: (BenchmarkRequest) -> Unit,
-    onScan: () -> Unit,
+    actions: SetupActions,
 ) {
-    var mode by remember { mutableStateOf(SetupMode.Competitive) }
-    var languageCode by remember { mutableStateOf(defaultLanguage) }
-    var humanName by remember { mutableStateOf("") }
-    var auto by remember { mutableStateOf(false) }
-    var count by remember { mutableStateOf(2) }
-    var manualSeats by remember { mutableStateOf(List(4) { SeatConfig("", isComputer = it == 1) }) }
-    var autoSeats by remember { mutableStateOf(List(4) { SeatConfig("", isComputer = true) }) }
-    var options by remember { mutableStateOf(BotOptions()) }
+    var mode by remember { mutableStateOf(SetupMode.entries.firstOrNull { it.name == choices.mode } ?: SetupMode.Competitive) }
+    var languageCode by remember { mutableStateOf(choices.language?.takeIf { c -> languages.any { it.code == c } } ?: defaultLanguage) }
+    var humanName by remember { mutableStateOf(playerName) }
+    var auto by remember { mutableStateOf(choices.auto) }
+    var count by remember { mutableIntStateOf(choices.count) }
+    var manualSeats by remember {
+        mutableStateOf(List(4) { SeatConfig(choices.seatNames.getOrElse(it) { "" }, isComputer = it == choices.computerSeat) })
+    }
+    var autoSeats by remember { mutableStateOf(List(4) { SeatConfig(choices.autoSeatNames.getOrElse(it) { "" }, isComputer = true) }) }
+    var options by remember { mutableStateOf(BotOptions(choices.strength, choices.neural, choices.simulation)) }
     var showAdvanced by remember { mutableStateOf(false) }
     var benchmarkGames by remember { mutableStateOf("20") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -98,10 +127,26 @@ fun SetupScreen(
         setup(s.name.trim().ifEmpty { seatNames[i] }, true, s.advanced ?: options)
     }
 
+    fun keepChoices() = actions.onRemember(
+        SetupChoices(
+            mode = mode.name,
+            auto = auto,
+            count = count,
+            language = lang.code,
+            strength = options.strength,
+            neural = options.neural,
+            simulation = options.simulation,
+            seatNames = manualSeats.map { it.name },
+            computerSeat = manualSeats.indexOfFirst { it.isComputer }.coerceAtLeast(0),
+            autoSeatNames = autoSeats.map { it.name },
+        ),
+        humanName.trim(),
+    )
+
     fun start() {
         error = null
         when {
-            mode == SetupMode.Competitive -> onStart(
+            mode == SetupMode.Competitive -> actions.onStart(
                 NewGame(
                     lang.code, Mode.COMPETITIVE,
                     listOf(
@@ -110,14 +155,14 @@ fun SetupScreen(
                     ),
                 ),
             )
-            auto -> onStart(NewGame(lang.code, Mode.SANDBOX_AUTO, autoPlayers()))
+            auto -> actions.onStart(NewGame(lang.code, Mode.SANDBOX_AUTO, autoPlayers()))
             else -> {
                 val seats = manualSeats.take(count)
                 if (seats.count { it.isComputer } != 1) {
                     error = oneComputer
                     return
                 }
-                onStart(
+                actions.onStart(
                     NewGame(
                         lang.code, Mode.SANDBOX,
                         seats.mapIndexed { i, s -> setup(s.name.trim().ifEmpty { seatNames[i] }, s.isComputer, options) },
@@ -127,18 +172,33 @@ fun SetupScreen(
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text(stringResource(R.string.new_game), fontWeight = FontWeight.Bold) }) }) { padding ->
+    // Kept as they change, not just on "Graj": a trip to the ranking or the
+    // settings takes this screen away, and it comes back from what was kept.
+    LaunchedEffect(mode, auto, count, languageCode, options, manualSeats, autoSeats, humanName) { keepChoices() }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.new_game), fontWeight = FontWeight.Bold) },
+                actions = {
+                    IconButton(onClick = actions.onRanking) { Icon(Icons.Filled.EmojiEvents, stringResource(R.string.ranking)) }
+                    IconButton(onClick = actions.onStats) { Icon(Icons.Filled.BarChart, stringResource(R.string.stats_title)) }
+                    IconButton(onClick = actions.onSettings) { Icon(Icons.Filled.Settings, stringResource(R.string.settings_title)) }
+                },
+            )
+        },
+    ) { padding ->
         Column(
             Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (canContinue) {
-                Button(onClick = onContinue, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_game)) }
+                Button(onClick = actions.onContinue, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.continue_game)) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ModeCard(stringResource(R.string.mode_competitive), mode == SetupMode.Competitive, Modifier.weight(1f)) { mode = SetupMode.Competitive }
                 ModeCard(stringResource(R.string.mode_sandbox), mode == SetupMode.Sandbox, Modifier.weight(1f)) { mode = SetupMode.Sandbox }
-                ModeCard(stringResource(R.string.mode_scan), false, Modifier.weight(1f), onScan)
+                ModeCard(stringResource(R.string.mode_scan), false, Modifier.weight(1f), actions.onScan)
             }
             if (languages.size > 1) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -158,6 +218,12 @@ fun SetupScreen(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                val others = knownNames.filter { playerKey(it) != playerKey(humanName) }.take(6)
+                if (others.isNotEmpty()) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        others.forEach { name -> SuggestionChip(onClick = { humanName = name }, label = { Text(name) }) }
+                    }
+                }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = !auto, onClick = { auto = false }, label = { Text(stringResource(R.string.sandbox_manual)) })
@@ -203,7 +269,7 @@ fun SetupScreen(
                         )
                         OutlinedButton(colors = outlinedButtonColors(), onClick = {
                             val games = benchmarkGames.toIntOrNull()?.coerceAtLeast(1) ?: 20
-                            onBenchmark(BenchmarkRequest(lang.code, autoPlayers(), games))
+                            actions.onBenchmark(BenchmarkRequest(lang.code, autoPlayers(), games))
                         }) { Text(stringResource(R.string.run_benchmark)) }
                     }
                 }

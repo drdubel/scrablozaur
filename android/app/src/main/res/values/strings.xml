@@ -124,6 +124,9 @@
     <!-- Game over -->
     <string name="tie">Remis!</string>
     <string name="winner">Wygrał: %1$s!</string>
+    <string name="game_resigned">Gra poddana</string>
+    <string name="accuracy_value">Celność: %1$d%%</string>
+    <string name="game_review">Ocena gry</string>
 
     <!-- Definitions -->
     <string name="definition_loading">Szukam definicji…</string>
@@ -229,4 +232,133 @@
     <string name="scan_new_session">Nowa sesja</string>
     <string name="scan_new_session_confirm">Czy na pewno chcesz zacząć nową sesję? Bieżąca zeskanowana plansza zostanie utracona.</string>
     <string name="scan_bad_board">Tej planszy nie da się ułożyć z płytek jednej gry — sprawdź litery.</string>
+
+    <!-- Results, as the history and the ranking count them -->
+    <string name="result_win">Wygrana</string>
+    <string name="result_loss">Przegrana</string>
+    <string name="result_tie">Remis</string>
+    <!-- One-letter badges: Wygrana, Przegrana, Remis. -->
+    <string name="result_short_win">W</string>
+    <string name="result_short_loss">P</string>
+    <string name="result_short_tie">R</string>
+    <string name="score_vs">%1$d : %2$d</string>
+    <!-- A computer opponent: its level name and strength. -->
+    <string name="opponent_label">%1$s · %2$d%%</string>
+    <string name="percent">%1$d%%</string>
+    <string name="duration_minutes">%1$d min</string>
+
+    <!-- Game review ("Ocena gry") -->
+    <string name="review_title">Ocena gry</string>
+    <string name="review_resigned">gra poddana</string>
+    <string name="review_not_found">Tej gry nie ma w historii.</string>
+    <string name="review_partial">Ta gra zaczęła się w starszej wersji aplikacji i brakuje zapisu jej pierwszych ruchów, więc nie da się jej odtworzyć.</string>
+    <string name="metric_accuracy">Celność</string>
+    <string name="metric_found_best">Najlepsze ruchy</string>
+    <string name="found_best_value">%1$d z %2$d</string>
+    <string name="metric_missed">Stracone punkty</string>
+    <string name="metric_best_move">Najlepszy ruch</string>
+    <string name="metric_bingos">Bingo</string>
+    <string name="metric_hints">Podpowiedzi</string>
+    <string name="metric_undos_detail">cofnięcia: %1$d</string>
+    <string name="chart_score_progress">Przebieg wyniku</string>
+    <string name="chart_move_ratings">Ocena ruchów</string>
+    <string name="review_moves">Ruchy</string>
+    <string name="review_show_best">Pokaż najlepszy: %1$s · %2$d pkt</string>
+    <string name="review_was_best">✓ najlepszy możliwy ruch</string>
+    <string name="review_rack">Stojak: %1$s</string>
+    <string name="review_end">Koniec gry, litery na stojakach: %1$s</string>
+    <string name="turn_pass">pas</string>
+    <string name="turn_exchange">wymiana (%1$d)</string>
+    <string name="turn_resign">poddanie</string>
+    <string name="turn_caption">%1$s: %2$s</string>
+    <string name="col_number">#</string>
+    <string name="col_turn">Ruch</string>
+    <string name="col_points">Pkt</string>
+    <string name="col_rating">Ocena</string>
+    <string name="col_best">Najlepszy</string>
+    <string name="review_delete">Usuń z historii</string>
+    <string name="review_delete_confirm">Usunąć tę grę z historii? Zniknie też ze statystyk i rankingu.</string>
+    <string name="delete">Usuń</string>
+
+    <!-- Statistics and ranking -->
+    <string name="stats_title">Statystyki</string>
+    <string name="ranking">Ranking</string>
+    <string name="tab_overview">Przegląd</string>
+    <string name="tab_history">Historia</string>
+    <string name="tab_ranking">Ranking</string>
+    <string name="stats_empty">Nie ma jeszcze skończonych gier. Zagraj w trybie Rywalizacja — każda skończona gra trafi tutaj.</string>
+    <string name="filter_everyone">Wszyscy</string>
+    <string name="filter_all_languages">Wszystkie</string>
+    <string name="stat_win_rate">Wygrane</string>
+    <string name="stat_wlt_value">%1$d W · %2$d P · %3$d R</string>
+    <string name="stat_best_score">Najlepszy wynik</string>
+    <string name="stat_accuracy">Śr. celność</string>
+    <string name="stat_bingos">Bingo</string>
+    <string name="chart_accuracy">Celność w kolejnych grach</string>
+    <string name="chart_scores">Wyniki w kolejnych grach</string>
+    <string name="legend_accuracy">celność</string>
+    <string name="legend_moving_average">średnia z 5 gier</string>
+    <string name="legend_players">Gracze</string>
+    <string name="legend_opponent">Komputer</string>
+    <string name="by_opponent">Według przeciwnika</string>
+    <string name="col_opponent">Przeciwnik</string>
+    <string name="col_games">Gry</string>
+    <string name="col_wlt">W–P–R</string>
+    <string name="col_spread">Różn.</string>
+    <string name="col_accuracy">Cel.</string>
+    <string name="col_player">Gracz</string>
+    <string name="col_win_rate">Wygr.</string>
+    <string name="col_average">Śr.</string>
+    <string name="col_record">Rek.</string>
+    <string name="col_score">Wynik</string>
+    <string name="col_date">Data</string>
+    <string name="history_accuracy">celność %1$d%%</string>
+    <string name="ranking_players">Gracze</string>
+    <string name="ranking_players_help">Każde imię, pod którym grano na tym telefonie. Wpisz inne imię przed grą, żeby dołączyć kogoś nowego.</string>
+    <string name="ranking_top_scores">Najlepsze wyniki</string>
+    <string name="ranking_records">Rekordy</string>
+    <string name="rank_by_wins">Wygrane</string>
+    <string name="rank_by_score">Śr. wynik</string>
+    <string name="rank_by_accuracy">Celność</string>
+    <string name="rank_by_best">Rekord</string>
+    <string name="rec_high_score">Najwyższy wynik</string>
+    <string name="rec_best_move">Najlepszy ruch</string>
+    <string name="rec_longest_word">Najdłuższe słowo</string>
+    <string name="rec_best_accuracy">Najwyższa celność</string>
+    <string name="rec_biggest_win">Najwyższe zwycięstwo</string>
+    <string name="rec_most_bingos">Najwięcej bingo w grze</string>
+    <string name="rec_word_value">%1$s · %2$d pkt</string>
+    <string name="rec_margin_value">+%1$d pkt</string>
+    <string name="rec_holder">%1$s · %2$s</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Ustawienia</string>
+    <string name="settings_section_player">Gracz</string>
+    <string name="settings_section_game">Gra</string>
+    <string name="settings_section_dictionary">Słownik</string>
+    <string name="settings_section_data">Dane</string>
+    <string name="settings_section_about">O aplikacji</string>
+    <string name="settings_name_help">Wpisuje się samo przy nowej grze, a statystyki i ranking zapisują się pod nim.</string>
+    <string name="settings_show_rating">Pokazuj ocenę ruchu w trakcie gry</string>
+    <string name="settings_show_rating_help">Gdy wyłączone, oceny zobaczysz dopiero po grze, w „Ocenie gry”.</string>
+    <string name="settings_hint_order">Domyślne sortowanie podpowiedzi</string>
+    <string name="settings_hint_order_help">Strateg i Analityk tylko tam, gdzie język ma wytrenowany model.</string>
+    <string name="settings_playback">Tempo gry automatycznej i odtwarzania</string>
+    <string name="speed_slow">Wolno</string>
+    <string name="speed_normal">Normalnie</string>
+    <string name="speed_fast">Szybko</string>
+    <string name="settings_keep_screen_on">Nie wygaszaj ekranu podczas gry</string>
+    <string name="settings_keep_screen_on_help">Przydaje się, gdy telefon leży przy planszy.</string>
+    <string name="settings_definitions">Pobieraj definicje słów</string>
+    <string name="settings_definitions_help">Dotknięcie płytki pokazuje definicję słowa. To jedyne, co aplikacja pobiera z internetu.</string>
+    <!-- 1 gra, 2–4 gry, 5+ gier. -->
+    <plurals name="settings_history_size">
+        <item quantity="one">W historii jest %d gra.</item>
+        <item quantity="few">W historii są %d gry.</item>
+        <item quantity="many">W historii jest %d gier.</item>
+        <item quantity="other">W historii są %d gry.</item>
+    </plurals>
+    <string name="settings_clear_history">Wyczyść historię gier</string>
+    <string name="settings_clear_confirm">Usunąć wszystkie zapisane gry? Statystyki i ranking zaczną się od zera.</string>
+    <string name="settings_version">Wersja %1$s</string>
 </resources>

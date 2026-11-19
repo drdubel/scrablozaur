@@ -3,22 +3,26 @@ package pl.scrablozaur.core
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.UUID
 
-/** A rated human move, for the rating history (the web keeps it client-side too). */
-data class RatedMove(val word: String, val score: Int, val rating: Int)
-
-/** One line of an automatic game's move log. */
-data class AutoLogEntry(val player: String, val word: String, val score: Int, val passed: Boolean)
+/** What the history needs to know of a game beyond the engine's own save. */
+data class GameMeta(
+    /** The game's record in the history: finishing it again replaces that record. */
+    val id: String = UUID.randomUUID().toString(),
+    val startedAt: Long = System.currentTimeMillis(),
+    /** Move numbers on which the hints were opened. */
+    val hintTurns: Set<Int> = emptySet(),
+    val undos: Int = 0,
+)
 
 /** The game in progress, as written to disk after every move. */
 data class SavedGame(
     val language: String,
-    /** `Game.save()`: the whole session, undo history included. */
+    /** `Game.save()`: the whole session, undo history and turn log included. */
     val session: String,
     /** Finished: kept so the last board can still be looked at, never resumed into. */
     val over: Boolean,
-    val ratings: List<RatedMove>,
-    val autoLog: List<AutoLogEntry>,
+    val meta: GameMeta,
 )
 
 /**
@@ -34,20 +38,18 @@ class SavedGames(dir: File) {
 
     fun load(): SavedGame? = runCatching {
         val json = JSONObject(file.readText())
-        val ratings = json.optJSONArray("ratings") ?: JSONArray()
-        val log = json.optJSONArray("auto_log") ?: JSONArray()
+        // A save from before the history has no meta: the game gets a new id.
+        val hints = json.optJSONArray("hint_turns") ?: JSONArray()
         SavedGame(
             language = json.getString("language"),
             session = json.getString("session"),
             over = json.optBoolean("over", false),
-            ratings = (0 until ratings.length()).map {
-                val r = ratings.getJSONObject(it)
-                RatedMove(r.getString("word"), r.getInt("score"), r.getInt("rating"))
-            },
-            autoLog = (0 until log.length()).map {
-                val e = log.getJSONObject(it)
-                AutoLogEntry(e.getString("player"), e.getString("word"), e.getInt("score"), e.getBoolean("passed"))
-            },
+            meta = GameMeta(
+                id = json.optString("id").ifEmpty { UUID.randomUUID().toString() },
+                startedAt = json.optLong("started_at").takeIf { it > 0 } ?: file.lastModified(),
+                hintTurns = (0 until hints.length()).map { hints.getInt(it) }.toSet(),
+                undos = json.optInt("undos", 0),
+            ),
         )
     }.getOrNull()
 
@@ -56,13 +58,10 @@ class SavedGames(dir: File) {
             .put("language", game.language)
             .put("session", game.session)
             .put("over", game.over)
-            .put("ratings", JSONArray(game.ratings.map {
-                JSONObject().put("word", it.word).put("score", it.score).put("rating", it.rating)
-            }))
-            .put("auto_log", JSONArray(game.autoLog.map {
-                JSONObject().put("player", it.player).put("word", it.word).put("score", it.score)
-                    .put("passed", it.passed)
-            }))
+            .put("id", game.meta.id)
+            .put("started_at", game.meta.startedAt)
+            .put("hint_turns", JSONArray(game.meta.hintTurns.sorted()))
+            .put("undos", game.meta.undos)
         val tmp = File(file.path + ".tmp")
         tmp.writeText(json.toString())
         tmp.renameTo(file)

@@ -52,6 +52,10 @@ object Palette {
     val ratingGood = Color(0xFF22C55E)
     val ratingOk = Color(0xFFF59E0B)
     val ratingBad = Color(0xFFEF4444)
+
+    /** Charts: the player, and the computer they faced. */
+    val chartYou = primary
+    val chartOpponent = Color(0xFFB0683A)
 }
 
 @Composable

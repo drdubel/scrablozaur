@@ -25,6 +25,8 @@ data class LanguageMeta(
     val flag: String,
     val alphabet: String,
     val blank: Char,
+    /** Face value of every tile, the blank included -- for drawing a board without loading the language. */
+    val points: Map<String, UInt>,
     /** Word-definition providers, in the order to try them. */
     val definitions: List<String>,
     val hasLeaveNet: Boolean,
@@ -149,12 +151,14 @@ class EngineRepository(private val context: Context) {
         val leave = json.optJSONObject("leave_net")
         val scanner = json.optJSONObject("scanner")
         val defs = json.optJSONArray("definitions")
+        val tiles = json.getJSONObject("tiles")
         return LanguageMeta(
             code = json.getString("code"),
             name = json.getString("name"),
             flag = json.optString("flag"),
             alphabet = json.getString("alphabet"),
             blank = json.getString("blank").first(),
+            points = tiles.keys().asSequence().associateWith { tiles.getJSONObject(it).getInt("points").toUInt() },
             definitions = (0 until (defs?.length() ?: 0)).map { defs!!.getString(it) },
             hasLeaveNet = leave != null,
             dawg = json.getString("dawg"),
