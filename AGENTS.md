@@ -21,9 +21,11 @@ Sub-projects have their own READMEs: `board_reader/README.md`, `smart_player/REA
 | `src/scan/reader.rs` | The learned cell reader (a small CNN the engine runs itself, `scrablozaur.CellReader`): a straightened board → per-square readings, and which way up the board is (each letter is four classes, one per quarter turn). Trained by `board_reader/scripts/train_cell_reader.py`; `tests/test_cell_reader.py` checks it against PyTorch |
 | `src/scan/grid.rs`, `src/scan/geometry.rs`, `src/scan/frame.rs` | The rest of the live scanner, in the engine: the learned grid finder (`scrablozaur.GridFinder`, trained by `board_reader/scripts/train_grid_finder.py`), straightening the tiles' tops from the camera's pose, and the whole frame → board pipeline (`scrablozaur.scan_frame`). `src/scan/live.rs` is the app camera's rule for when to read a frame and when a scan is done. `src/scan/net.rs` is the small-CNN runtime both nets run on |
 | `src/scan/decode.rs` | The legal-board decoder: the most probable board that obeys the rules, given per-square readings (`scrablozaur.decode_scan`). `board_reader/scripts/eval_decoder.py` measures it — tune against that |
+| `src/game/ladder.rs` | The bots' Elo, measured by `scrablozaur bot-ladder` and kept as a table (`LADDERS`); the app rates players against it |
 | `tests/web_parity.py` | Records the web app's behaviour into `tests/fixtures/web_parity.json`, which `cargo test` replays against `src/game/` and `src/scan.rs` |
 | `src/main.py`, `src/strategy.py`, `src/verify_engine.py` | Self-play benchmark, bot classes, sanity checks |
-| `web/` | FastAPI app (`web.main:app`), routes under `web/routers/`, vanilla-JS frontend in `web/static/` |
+| `web/` | FastAPI app (`web.main:app`), routes under `web/routers/`, vanilla-JS frontend in `web/static/`. `web/leaderboard.py` is the shared ranking, off unless `SCRABLOZAUR_LEADERBOARD` names a file |
+| `.github/workflows/ci.yml` | CI: the engine, the web app and bindings, the Android app (see README "Continuous integration") |
 | `board_reader/` | Photo → board-state OpenCV/torch pipeline |
 | `smart_player/` | Leave-value model, per language (`models/<code>/leave_value.pt`, exported to `.bin`) |
 | `words/<code>/` | Per language: `words.txt`, pre-built `dawg.bin` + `gaddag.bin` (pl ~3/36 MiB, en ~1/8 MiB) |
@@ -72,6 +74,8 @@ uv run python board_reader/scripts/import_app_scans.py && uv run python board_re
 make dicts  LANG=pl            # rebuild both binaries (build + build-gaddag)
 make verify LANG=pl            # GADDAG vs legacy parity  (gen-verify)
 make bench  LANG=pl            # speed comparison         (gen-bench)
+cargo run --release -- bot-ladder pl words/pl/dawg.bin words/pl/gaddag.bin \
+    smart_player/models/pl/leave_value.bin 200   # the bots' Elo, for src/game/ladder.rs
 #   LANG is a language code with a definition in languages/<code>.json (pl, en)
 ```
 
@@ -119,8 +123,21 @@ make bench  LANG=pl            # speed comparison         (gen-bench)
 - **A game's turns are logged by the engine** (`TurnRecord`, `GameView.turns`), so undo and
   saves keep them right. The app's history (`files/history.jsonl`), statistics, ranking and
   game review all read that log, and the in-game rating card does too: never keep a second
-  move list app-side. The log is an extension the web does not have; the parity fixture
-  never sees it.
+  move list app-side. The web keeps the same log (`TurnRecord` in `web/game.py`), so the
+  parity fixture checks it, reviews included -- equity to within 0.1, since the web values
+  leaves with PyTorch and the port with its own copy of the net.
+- `GameMode::Multiplayer` (2-4 seats passing one phone) is an extension the web does not
+  have, as is everything that reads its `is_match()`; the parity fixture never plays one.
+  It shares competitive play's rules except that a resigned seat leaves and the rest play on.
+- **Re-measure `LADDERS` (`src/game/ladder.rs`) after retraining a leave net or rebuilding a
+  dictionary**: `scrablozaur bot-ladder <lang> ... 200` prints the entry (30-40 min a language
+  on 18 cores). Players' Elo in the app is only as right as that table.
+- The Android UI is Polish in `values/` (`tools:locale="pl"`) and English in `values-en/`,
+  which must carry every resource with the same format arguments: a missing one is a lint
+  error. Word new strings in both.
+- The app's engine data lives in `noBackupFilesDir`, out of Auto Backup's 25 MB; what is
+  backed up is listed in `res/xml/backup_rules.xml` and `data_extraction_rules.xml`. A new
+  file in `filesDir` that should survive a phone change goes into both.
 - The APK's engine data is staged from this repo by `android/app/build.gradle.kts`
   (`languages/`, `words/<code>/`, `smart_player/models/<code>/`, with a SHA-256 manifest).
   Never copy a dictionary into `android/` by hand.

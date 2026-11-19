@@ -494,6 +494,8 @@ cargo run --release -- gen-verify   pl words/pl/dawg.bin words/pl/gaddag.bin [ga
 cargo run --release -- gen-bench    pl words/pl/dawg.bin words/pl/gaddag.bin [games]  # GADDAG vs legacy speed
 cargo run --release -- bot-bench    pl words/pl/dawg.bin words/pl/gaddag.bin \
     smart_player/models/pl/leave_value.bin 10 [games]                         # a bot's time per move
+cargo run --release -- bot-ladder   pl words/pl/dawg.bin words/pl/gaddag.bin \
+    smart_player/models/pl/leave_value.bin [games]                            # the bots' Elo ladder
 
 # `build`/`build-gaddag` derive everything from the word list. The rest read a
 # `.bin`, so they need the alphabet: they take a language code (a definition in
@@ -508,6 +510,27 @@ game's final scores and a board digest, so runs at different thread counts can
 be checked to have played identical games. `android/tools/device_bench.py` runs
 it on a connected phone, cross-compiled exactly as the app's engine is, for
 every level and thread count asked for.
+
+`bot-ladder` measures what the bots are worth as opponents, so that a player's
+results against them become a rating of the player (the app's Elo). It plays
+neighbouring strengths of each engine (level 8's ranked bot, 9's static
+player, 10's simulation) and one strength across neighbouring engines against
+each other, `games` seeded games a pairing, fits Elo to the results
+(Bradley-Terry, level 8 at 100% anchored at 1500) and prints the `Ladder`
+entry `src/game/ladder.rs` keeps. Re-measure after retraining a leave net or
+rebuilding a dictionary. At 200 games a pairing (30–40 min a language on 18 cores):
+
+| Elo | 1% | 10% | 25% | 50% | 75% | 100% |
+|:---|---:|---:|---:|---:|---:|---:|
+| pl, level 8 (Maksymalizator) | 230 | 351 | 648 | 995 | 1197 | 1500 |
+| pl, level 9 (Strateg) | 209 | 392 | 716 | 1100 | 1287 | 1537 |
+| pl, level 10 (Analityk) | 286 | 432 | 744 | 1107 | 1310 | 1583 |
+| en, level 8 | 336 | 441 | 722 | 1051 | 1231 | 1500 |
+| en, level 9 | 307 | 504 | 803 | 1154 | 1318 | 1606 |
+| en, level 10 | 381 | 527 | 815 | 1200 | 1340 | 1645 |
+
+A ranked level 1–7 at full strength rates as level 8 at the strength whose
+rank window it shares.
 
 Sample `bench` output (measured against the current `words.txt`/`dawg.bin`):
 
@@ -532,12 +555,37 @@ under `web/static/`, Polish UI). All routers are mounted under `/api`:
 | `routers/board.py` | `/api/board` | moves: human/computer plays, exchange, skip, pass, undo, hints |
 | `routers/scan.py` | `/api/scan` | "scan board" assistant — photo → board state → suggested move |
 | `routers/benchmark.py` | `/api/benchmark` | run bot-vs-bot batches from the browser and chart the results |
+| `routers/leaderboard.py` | `/api/leaderboard` | the shared ranking: standings, and the Android app's uploads |
 
 The scan assistant is backed by the computer-vision pipeline in
 [`board_reader/`](board_reader/README.md); the playable board and its bots are
 backed by `src/strategy.py` and [`smart_player/`](smart_player/README.md) — the
 web bot calls the same decision functions the CLI players do, and
 `tests/test_web_agrees_with_cli.py` asserts the two never diverge.
+
+Every turn of a game is logged (`TurnRecord` in `web/game.py`, as in the
+engine's `src/game/`), and a finished game shows its review: the player's mean
+move rating, the equity they gave away against what level 9 would have played,
+the endgame against a full search, and every move with the better one there
+was. During a competitive game the tiles not yet seen -- the bag and the
+computer's rack -- are counted under the rack, and the browser remembers the
+player's name.
+
+### Shared ranking
+
+The server can keep a ranking of everyone's finished games: its own
+competitive games, and those the Android app sends when the player asks it to
+(Settings → Ranking online). It is off unless the operator names a file for it:
+
+| Env var | What |
+|:---|:---|
+| `SCRABLOZAUR_LEADERBOARD` | JSONL file the ranking is kept in; unset, there is no ranking |
+| `SCRABLOZAUR_LEADERBOARD_TOKEN` | if set, uploads must send it in `X-Leaderboard-Token` |
+
+Records are the app's history format; a phone's games are keyed by its id and
+the game's, so sending them again replaces rather than duplicates. The
+standings count games as the app does: a resignation is a loss whatever the
+score.
 
 ### Difficulty
 
@@ -592,9 +640,20 @@ uv run uvicorn web.main:app --reload
 
 `android/` is a sideloaded Android app with the web app's game modes —
 competitive play against a bot at any level, the sandbox referee board,
-automatic bot games and the benchmark with its best-game replay — running fully
-on the phone, with no server. Only word definitions come from the internet, from
-the same providers the web uses. The live board scanner is still to come.
+automatic bot games and the benchmark with its best-game replay — plus the live
+board scanner (the camera reads the board as it is filmed), pass-and-play for
+2–4 people at one phone, and practice, all running fully on the phone with no
+server. Word definitions come from the internet, from the same providers the
+web uses; the only other traffic is the shared ranking, when the player sends
+games to one. The UI is Polish, or English on a phone set to English.
+
+In **Rywalizacja**, 2–4 people can share the phone, with or without a computer
+(`GameMode::Multiplayer` in the engine, an extension the web does not have):
+after each move the phone is passed on, and the next person's rack only shows
+once they take it. A seat that resigns leaves; the others play on.
+**Trening** (practice) sets up the player's own weakest moves again to be found
+properly, deals anagram drills of seven tiles that always hold a bingo, and
+checks words or searches the dictionary by pattern.
 
 The game logic is not rewritten in Kotlin. `src/game/` is a Rust port of the
 web's Python game layer, checked against the web itself: `tests/web_parity.py`
@@ -620,19 +679,53 @@ are set in `android/gradle.properties`.
 
 The engine logs every turn of a game as it is played (`TurnRecord` in
 `src/game/session.rs`): undo takes turns back off it, and a save carries it.
-Each of the player's competitive moves keeps its 0–100 rating and the
-highest-scoring play the rack had, which the rating was measured against. The
-app keeps every finished competitive game, log included, on the phone
-(`files/history.jsonl`, one game a line), and builds from it:
+Each human move in a game played for real keeps three verdicts: its 0–100
+rating against the highest-scoring play the rack had (the web's measure);
+while the bag has tiles, its equity -- score plus the leave net's value of the
+tiles kept -- against the best of what level 9 weighs, exchanges included
+(`review_equity`); and once the bag is empty with one opponent left, the
+margin it leads to against a full endgame search (`Board::endgame_turn_value`).
+The app keeps every finished competitive and multiplayer game, log included,
+on the phone (`files/history.jsonl`, one game a line), and builds from it:
 
 | Screen | What it shows |
 |:---|:---|
-| **Ocena gry** | One game gone through again: accuracy (the mean move rating), best moves found, points left on the table, the score move by move, each move's rating, and the board at any turn with the best play laid over it |
-| **Statystyki** | A player's accuracy and scores game by game, results against each computer strength, and every game played |
-| **Ranking** | Everyone who played on this phone, by wins, average score, accuracy or best game; the ten best scores; the records |
-| **Ustawienia** | The player's name (filled in at every new game, as the setup screen's other choices are), whether ratings show during play, the default hint order, autoplay speed, keeping the screen on, online definitions |
+| **Ocena gry** | One game gone through again, from any person's seat: accuracy, best moves found, points left on the table, equity lost, the endgame, the score move by move, and the board at any turn with each verdict's better play laid over it |
+| **Statystyki** | A player's accuracy and scores game by game, their Elo against the calibrated bots ("plays like Strateg at 70%") and how it moved, results against each opponent, and every game played |
+| **Ranking** | Everyone who played on this phone, by wins, average score, accuracy or best game, with Elo; head-to-head results of pass-and-play games; the ten best scores; the records |
+| **Online** | The shared ranking on a server (see *Shared ranking* above), once one is set |
+| **Ustawienia** | The player's name, whether ratings show during play, the default hint order, autoplay speed, keeping the screen on, online definitions, the history's backup, and the ranking server |
 
-A resignation counts as a loss, whatever the score.
+A resignation counts as a loss, whatever the score. Every person at a
+pass-and-play table gets the game in their statistics; Elo counts only games of
+one person against one computer, whose rating the ladder above gives.
+
+### Backups and the signing key
+
+Android's Auto Backup keeps the history, the game in progress, the scan session
+and the settings (`res/xml/backup_rules.xml`, `data_extraction_rules.xml`); the
+engine's ~54 MB of data lives in `noBackupFilesDir`, since the APK carries it
+and a backup over 25 MB is not made at all. Settings → *Eksportuj historię*
+writes the whole history to a file of the player's choosing, and *Importuj
+historię* merges one back: new games are added, a game finished again later
+replaces its earlier ending, nothing is deleted.
+
+An update installs over the app only when it is signed with the same key.
+Without `android/keystore.properties` the release build is signed with the
+debug key (`debug.keystore` in the Android user home: `~/.android/` unless
+`ANDROID_USER_HOME` points elsewhere): keep a copy of whichever key signed the
+installed app off the machine. Losing it means uninstalling the app before the
+next install -- export the history first.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` checks every push and pull request in three jobs:
+the engine (`cargo fmt --check`, clippy, `cargo test --release`, and
+`gen-verify` for both languages), the web app and bindings (`uv sync --locked`,
+`maturin develop --release`, ruff, and pytest with the browser smoke test in
+Chromium), and the Android app (unit tests, lint and a debug build, with
+rustup's 1.99.1 and the NDK). Clippy's warnings are reported, not fatal: some
+in `src/lib.rs` are older than CI.
 
 ## Project Structure
 
@@ -641,7 +734,7 @@ scrablozaur/
 ├── src/
 │   ├── lib.rs           # Rust engine (scrablozaur-core): DAWG/GADDAG, Board, move search, scoring
 │   ├── main.rs          # thin binary entry point (delegates to lib.rs's CLI)
-│   ├── game/            # the web's game logic in Rust: sessions, rules, bots, hints, benchmark
+│   ├── game/            # the web's game logic in Rust: sessions, rules, bots, hints, benchmark, Elo ladder
 │   ├── scan.rs          # the scanner's dictionary pass (correction + flagging)
 │   ├── scan/decode.rs   # the most probable legal board, given per-square readings
 │   ├── main.py          # Python self-play benchmark script (`graj()`, `benchmark()`)
@@ -660,6 +753,7 @@ scrablozaur/
 │   ├── main.py          # app entry point (`uvicorn web.main:app`)
 │   ├── game.py, scan.py, engine.py, models.py
 │   ├── difficulty.py    # custom difficulty level 1-10: engine per level + UI descriptions
+│   ├── leaderboard.py   # the shared ranking (off unless SCRABLOZAUR_LEADERBOARD names a file)
 │   ├── routers/         # game/board/scan/benchmark API routes (mounted under /api)
 │   └── static/          # HTML/CSS/vanilla-JS frontend
 ├── board_reader/        # photo -> board-state CV pipeline (see its own README)
@@ -673,6 +767,7 @@ scrablozaur/
 │   ├── test_strategy.py # player-logic tests
 │   └── test_web_agrees_with_cli.py  # the web app and the CLI must choose the same move
 ├── scrablozaur.pyi      # Python type stubs (installed as scrablozaur/__init__.pyi)
+├── .github/workflows/   # CI: engine, web app, Android app
 ├── Makefile             # dictionary builds + verification, per language
 ├── pyproject.toml       # uv-managed Python dependencies (web/ + board_reader/ + smart_player/)
 ├── uv.lock
