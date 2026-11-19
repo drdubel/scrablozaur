@@ -1,0 +1,92 @@
+# Every push and pull request: the engine, the web app and the Android app,
+# each the way AGENTS.md says to check it locally.
+name: CI
+
+on:
+  push:
+    branches: [main, android-app]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The toolchain the Android build pins (android/gradle.properties), used
+  # everywhere so a lint or format change arrives in one deliberate bump.
+  RUST_TOOLCHAIN: 1.99.1
+
+jobs:
+  rust:
+    name: Engine (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      # Warnings are reported, not fatal: src/lib.rs has some older than CI.
+      - run: cargo clippy --workspace --all-targets
+      # Release: a debug move generator is too slow for the game tests.
+      - run: cargo test --release
+      # Move generation must agree with the legacy pattern search, move for
+      # move (exits non-zero on any mismatch). Not `make verify-all`: a fresh
+      # checkout's mtimes can make words.txt look newer than the committed
+      # dawg.bin, and make would rebuild it.
+      - run: |
+          for lang in pl en; do
+            cargo run --release -- gen-verify "$lang" "words/$lang/dawg.bin" "words/$lang/gaddag.bin"
+          done
+
+  python:
+    name: Web app and bindings (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # The lock pins torch's CUDA build on Linux: large, but what a Linux
+      # checkout really runs.
+      - run: uv sync --locked
+      - run: uv run maturin develop --release
+      - run: uvx ruff@0.15.20 check .
+      # tests/test_ui_smoke.py drives the page in Chromium; without it the test
+      # skips itself, and a JavaScript error would go unnoticed.
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest tests/ -q
+
+  android:
+    name: Android app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: android-actions/setup-android@v3
+      # compileSdk 37 is the platform package android-37.0.
+      - run: sdkmanager --install "platforms;android-37.0" "ndk;28.2.13676358"
+      - uses: gradle/actions/setup-gradle@v4
+      # gradle.properties names this machine's rustup; on the runner rustup is
+      # where dtolnay/rust-toolchain put it.
+      - working-directory: android
+        run: >-
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+          -Pscrablozaur.rustupBin=$HOME/.cargo/bin
+          -Pscrablozaur.rustToolchain=${{ env.RUST_TOOLCHAIN }}

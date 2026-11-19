@@ -46,3 +46,7 @@ ocr
 # pi coding agent: share project config (settings, prompts, extensions)
 !.pi/
 !.pi/**
+
+# GitHub Actions (CI)
+!.github/
+!.github/**
