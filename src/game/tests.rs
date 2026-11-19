@@ -640,6 +640,145 @@ fn a_saved_game_restores_exactly() {
     ));
 }
 
+/// Each seat's logged scores add up to its score: the log misses no turn.
+fn assert_log_adds_up(session: &GameSession) {
+    let state = session.state();
+    for (i, p) in state.players.iter().enumerate() {
+        let logged: u32 = state
+            .turns
+            .iter()
+            .filter(|t| t.player == i)
+            .map(|t| t.score)
+            .sum();
+        assert_eq!(logged as i32, p.score, "{}'s turns", p.name);
+    }
+}
+
+#[test]
+fn the_turn_log_follows_the_game_through_undo_and_saves() {
+    let pl = pack("pl");
+    let players = vec![
+        PlayerConfig::human("Ala"),
+        PlayerConfig::computer("Bot", 8, 100),
+    ];
+    let mut session = GameSession::new(pl.clone(), GameMode::Competitive, players, 7).unwrap();
+    reply_if_due(&mut session);
+    let me = 0;
+
+    // The best play rates 100 and is its own best...
+    let rack = session.players()[me].letters.clone();
+    let hints = session.hints(SortMode::Score).unwrap();
+    let top = hints[0].clone();
+    session
+        .human_move(&top.word, top.row, top.col, top.horizontal)
+        .unwrap();
+    let turn = session
+        .state()
+        .turns
+        .into_iter()
+        .rfind(|t| t.player == me)
+        .unwrap();
+    assert_eq!(turn.action, TurnAction::Play);
+    assert_eq!(
+        (turn.word.as_str(), turn.score),
+        (top.word.as_str(), top.score)
+    );
+    assert_eq!(
+        (turn.rack.as_str(), turn.tiles),
+        (rack.as_str(), top.used.len())
+    );
+    assert_eq!(turn.rating, Some(100));
+    let best = turn.best.unwrap();
+    assert_eq!(best.used, top.used.iter().collect::<String>());
+    assert_eq!(
+        (best.word, best.score, best.row, best.col, best.horizontal),
+        (top.word, top.score, top.row, top.col, top.horizontal)
+    );
+    reply_if_due(&mut session);
+
+    // ...a weaker one is measured against the best there was.
+    let hints = session.hints(SortMode::Score).unwrap();
+    let (top, weak) = (&hints[0], hints.last().unwrap());
+    session
+        .human_move(&weak.word, weak.row, weak.col, weak.horizontal)
+        .unwrap();
+    let turn = session.state().turns.last().unwrap().clone();
+    assert_eq!(turn.rating, session.state().last_move_rating);
+    assert_eq!(turn.best.unwrap().score, top.score);
+    reply_if_due(&mut session);
+    assert_log_adds_up(&session);
+
+    // While the game is on, the computer's racks stay hidden.
+    let state = session.state();
+    assert!(state.turns.iter().any(|t| t.player != me));
+    for t in &state.turns {
+        assert_eq!(t.rack.is_empty(), t.player != me, "turn {t:?}");
+    }
+
+    // An exchange and a skip are turns too; undo takes the skip back, and the
+    // computer's reply with it.
+    let two: String = session.players()[me].letters.chars().take(2).collect();
+    session.exchange(&two).unwrap();
+    let exchange = session.state().turns.last().unwrap().clone();
+    assert_eq!(
+        (exchange.action, exchange.tiles, exchange.score),
+        (TurnAction::Exchange, 2, 0)
+    );
+    reply_if_due(&mut session);
+    let before_skip = session.state().turns.len();
+    session.skip().unwrap();
+    assert_eq!(session.state().turns[before_skip].action, TurnAction::Pass);
+    reply_if_due(&mut session);
+    session.undo().unwrap();
+    assert_eq!(session.state().turns.len(), before_skip);
+    assert_log_adds_up(&session);
+
+    // A save carries the log.
+    let restored = GameSession::from_json(pl.clone(), &session.to_json()).unwrap();
+    assert_eq!(restored.state().turns, session.state().turns);
+
+    // Resigning ends the game, and then every rack may be seen.
+    session.resign().unwrap();
+    let state = session.state();
+    assert!(state.game_over);
+    assert_eq!(state.turns.last().unwrap().action, TurnAction::Resign);
+    assert!(state.turns.iter().all(|t| !t.rack.is_empty()));
+}
+
+#[test]
+fn a_save_from_before_the_turn_log_still_resumes() {
+    let pl = pack("pl");
+    let players = vec![
+        PlayerConfig::human("Ala"),
+        PlayerConfig::computer("Bot", 8, 100),
+    ];
+    let mut session = GameSession::new(pl.clone(), GameMode::Competitive, players, 7).unwrap();
+    reply_if_due(&mut session);
+    for _ in 0..2 {
+        let top = session.hints(SortMode::Score).unwrap()[0].clone();
+        session
+            .human_move(&top.word, top.row, top.col, top.horizontal)
+            .unwrap();
+        reply_if_due(&mut session);
+    }
+    // What an older build wrote: no log, and no log length in the history.
+    let mut old: serde_json::Value = serde_json::from_str(&session.to_json()).unwrap();
+    old.as_object_mut().unwrap().remove("turns");
+    for entry in old["history"].as_array_mut().unwrap() {
+        entry.as_object_mut().unwrap().remove("turns");
+    }
+    let mut restored = GameSession::from_json(pl.clone(), &old.to_string()).unwrap();
+    assert!(restored.state().turns.is_empty());
+    restored.undo().unwrap();
+    assert!(restored.state().turns.is_empty());
+    // From here on it logs as any other game.
+    let top = restored.hints(SortMode::Score).unwrap()[0].clone();
+    restored
+        .human_move(&top.word, top.row, top.col, top.horizontal)
+        .unwrap();
+    assert_eq!(restored.state().turns.len(), 1);
+}
+
 #[test]
 fn exchange_draws_before_returning_the_tiles() {
     let pack = pack("pl");

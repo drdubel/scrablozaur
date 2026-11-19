@@ -352,16 +352,29 @@ pub fn rank_suggestions(
 /// Rate `actual_score` 0-100 against the best and worst of the top 999 plays
 /// `letters` had (`compute_move_rating`).
 pub fn move_rating(board: &Board, lexicon: &Lexicon, letters: &str, actual_score: u32) -> u8 {
+    review_move(board, lexicon, letters, actual_score).0
+}
+
+/// `move_rating`, and the play it measured `actual_score` against: the
+/// highest-scoring one, first in score order as the hints list it. `None`
+/// only when `letters` had no play at all.
+pub fn review_move(
+    board: &Board,
+    lexicon: &Lexicon,
+    letters: &str,
+    actual_score: u32,
+) -> (u8, Option<BestWord>) {
     let moves = board.get_best_words(lexicon, letters, 999, true);
     let (Some(best), Some(worst)) = (
         moves.iter().map(|m| m.1).max(),
         moves.iter().map(|m| m.1).min(),
     ) else {
-        return 100;
+        return (100, None);
     };
+    let top = moves.iter().find(|m| m.1 == best).cloned();
     if best == worst {
-        return 100;
+        return (100, top);
     }
     let rating = (actual_score as f64 - worst as f64) / (best - worst) as f64 * 100.0;
-    rating.round_ties_even().clamp(0.0, 100.0) as u8
+    (rating.round_ties_even().clamp(0.0, 100.0) as u8, top)
 }

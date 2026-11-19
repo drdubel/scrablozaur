@@ -16,7 +16,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::bot::{
-    choose_move, choose_move_sim, move_rating, rank_suggestions, SimOptions, SortMode,
+    choose_move, choose_move_sim, rank_suggestions, review_move, SimOptions, SortMode,
     StaticOptions, Suggestion, INTERACTIVE_ENDGAME_NODES, SUGGEST_SIM_ITERATIONS,
 };
 use super::difficulty::{
@@ -145,6 +145,105 @@ impl ComputerMove {
             col: 0,
             horizontal: true,
             passed: true,
+        }
+    }
+}
+
+/// What a turn did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnAction {
+    Play,
+    Exchange,
+    /// A human's skip, or a computer with no move.
+    Pass,
+    Resign,
+}
+
+/// A play a rack had, as a review of the game shows it beside the one made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayRecord {
+    pub word: String,
+    pub score: u32,
+    pub row: usize,
+    pub col: usize,
+    pub horizontal: bool,
+    /// The tiles it takes off the rack, one per new square in board order,
+    /// `'?'` for a blank.
+    pub used: String,
+}
+
+impl From<crate::BestWord> for PlayRecord {
+    fn from((word, score, (row, col, horizontal), used): crate::BestWord) -> Self {
+        PlayRecord {
+            word,
+            score,
+            row,
+            col,
+            horizontal,
+            used: used.into_iter().collect(),
+        }
+    }
+}
+
+/// One turn as it was taken, so that a finished game can be gone through
+/// again. Undo takes turns back off the end; a save carries them.
+///
+/// Extension: the web keeps no record of the moves.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnRecord {
+    pub player: usize,
+    pub action: TurnAction,
+    /// A play's word; empty for every other action.
+    pub word: String,
+    pub score: u32,
+    pub row: usize,
+    pub col: usize,
+    pub horizontal: bool,
+    /// Tiles off the rack: placed by a play, swapped by an exchange.
+    pub tiles: usize,
+    /// The rack the turn was taken from. `state` hides a competitive
+    /// computer's until the game is over, as it hides the rack itself.
+    pub rack: String,
+    /// A competitive human play's rating, as `last_move_rating` gives it...
+    pub rating: Option<u8>,
+    /// ...and the play it was measured against: the highest-scoring one.
+    pub best: Option<PlayRecord>,
+}
+
+impl TurnRecord {
+    fn new(player: usize, action: TurnAction, rack: &str) -> Self {
+        TurnRecord {
+            player,
+            action,
+            word: String::new(),
+            score: 0,
+            row: 0,
+            col: 0,
+            horizontal: true,
+            tiles: 0,
+            rack: rack.to_string(),
+            rating: None,
+            best: None,
+        }
+    }
+
+    fn play(
+        player: usize,
+        rack: &str,
+        word: &str,
+        score: u32,
+        (row, col, horizontal): (usize, usize, bool),
+        tiles: usize,
+    ) -> Self {
+        TurnRecord {
+            word: word.to_string(),
+            score,
+            row,
+            col,
+            horizontal,
+            tiles,
+            ..TurnRecord::new(player, TurnAction::Play, rack)
         }
     }
 }
@@ -297,6 +396,8 @@ pub struct GameState {
     pub game_over: bool,
     pub winner: Option<Winner>,
     pub last_move_rating: Option<u8>,
+    /// Every turn so far, oldest first. Extension: not in the web's response.
+    pub turns: Vec<TurnRecord>,
 }
 
 type Owners = [[Option<u8>; BOARD_SIZE]; BOARD_SIZE];
@@ -315,6 +416,10 @@ struct UndoEntry {
     last_computer_move: Option<ComputerMove>,
     tile_owners: Owners,
     streaks: Streaks,
+    /// How many turns the log held. Absent from saves made before there was
+    /// a log -- which have no turns to cut back either.
+    #[serde(default)]
+    turns: usize,
 }
 
 pub struct GameSession {
@@ -334,6 +439,7 @@ pub struct GameSession {
     /// Seats that resigned. A set; kept sorted.
     resigned: Vec<usize>,
     last_move_rating: Option<u8>,
+    turns: Vec<TurnRecord>,
     rng: GameRng,
 }
 
@@ -443,6 +549,7 @@ impl GameSession {
             streaks: Streaks::default(),
             resigned: Vec::new(),
             last_move_rating: None,
+            turns: Vec::new(),
             rng,
         })
     }
@@ -517,6 +624,25 @@ impl GameSession {
             game_over: self.game_over,
             winner: self.game_over.then(|| self.winner()),
             last_move_rating: self.last_move_rating,
+            turns: self
+                .turns
+                .iter()
+                .map(|t| {
+                    // A rack before a play, with the play, gives away the
+                    // tiles the computer kept.
+                    let hidden = self.mode == GameMode::Competitive
+                        && !self.game_over
+                        && self.players[t.player].is_computer;
+                    if hidden {
+                        TurnRecord {
+                            rack: String::new(),
+                            ..t.clone()
+                        }
+                    } else {
+                        t.clone()
+                    }
+                })
+                .collect(),
         }
     }
 
@@ -551,7 +677,18 @@ impl GameSession {
             last_computer_move: self.last_computer_move.clone(),
             tile_owners: self.tile_owners,
             streaks: self.streaks,
+            turns: self.turns.len(),
         });
+    }
+
+    /// How many squares a play along a line covers that are still empty.
+    fn new_tiles(&self, word: &str, row: usize, col: usize, horizontal: bool) -> usize {
+        (0..word.chars().count())
+            .filter(|&i| {
+                let (r, c) = word_cell(row, col, horizontal, i);
+                self.board.board[r][c] == '-'
+            })
+            .count()
     }
 
     /// Mark the squares a play newly covers as `player`'s. Call before placing.
@@ -786,8 +923,21 @@ impl GameSession {
                 .calculate_word_points(&word, row, col, horizontal, letters_for_scoring)?;
 
         // Rated against the position before the move.
-        self.last_move_rating = (competitive && !pre_letters.is_empty())
-            .then(|| move_rating(&self.board, &self.pack.lexicon, &pre_letters, score));
+        let review = (competitive && !pre_letters.is_empty())
+            .then(|| review_move(&self.board, &self.pack.lexicon, &pre_letters, score));
+        self.last_move_rating = review.as_ref().map(|r| r.0);
+        let turn = TurnRecord {
+            rating: self.last_move_rating,
+            best: review.and_then(|r| r.1).map(PlayRecord::from),
+            ..TurnRecord::play(
+                self.current,
+                &pre_letters,
+                &word,
+                score,
+                (row, col, horizontal),
+                self.new_tiles(&word, row, col, horizontal),
+            )
+        };
 
         self.push_undo();
         self.record_placement(&word, row, col, horizontal, self.current);
@@ -795,6 +945,7 @@ impl GameSession {
             .place_word(&word, row, col, horizontal, used.as_deref())?;
         self.players[self.current].score += score as i32;
         self.is_first_move = false;
+        self.turns.push(turn);
 
         if let Some(used) = &used {
             self.players[self.current].letters = crate::rack_after(&pre_letters, used);
@@ -815,6 +966,9 @@ impl GameSession {
             return Err(GameError::GameOver);
         }
         self.push_undo();
+        let rack = &self.players[self.current].letters;
+        self.turns
+            .push(TurnRecord::new(self.current, TurnAction::Pass, rack));
         if self.mode == GameMode::Competitive {
             self.streaks.record(TurnResult::NoAction);
             self.check_game_over(self.current);
@@ -860,6 +1014,14 @@ impl GameSession {
         }
 
         self.push_undo();
+        self.turns.push(TurnRecord {
+            tiles: letters.len(),
+            ..TurnRecord::new(
+                self.current,
+                TurnAction::Exchange,
+                &self.players[self.current].letters,
+            )
+        });
         let bag = self.bag.as_mut().expect("checked above");
         let drawn = bag.draw(letters.len());
         bag.put_back(&letters, &mut self.rng);
@@ -880,6 +1042,9 @@ impl GameSession {
         if self.game_over {
             return Err(GameError::GameOver);
         }
+        let rack = &self.players[self.current].letters;
+        self.turns
+            .push(TurnRecord::new(self.current, TurnAction::Resign, rack));
         if !self.resigned.contains(&self.current) {
             self.resigned.push(self.current);
             self.resigned.sort_unstable();
@@ -913,6 +1078,7 @@ impl GameSession {
         self.last_computer_move = entry.last_computer_move;
         self.tile_owners = entry.tile_owners;
         self.streaks = entry.streaks;
+        self.turns.truncate(entry.turns);
         self.game_over = false;
         Ok(())
     }
@@ -1010,6 +1176,14 @@ impl GameSession {
             .board
             .calculate_word_points(&word, row, col, horizontal, &rack)?;
         let used = self.tiles_for_play(&rack, &word, row, col, horizontal);
+        let turn = TurnRecord::play(
+            self.current,
+            &rack,
+            &word,
+            score,
+            (row, col, horizontal),
+            self.new_tiles(&word, row, col, horizontal),
+        );
 
         self.push_undo();
         self.record_placement(&word, row, col, horizontal, self.current);
@@ -1031,6 +1205,7 @@ impl GameSession {
             .place_word(&word, row, col, horizontal, used.as_deref())?;
         self.players[self.current].score += score as i32;
         self.is_first_move = false;
+        self.turns.push(turn);
         self.players[self.current].letters = left.into_iter().collect();
         self.advance_turn();
         Ok(score)
@@ -1071,7 +1246,10 @@ impl GameSession {
         let player = self.current;
         let play = self.pick_computer_play()?;
 
+        let rack = self.players[player].letters.clone();
         let Some((word, score, (row, col, horizontal), _)) = play else {
+            self.turns
+                .push(TurnRecord::new(player, TurnAction::Pass, &rack));
             self.streaks.record(TurnResult::NoAction);
             self.check_game_over(player);
             if !self.game_over {
@@ -1082,7 +1260,6 @@ impl GameSession {
             return Ok(passed);
         };
 
-        let rack = self.players[player].letters.clone();
         let used = self
             .tiles_for_play(&rack, &word, row, col, horizontal)
             .ok_or_else(|| {
@@ -1095,6 +1272,14 @@ impl GameSession {
             .place_word(&word, row, col, horizontal, Some(&used))?;
         self.players[player].score += score as i32;
         self.is_first_move = false;
+        self.turns.push(TurnRecord::play(
+            player,
+            &rack,
+            &word,
+            score,
+            (row, col, horizontal),
+            used.len(),
+        ));
         self.players[player].letters = crate::rack_after(&rack, &used);
         self.refill_rack(player);
         self.streaks.record(TurnResult::Played);
@@ -1231,7 +1416,9 @@ impl GameSession {
 }
 
 /// Bumped whenever `SavedGame` changes shape; older saves are refused rather
-/// than half-read.
+/// than half-read. A field added with a default that means "not recorded
+/// yet" (the turn log) is not a change of shape: a game saved before it
+/// resumes, just without the turns it took before.
 pub const SAVE_FORMAT_VERSION: u32 = 1;
 
 /// A session as plain data. The language pack is not part of it -- it is
@@ -1256,6 +1443,8 @@ struct SavedGame {
     resigned: Vec<usize>,
     last_move_rating: Option<u8>,
     rng: GameRng,
+    #[serde(default)]
+    turns: Vec<TurnRecord>,
 }
 
 impl GameSession {
@@ -1281,6 +1470,7 @@ impl GameSession {
             resigned: self.resigned.clone(),
             last_move_rating: self.last_move_rating,
             rng: self.rng.clone(),
+            turns: self.turns.clone(),
         };
         serde_json::to_string(&saved).expect("a session always serializes")
     }
@@ -1319,10 +1509,14 @@ impl GameSession {
                     || e.player_letters.len() != seats
                     || e.current_player >= seats
                     || !owner_ok(&e.tile_owners)
+                    || e.turns > saved.turns.len()
                     || Board::from_snapshot(pack.lang, &e.board).is_err()
             })
         {
             return Err(bad("the undo history does not hold together".to_string()));
+        }
+        if saved.turns.iter().any(|t| t.player >= seats) {
+            return Err(bad("the turns do not hold together".to_string()));
         }
         let board =
             Board::from_snapshot(pack.lang, &saved.board).map_err(|e| bad(e.to_string()))?;
@@ -1346,6 +1540,7 @@ impl GameSession {
             streaks: saved.streaks,
             resigned: saved.resigned,
             last_move_rating: saved.last_move_rating,
+            turns: saved.turns,
             rng: saved.rng,
         })
     }

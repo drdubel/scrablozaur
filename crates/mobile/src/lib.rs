@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use scrablozaur_core::game::{
     all_levels, run_benchmark, scan_suggestions, BenchmarkControl, BenchmarkResult, ComputerMove,
-    EngineMode, GameError, GameMode, GameSession, GameState, LanguagePack, PlayerConfig, Preview,
-    SortMode, Suggestion, Winner,
+    EngineMode, GameError, GameMode, GameSession, GameState, LanguagePack, PlayRecord,
+    PlayerConfig, Preview, SortMode, Suggestion, TurnAction, TurnRecord, Winner,
 };
 use scrablozaur_core::scan::decode::{decode, CellReading, DecodeOptions, Decoded, ScanBoard};
 use scrablozaur_core::scan::frame::read_frame;
@@ -813,6 +813,85 @@ pub enum Outcome {
     Tie,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum TurnKind {
+    Play,
+    Exchange,
+    /// A human's skip, or a computer with no move.
+    Pass,
+    Resign,
+}
+
+/// A play a rack had, as a review shows it beside the one made.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct BestPlay {
+    pub word: String,
+    pub score: u32,
+    pub row: u32,
+    pub col: u32,
+    pub horizontal: bool,
+    /// The tiles it takes off the rack, `?` for a blank.
+    pub used: String,
+}
+
+impl From<PlayRecord> for BestPlay {
+    fn from(p: PlayRecord) -> Self {
+        BestPlay {
+            word: p.word,
+            score: p.score,
+            row: p.row as u32,
+            col: p.col as u32,
+            horizontal: p.horizontal,
+            used: p.used,
+        }
+    }
+}
+
+/// One turn of the game: see `TurnRecord` in the engine.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct Turn {
+    pub player: u32,
+    pub kind: TurnKind,
+    /// A play's word; empty for the other kinds.
+    pub word: String,
+    pub score: u32,
+    pub row: u32,
+    pub col: u32,
+    pub horizontal: bool,
+    /// Tiles off the rack: placed by a play, swapped by an exchange.
+    pub tiles: u32,
+    /// The rack the turn was taken from; empty for a competitive computer
+    /// until the game is over.
+    pub rack: String,
+    /// 0-100, for a competitive human play: see `last_move_rating`.
+    pub rating: Option<u8>,
+    /// The highest-scoring play the rack had, for a rated play.
+    pub best: Option<BestPlay>,
+}
+
+impl From<TurnRecord> for Turn {
+    fn from(t: TurnRecord) -> Self {
+        Turn {
+            player: t.player as u32,
+            kind: match t.action {
+                TurnAction::Play => TurnKind::Play,
+                TurnAction::Exchange => TurnKind::Exchange,
+                TurnAction::Pass => TurnKind::Pass,
+                TurnAction::Resign => TurnKind::Resign,
+            },
+            word: t.word,
+            score: t.score,
+            row: t.row as u32,
+            col: t.col as u32,
+            horizontal: t.horizontal,
+            tiles: t.tiles as u32,
+            rack: t.rack,
+            rating: t.rating,
+            best: t.best.map(Into::into),
+        }
+    }
+}
+
 /// Everything a screen needs to draw a game.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct GameView {
@@ -838,6 +917,8 @@ pub struct GameView {
     pub last_move_rating: Option<u8>,
     /// A computer seat has the turn and the app should let it play.
     pub computer_to_move: bool,
+    /// Every turn so far, oldest first.
+    pub turns: Vec<Turn>,
 }
 
 fn flatten<T: Copy, U>(grid: &[[T; 15]; 15], f: impl Fn(T) -> U) -> Vec<U> {
@@ -882,6 +963,7 @@ fn game_view(state: GameState, computer_to_move: bool) -> GameView {
         }),
         last_move_rating: state.last_move_rating,
         computer_to_move,
+        turns: state.turns.into_iter().map(Into::into).collect(),
     }
 }
 

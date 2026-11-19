@@ -20,8 +20,8 @@ pub use bench::{
     run_benchmark, BenchmarkControl, BenchmarkMove, BenchmarkPlayerStats, BenchmarkResult, BestGame,
 };
 pub use bot::{
-    choose_move, choose_move_sim, move_rating, rank_suggestions, MoveChoice, SimOptions, SortMode,
-    StaticOptions, Suggestion, DEFAULT_ENDGAME_NODES, DEFAULT_LEAVE_WEIGHT,
+    choose_move, choose_move_sim, move_rating, rank_suggestions, review_move, MoveChoice,
+    SimOptions, SortMode, StaticOptions, Suggestion, DEFAULT_ENDGAME_NODES, DEFAULT_LEAVE_WEIGHT,
     INTERACTIVE_ENDGAME_NODES, SUGGEST_SIM_ITERATIONS,
 };
 pub use difficulty::{
@@ -34,8 +34,9 @@ pub use rules::{
     apply_end_of_game_scoring, went_out, Streaks, TurnResult, NO_PLAY_LIMIT, NO_SCORE_LIMIT,
 };
 pub use session::{
-    ComputerMove, GameError, GameMode, GameSession, GameState, LanguagePack, Player, PlayerConfig,
-    PlayerView, Preview, TileBag, Winner, SAVE_FORMAT_VERSION,
+    ComputerMove, GameError, GameMode, GameSession, GameState, LanguagePack, PlayRecord, Player,
+    PlayerConfig, PlayerView, Preview, TileBag, TurnAction, TurnRecord, Winner,
+    SAVE_FORMAT_VERSION,
 };
 
 #[cfg(test)]
