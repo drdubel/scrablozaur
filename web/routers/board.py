@@ -6,9 +6,9 @@ from starlette.concurrency import run_in_threadpool
 
 from web.engine import Dawg, LanguagePack
 from rules import TurnResult
-from web.game import (LEAVE_NET_SORTS, SORT_MODES, GameMode, has_leave_net, _check_game_over, _deduct_tiles, _refill_rack,
-                      _tiles_used_for_word, computer_auto_play, compute_move_rating,
-                      get_suggestions, get_suggestions_for_letters, rack_contains,
+from web.game import (LEAVE_NET_SORTS, SORT_MODES, GameMode, TurnRecord, has_leave_net, _check_game_over, _deduct_tiles,
+                      _refill_rack, _tiles_used_for_word, computer_auto_play, get_suggestions,
+                      get_suggestions_for_letters, new_tiles, rack_contains, review_move, review_turn,
                       validate_rack_for_word)
 from web.models import (BoardStateResponse, DefinitionResponse, ExchangeTilesRequest,
                         PlaceComputerWordRequest, PlaceHumanWordRequest, PreviewScoreResponse,
@@ -109,8 +109,9 @@ async def place_human_word(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Rate the move before mutating the board (rating needs pre-move board state)
+    best = None
     if session.game_mode == GameMode.COMPETITIVE and pre_letters:
-        session.last_move_rating = compute_move_rating(session, dawg, pre_letters, score)
+        session.last_move_rating, best = review_move(session, dawg, pre_letters, score)
     else:
         session.last_move_rating = None
 
@@ -122,12 +123,21 @@ async def place_human_word(
         if session.game_mode == GameMode.COMPETITIVE
         else None
     )
+    play = (word, body.row, body.col, body.horizontal)
+    equity, endgame = (
+        review_turn(session, dawg, play=play, score=score, used=used) if used is not None else (None, None)
+    )
+    turn = TurnRecord(
+        session.current_player_idx, "play", word, score, body.row, body.col, body.horizontal,
+        new_tiles(pre_grid, *play), pre_letters, session.last_move_rating, best, equity, endgame,
+    )
 
     session.push_undo()
     session.record_placement(word, body.row, body.col, body.horizontal, session.current_player_idx)
     session.board.place_word(word, body.row, body.col, body.horizontal, used)
     session.current_player.score += score
     session.is_first_move = False
+    session.turns.append(turn)
 
     if session.game_mode == GameMode.COMPETITIVE:
         _deduct_tiles(session.current_player, word, pre_grid, body.row, body.col, body.horizontal)
@@ -155,7 +165,9 @@ async def skip_turn(
     session = _require_session(request)
     if session.game_over:
         raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
+    _, endgame = review_turn(session, dawg)
     session.push_undo()
+    session.turns.append(TurnRecord(session.current_player_idx, "pass", rack=session.current_player.letters, endgame=endgame))
 
     if session.game_mode == GameMode.COMPETITIVE:
         session.streaks.record(TurnResult.NO_ACTION)
@@ -219,7 +231,11 @@ async def exchange_tiles(
     if not rack_contains(player.letters, letters):
         raise HTTPException(status_code=400, detail="Nie masz tych liter na stojaku.")
 
+    equity, _ = review_turn(session, dawg, exchange=letters)
     session.push_undo()
+    session.turns.append(
+        TurnRecord(session.current_player_idx, "exchange", tiles=len(letters), rack=player.letters, equity=equity)
+    )
     rack_chars = list(player.letters)
     for ch in letters:
         rack_chars.remove(ch)
@@ -247,6 +263,7 @@ async def pass_turn(request: Request) -> BoardStateResponse:
     if session.game_over:
         raise HTTPException(status_code=400, detail="Gra już się zakończyła.")
 
+    session.turns.append(TurnRecord(session.current_player_idx, "resign", rack=session.current_player.letters))
     session.passed_players.add(session.current_player_idx)
     human_idxs = {i for i, p in enumerate(session.players) if not p.is_computer}
 
@@ -356,6 +373,12 @@ async def place_computer_word(
     session.board.place_word(word, body.row, body.col, body.horizontal, used)
     session.current_player.score += score
     session.is_first_move = False
+    session.turns.append(
+        TurnRecord(
+            session.current_player_idx, "play", word, score, body.row, body.col, body.horizontal,
+            new_tiles(grid, word, body.row, body.col, body.horizontal), session.current_player.letters,
+        )
+    )
 
     rack = list(session.current_player.letters)
     for i, ch in enumerate(word):

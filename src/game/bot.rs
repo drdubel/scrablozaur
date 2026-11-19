@@ -349,6 +349,104 @@ pub fn rank_suggestions(
     Ok(suggestions)
 }
 
+/// A turn as `review_equity` values it.
+#[derive(Clone, Copy, Debug)]
+pub enum TakenTurn<'a> {
+    /// A play scoring `score` that took `used` off the rack.
+    Play { score: u32, used: &'a [char] },
+    /// An exchange of `tiles`.
+    Exchange { tiles: &'a [char] },
+}
+
+/// What `review_equity` found. Equity is a turn's score plus the leave net's
+/// value of the tiles it keeps -- the quantity `choose_move` ranks by.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EquityCheck {
+    /// The turn taken.
+    pub played: f64,
+    /// The best turn there was; never below `played`.
+    pub best: f64,
+    /// That turn when it beat the one taken: a play...
+    pub best_play: Option<BestWord>,
+    /// ...or the tiles to exchange.
+    pub best_exchange: Option<Vec<char>>,
+}
+
+/// Value a turn as the static player values its options, against the best of
+/// the same candidates it weighs -- so "best" is what level 9 would have
+/// played -- and, when the bag allows one (`can_exchange`), every exchange,
+/// which keeps a leave and scores nothing. Rounded to a tenth, as hints are.
+pub fn review_equity(
+    board: &Board,
+    lexicon: &Lexicon,
+    net: &LeaveNet,
+    rack: &str,
+    taken: TakenTurn<'_>,
+    can_exchange: bool,
+) -> EquityCheck {
+    let feats = board.board_features();
+    let unseen = unseen_total(board, rack);
+    let value = |leave: &str| {
+        DEFAULT_LEAVE_WEIGHT * leave_value(net, board.lang, leave, unseen, &feats) as f64
+    };
+    let played = match taken {
+        TakenTurn::Play { score, used } => score as f64 + value(&rack_after(rack, used)),
+        TakenTurn::Exchange { tiles } => value(&rack_after(rack, tiles)),
+    };
+    let mut best = played;
+    let mut best_play = None;
+    let mut best_exchange = None;
+    // Strictly better only: the turn taken, found again, is not a better one.
+    for play in board.get_best_words(lexicon, rack, DEFAULT_N_CANDIDATES, true) {
+        let v = play.1 as f64 + value(&rack_after(rack, &play.3));
+        if v > best {
+            best = v;
+            best_play = Some(play);
+        }
+    }
+    if can_exchange {
+        for (kept, swapped) in exchanges(rack) {
+            let v = value(&kept);
+            if v > best {
+                best = v;
+                best_play = None;
+                best_exchange = Some(swapped);
+            }
+        }
+    }
+    EquityCheck {
+        played: round1(played),
+        best: round1(best),
+        best_play,
+        best_exchange,
+    }
+}
+
+/// Every distinct exchange `rack` allows: the tiles kept and the tiles
+/// swapped, keeping anything from none of the rack to all but one tile.
+fn exchanges(rack: &str) -> Vec<(String, Vec<char>)> {
+    let tiles: Vec<char> = rack.chars().collect();
+    let n = tiles.len();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    // Bit i set: tile i is kept. All set keeps the whole rack -- a pass.
+    for mask in 0u32..(1 << n) - 1 {
+        let mut kept: Vec<char> = (0..n)
+            .filter(|i| mask >> i & 1 == 1)
+            .map(|i| tiles[i])
+            .collect();
+        kept.sort_unstable();
+        if seen.insert(kept.clone()) {
+            let swapped = (0..n)
+                .filter(|i| mask >> i & 1 == 0)
+                .map(|i| tiles[i])
+                .collect();
+            out.push((kept.into_iter().collect(), swapped));
+        }
+    }
+    out
+}
+
 /// Rate `actual_score` 0-100 against the best and worst of the top 999 plays
 /// `letters` had (`compute_move_rating`).
 pub fn move_rating(board: &Board, lexicon: &Lexicon, letters: &str, actual_score: u32) -> u8 {

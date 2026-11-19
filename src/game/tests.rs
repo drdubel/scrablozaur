@@ -112,6 +112,28 @@ struct Step {
 }
 
 type MoveRow = (String, u32, usize, usize, bool, bool);
+type PlayRow = (String, u32, usize, usize, bool, String);
+type EquityRow = (f64, f64, Option<PlayRow>, Option<String>);
+type EndgameRow = (i32, i32, Option<PlayRow>, bool);
+
+/// A logged turn as the fixture writes it: player, action, word, score, row,
+/// col, horizontal, tiles, rack, rating, best, equity, endgame.
+#[derive(Deserialize, Debug, PartialEq, Clone)]
+struct TurnRow(
+    usize,
+    String,
+    String,
+    u32,
+    usize,
+    usize,
+    bool,
+    usize,
+    String,
+    Option<u8>,
+    Option<PlayRow>,
+    Option<EquityRow>,
+    Option<EndgameRow>,
+);
 
 #[derive(Deserialize, Debug, PartialEq)]
 struct StateRow {
@@ -129,6 +151,8 @@ struct StateRow {
     game_over: bool,
     winner: Option<String>,
     rating: Option<u8>,
+    turns: Vec<TurnRow>,
+    unseen: Vec<(String, u8)>,
 }
 
 fn fixture() -> &'static Fixture {
@@ -137,7 +161,7 @@ fn fixture() -> &'static Fixture {
         let text = std::fs::read_to_string(root().join("tests/fixtures/web_parity.json"))
             .expect("tests/fixtures/web_parity.json -- run `uv run python tests/web_parity.py`");
         let f: Fixture = serde_json::from_str(&text).unwrap();
-        assert_eq!(f.version, 1, "fixture format");
+        assert_eq!(f.version, 2, "fixture format");
         f
     })
 }
@@ -418,6 +442,7 @@ fn state_row(session: &GameSession) -> StateRow {
             GameMode::Sandbox => "sandbox",
             GameMode::SandboxAuto => "sandbox_auto",
             GameMode::Competitive => "competitive",
+            GameMode::Multiplayer => "multiplayer",
         }
         .to_string(),
         tiles_remaining: s.tiles_remaining,
@@ -430,6 +455,82 @@ fn state_row(session: &GameSession) -> StateRow {
             Winner::Player(i) => s.players[i].name.clone(),
         }),
         rating: s.last_move_rating,
+        turns: s.turns.iter().map(turn_row).collect(),
+        unseen: s
+            .unseen
+            .iter()
+            .map(|&(ch, n)| (ch.to_string(), n))
+            .collect(),
+    }
+}
+
+fn play_row(p: &PlayRecord) -> PlayRow {
+    (
+        p.word.clone(),
+        p.score,
+        p.row,
+        p.col,
+        p.horizontal,
+        p.used.clone(),
+    )
+}
+
+fn turn_row(t: &TurnRecord) -> TurnRow {
+    let action = match t.action {
+        TurnAction::Play => "play",
+        TurnAction::Exchange => "exchange",
+        TurnAction::Pass => "pass",
+        TurnAction::Resign => "resign",
+    };
+    TurnRow(
+        t.player,
+        action.to_string(),
+        t.word.clone(),
+        t.score,
+        t.row,
+        t.col,
+        t.horizontal,
+        t.tiles,
+        t.rack.clone(),
+        t.rating,
+        t.best.as_ref().map(play_row),
+        t.equity.as_ref().map(|e| {
+            let best = e.best_play.as_ref().map(play_row);
+            (e.played, e.best, best, e.best_exchange.clone())
+        }),
+        t.endgame.as_ref().map(|e| {
+            let best = e.best_play.as_ref().map(play_row);
+            (e.played, e.best, best, e.exact)
+        }),
+    )
+}
+
+/// The logged turns agree exactly but for equity, which the web values with
+/// PyTorch and the port with its own copy of the net: to a tenth, as smart
+/// hints do. A different best turn passes only as a tie within that noise --
+/// counted in `near_ties`, which the caller bounds.
+fn assert_turns_match(got: &[TurnRow], want: &[TurnRow], at: &str, near_ties: &mut usize) {
+    assert_eq!(got.len(), want.len(), "{at}: turns");
+    for (g, w) in got.iter().zip(want) {
+        let without_equity = |t: &TurnRow| TurnRow {
+            11: None,
+            ..t.clone()
+        };
+        assert_eq!(without_equity(g), without_equity(w), "{at}");
+        match (&g.11, &w.11) {
+            (None, None) => {}
+            (Some(a), Some(b)) => {
+                let close = |x: f64, y: f64| (x - y).abs() <= 0.1 + 1e-9;
+                assert!(
+                    close(a.0, b.0) && close(a.1, b.1),
+                    "{at}: equity {a:?} vs {b:?}"
+                );
+                if (&a.2, &a.3) != (&b.2, &b.3) {
+                    *near_ties += 1;
+                }
+            }
+            (a, b) => panic!("{at}: equity {a:?} vs {b:?}"),
+        }
     }
 }
 
@@ -491,6 +592,7 @@ fn reply_if_due(session: &mut GameSession) {
 
 #[test]
 fn whole_games_match_the_web() {
+    let mut near_ties = 0;
     for trace in &fixture().traces {
         let pack = pack(&trace.lang);
         let mut session: Option<GameSession> = None;
@@ -563,10 +665,20 @@ fn whole_games_match_the_web() {
                 (Err(e), None) => panic!("{at}: the port refused with {e:?}, the web accepted"),
             }
             if let Some(want) = &step.state {
-                assert_eq!(&state_row(session.as_ref().unwrap()), want, "{at}");
+                let mut got = state_row(session.as_ref().unwrap());
+                assert_turns_match(&got.turns, &want.turns, &at, &mut near_ties);
+                got.turns = want.turns.clone();
+                assert_eq!(&got, want, "{at}");
             }
         }
     }
+    // Each review is checked once a state, so one tie shows up in every
+    // state after it: bounded loosely, but not hidden.
+    eprintln!("turn log: {near_ties} near-tie best turns");
+    assert!(
+        near_ties <= 60,
+        "{near_ties} near ties: more than float noise"
+    );
 }
 
 // ── Properties the web never had a test for ──────────────────────────────────
@@ -777,6 +889,283 @@ fn a_save_from_before_the_turn_log_still_resumes() {
         .human_move(&top.word, top.row, top.col, top.horizontal)
         .unwrap();
     assert_eq!(restored.state().turns.len(), 1);
+}
+
+fn competitive(seed: u64) -> GameSession {
+    let players = vec![
+        PlayerConfig::human("Ala"),
+        PlayerConfig::computer("Bot", 8, 100),
+    ];
+    let mut session = GameSession::new(pack("pl"), GameMode::Competitive, players, seed).unwrap();
+    reply_if_due(&mut session);
+    session
+}
+
+#[test]
+fn an_equity_review_names_what_the_static_player_would_have_done() {
+    let mut session = competitive(21);
+    let me = 0;
+    let pl = pack("pl");
+    let net = pl.leave_net.as_deref().unwrap();
+
+    // What level 9 would play here, before playing something weaker.
+    let rack = session.players()[me].letters.clone();
+    let opts = StaticOptions {
+        use_endgame: false,
+        ..StaticOptions::default()
+    };
+    let choice = choose_move(session.board(), &pl.lexicon, net, &rack, 90, &opts)
+        .unwrap()
+        .play
+        .unwrap();
+    let hints = session.hints(SortMode::Score).unwrap();
+    let weak = hints
+        .iter()
+        .rev()
+        .find(|h| h.word != choice.0)
+        .unwrap()
+        .clone();
+    session
+        .human_move(&weak.word, weak.row, weak.col, weak.horizontal)
+        .unwrap();
+    let review = session
+        .state()
+        .turns
+        .last()
+        .unwrap()
+        .equity
+        .clone()
+        .unwrap();
+    assert!(review.played < review.best, "{review:?}");
+    match (&review.best_play, &review.best_exchange) {
+        (Some(best), None) => assert_eq!(
+            (best.word.as_str(), best.row, best.col, best.horizontal),
+            (choice.0.as_str(), choice.2 .0, choice.2 .1, choice.2 .2)
+        ),
+        // An exchange may beat every play; then it is the one named.
+        (None, Some(tiles)) => assert!(!tiles.is_empty()),
+        other => panic!("a better turn must be named: {other:?}"),
+    }
+    reply_if_due(&mut session);
+
+    // An exchange is valued too: by the leave it keeps.
+    let two: String = session.players()[me].letters.chars().take(2).collect();
+    session.exchange(&two).unwrap();
+    let turn = session.state().turns.last().unwrap().clone();
+    let review = turn.equity.unwrap();
+    assert!(review.played <= review.best);
+    assert_eq!(
+        review.played == review.best,
+        review.best_play.is_none() && review.best_exchange.is_none()
+    );
+    reply_if_due(&mut session);
+
+    // The computer's turns are not reviewed, and no turn has an endgame yet.
+    let state = session.state();
+    for t in &state.turns {
+        assert_eq!(t.equity.is_some(), t.player == me, "{t:?}");
+        assert!(t.endgame.is_none());
+    }
+}
+
+/// A competitive game played on by top-scoring moves to the human's first
+/// turn with the bag empty -- for the first seed whose game gets there.
+fn into_the_endgame() -> GameSession {
+    for seed in 5..40 {
+        let mut session = competitive(seed);
+        while !session.is_over() && session.bag_remaining() > 0 {
+            let top = session.hints(SortMode::Score).unwrap().first().cloned();
+            match top {
+                Some(h) => session
+                    .human_move(&h.word, h.row, h.col, h.horizontal)
+                    .map(|_| ()),
+                None => session.skip(),
+            }
+            .unwrap();
+            reply_if_due(&mut session);
+        }
+        if !session.is_over() {
+            return session;
+        }
+    }
+    panic!("no game reached an endgame with the human to move");
+}
+
+#[test]
+fn an_endgame_turn_is_measured_against_the_search() {
+    let mut session = into_the_endgame();
+    let me = 0;
+    assert_eq!(session.current_player_index(), me);
+
+    // The search's own best turn loses nothing against itself.
+    let pl = pack("pl");
+    let rack = session.players()[me].letters.clone();
+    let opponent = session.players()[1].letters.clone();
+    let solved = session
+        .board()
+        .solve_endgame(&pl.lexicon, &rack, &opponent, INTERACTIVE_ENDGAME_NODES)
+        .unwrap();
+    match &solved.best {
+        Some((word, _, (row, col, h), _)) => {
+            session.human_move(word, *row, *col, *h).unwrap();
+        }
+        None => session.skip().unwrap(),
+    }
+    let turn = session.state().turns.last().unwrap().clone();
+    assert!(
+        turn.equity.is_none(),
+        "with the bag empty, equity has nothing to draw on"
+    );
+    let review = turn.endgame.expect("an endgame review");
+    assert_eq!(review.best, solved.differential.max(review.played));
+    if review.exact {
+        assert_eq!(review.played, review.best, "{review:?}");
+    }
+}
+
+#[test]
+fn the_unseen_tiles_are_the_bag_and_the_other_racks() {
+    let session = competitive(9);
+    let state = session.state();
+    let unseen: usize = state.unseen.iter().map(|&(_, n)| n as usize).sum();
+    let computer = session.players()[1].letters.chars().count();
+    assert_eq!(unseen, session.bag_remaining() + computer);
+    // Letter by letter: everything a full bag holds, less the board and the rack.
+    let lang = session.pack().lang;
+    let mine = &session.players()[0].letters;
+    for &(ch, n) in &state.unseen {
+        let in_bag = lang.bag().iter().filter(|&&t| t == ch).count();
+        let on_board = (0..BOARD_SIZE)
+            .flat_map(|r| (0..BOARD_SIZE).map(move |c| (r, c)))
+            .filter(|&(r, c)| {
+                let blank = state.blanks[r][c];
+                if ch == lang.blank() {
+                    blank
+                } else {
+                    !blank && state.board[r][c] == ch
+                }
+            })
+            .count();
+        let held = mine.chars().filter(|&t| t == ch).count();
+        assert_eq!(n as usize, in_bag - on_board - held, "{ch}");
+    }
+    // A sandbox has no rack of anyone's on screen to count from.
+    let players = vec![
+        PlayerConfig::human("Ala"),
+        PlayerConfig::computer("Bot", 8, 100),
+    ];
+    let sandbox = GameSession::new(pack("pl"), GameMode::Sandbox, players, 3).unwrap();
+    assert!(sandbox.state().unseen.is_empty());
+}
+
+#[test]
+fn a_multiplayer_game_plays_on_without_a_seat_that_resigned() {
+    let pl = pack("pl");
+    let bad = |players: Vec<PlayerConfig>| {
+        matches!(
+            GameSession::new(pl.clone(), GameMode::Multiplayer, players, 1),
+            Err(GameError::InvalidPlayers(_))
+        )
+    };
+    assert!(bad(vec![PlayerConfig::human("Ala")]));
+    assert!(bad(vec![
+        PlayerConfig::computer("A", 8, 100),
+        PlayerConfig::computer("B", 8, 100),
+    ]));
+
+    let players = vec![
+        PlayerConfig::human("Ala"),
+        PlayerConfig::human("Ola"),
+        PlayerConfig::computer("Bot", 8, 100),
+    ];
+    let mut session = GameSession::new(pl.clone(), GameMode::Multiplayer, players, 4).unwrap();
+    reply_if_due(&mut session);
+    // Every human plays their own rack, hinted and rated.
+    for _ in 0..2 {
+        let me = session.current_player_index();
+        assert!(!session.players()[me].is_computer);
+        let top = session.hints(SortMode::Score).unwrap()[0].clone();
+        session
+            .human_move(&top.word, top.row, top.col, top.horizontal)
+            .unwrap();
+        assert_eq!(session.state().last_move_rating, Some(100));
+        reply_if_due(&mut session);
+    }
+    // While the game is on, nobody's racks show in the log, and only the
+    // human whose turn it is has unseen tiles to count.
+    let state = session.state();
+    assert!(state.turns.iter().all(|t| t.rack.is_empty()));
+    assert!(!state.unseen.is_empty());
+    assert!(
+        state.players[2].letters.is_empty(),
+        "the computer's rack is hidden"
+    );
+
+    // A seat that resigns is skipped from then on.
+    let quitter = session.current_player_index();
+    session.resign().unwrap();
+    assert!(!session.is_over());
+    for _ in 0..4 {
+        assert_ne!(session.current_player_index(), quitter);
+        if session.computer_to_move() {
+            session.computer_turn().unwrap();
+        } else {
+            session.skip().unwrap();
+        }
+        if session.is_over() {
+            break;
+        }
+    }
+    // Undo back past the resignation brings the seat back.
+    while session
+        .state()
+        .turns
+        .iter()
+        .any(|t| t.action == TurnAction::Resign)
+    {
+        session.undo().unwrap();
+    }
+    assert!(!session.is_over());
+
+    // Once the last other human resigns, the computer has the game to itself,
+    // and wins it whatever the scores.
+    let humans: Vec<usize> = (0..3)
+        .filter(|&i| !session.players()[i].is_computer)
+        .collect();
+    while !session.is_over() {
+        if session.computer_to_move() {
+            session.computer_turn().unwrap();
+        } else {
+            assert!(humans.contains(&session.current_player_index()));
+            session.resign().unwrap();
+        }
+    }
+    assert_eq!(session.state().winner, Some(Winner::Player(2)));
+}
+
+#[test]
+fn a_practice_play_is_checked_against_every_legal_play() {
+    let session = competitive(12);
+    let state = session.state();
+    let rack = session.players()[0].letters.clone();
+    let hints = session.hints(SortMode::Score).unwrap();
+    let pl = pack("pl");
+    let check =
+        |w: &str, r, c, h| check_play(&pl, &state.board, &state.blanks, &rack, w, r, c, h).unwrap();
+    let top = &hints[0];
+    let best = check(&top.word, top.row, top.col, top.horizontal);
+    assert_eq!(best.score, Some(top.score));
+    assert_eq!((best.best_score, best.better), (top.score, 0));
+    let equity = best.equity.unwrap();
+    assert!(equity.played <= equity.best);
+
+    let other = hints.last().unwrap();
+    let weaker = check(&other.word, other.row, other.col, other.horizontal);
+    assert_eq!(weaker.score, Some(other.score));
+    assert!(weaker.better > 0 && weaker.better < weaker.plays);
+    // Not a play at all: the right word in the wrong place.
+    let r = (top.row + 7) % BOARD_SIZE;
+    assert_eq!(check(&top.word, r, top.col, !top.horizontal).score, None);
 }
 
 #[test]

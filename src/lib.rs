@@ -2011,6 +2011,73 @@ impl Board {
         })
     }
 
+    /// What one turn is worth with the bag empty, on `solve_endgame`'s scale:
+    /// the play's score -- or a pass, for `None` -- then the rest of the game
+    /// searched exactly as `solve_endgame` searches it. Set against that
+    /// search's `differential`, it says what the turn gave away. `exact` as
+    /// there.
+    pub fn endgame_turn_value(
+        &self,
+        lexicon: &Lexicon,
+        my_rack: &str,
+        opp_rack: &str,
+        play: Option<(&str, usize, usize, bool)>,
+        max_nodes: usize,
+    ) -> EngineResult<(i32, bool)> {
+        self.require_same_lang(lexicon.lang(), "dictionary")?;
+        let gaddag = lexicon.require_gaddag("endgame_turn_value")?;
+        let mut board = self.clone();
+        let mut stats = EndgameStats {
+            nodes: 0,
+            capped: false,
+            truncated: false,
+        };
+        // The same three cases, and the same calls, as solve_endgame_inner's
+        // root: its pass baseline, a play that goes out, any other play.
+        let value = match play {
+            None => -board.endgame_value(
+                &lexicon.dawg,
+                gaddag,
+                opp_rack,
+                my_rack,
+                1,
+                i32::MIN + 1,
+                i32::MAX - 1,
+                1,
+                &mut stats,
+                max_nodes,
+                &EG_BRANCH,
+                EG_MAX_DEPTH,
+            ),
+            Some((word, row, col, horizontal)) => {
+                let score = self.calculate_word_points(word, row, col, horizontal, my_rack)? as i32;
+                let used = self.hand_tiles_for_word(word, row, col, horizontal, my_rack);
+                let left = rack_after(my_rack, &used);
+                board.apply_move(word, row, col, horizontal, &used);
+                if left.is_empty() {
+                    score + self.lang.rack_points(opp_rack)
+                } else {
+                    score
+                        - board.endgame_value(
+                            &lexicon.dawg,
+                            gaddag,
+                            opp_rack,
+                            &left,
+                            0,
+                            i32::MIN + 1,
+                            i32::MAX - 1,
+                            1,
+                            &mut stats,
+                            max_nodes,
+                            &EG_BRANCH,
+                            EG_MAX_DEPTH,
+                        )
+                }
+            }
+        };
+        Ok((value, !stats.capped && !stats.truncated))
+    }
+
     /// Counts of the tiles neither on the board nor in `rack` -- the bag plus
     /// every opponent's rack -- indexed by `LeaveNet.alphabet()`.
     ///
@@ -4089,11 +4156,13 @@ fn usage(prog: &str) {
                     {prog} gen-verify    <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
                     {prog} gen-bench     <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
                     {prog} bot-bench     <lang> <dawg.bin>  <gaddag.bin>  <leave_value.bin|-> <level> [games]\n  \
+                    {prog} bot-ladder    <lang> <dawg.bin>  <gaddag.bin>  <leave_value.bin|-> [games]\n  \
                     {prog} scan-bench    <lang> <dawg.bin>  <cases.json>\n  \
                     {prog} frame-bench   <lang> <dawg.bin>  <grid_finder.bin> <cell_reader.bin> <frames.bin>\n\n\
          <lang> is a language code with a definition in languages/<lang>.json\n\
          (e.g. `pl`), searched for in the current directory and its parents.\n\
          bot-bench times a bot's moves at a level (1-10) with RAYON_NUM_THREADS threads.\n\
+         bot-ladder plays the bots against each other and fits their Elo (game::ladder).\n\
          scan-bench times the scan decoder on the cases `eval_decoder.py --dump` writes.\n\
          frame-bench times the whole live scan on raw RGB frames (see cmd_frame_bench)."
     );
@@ -4533,6 +4602,56 @@ fn cmd_bot_bench(
     Ok(())
 }
 
+/// `bot-ladder`: play every pairing of `game::ladder_plan` `games` times, fit
+/// the seats' Elo, and print the `Ladder` entry to paste into
+/// `game::ladder::LADDERS`. Deterministic: each pairing is seeded by its index.
+fn cmd_bot_ladder(
+    lang: &'static Language,
+    dawg_path: &str,
+    gaddag_path: &str,
+    net_path: &str,
+    games: usize,
+) -> io::Result<()> {
+    use game::LanguagePack;
+
+    let invalid = |e: &dyn fmt::Display| io::Error::new(io::ErrorKind::InvalidInput, e.to_string());
+    let lexicon = Lexicon::open(lang, dawg_path, Some(gaddag_path)).map_err(|e| invalid(&e))?;
+    let net = match net_path {
+        "-" => None,
+        path => Some(Arc::new(
+            LeaveNet::open(lang, path).map_err(|e| invalid(&e))?,
+        )),
+    };
+    let pack = LanguagePack::new(Arc::new(lexicon), net).map_err(|e| invalid(&e))?;
+    let start = Instant::now();
+    eprintln!(
+        "bot-ladder {}: {games} games a pairing, {} threads",
+        lang.code(),
+        num_threads()
+    );
+    let (seats, matches) = game::run_ladder(&pack, games, |m, seats| {
+        eprintln!(
+            "  [{:6.0} s] L{} {:3}% vs L{} {:3}%: {:3}-{:3} ({} tied)",
+            start.elapsed().as_secs_f64(),
+            seats[m.a].0,
+            seats[m.a].1,
+            seats[m.b].0,
+            seats[m.b].1,
+            m.a_wins,
+            m.b_wins,
+            m.ties
+        );
+    })
+    .map_err(|e| invalid(&e))?;
+    let ratings = game::fit_ratings(seats.len(), &matches, game::anchor_seat(&seats));
+    println!("\nbot-ladder {} ({games} games a pairing):", lang.code());
+    for (seat, r) in seats.iter().zip(&ratings) {
+        println!("  level {:2} {:3}%: {r:6.0}", seat.0, seat.1);
+    }
+    println!("\n{}", game::ladder_source(lang.code(), &seats, &ratings));
+    Ok(())
+}
+
 /// `scan-bench`: decode every case of a file `board_reader/scripts/
 /// eval_decoder.py --dump` wrote, timing each, so the decoder can be timed on
 /// a phone as well. Ends with a digest of every decoded board: the decoder
@@ -4762,6 +4881,10 @@ pub fn main_cli() -> io::Result<()> {
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "level must be 1-10"))?;
             let games = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(2);
             cmd_bot_bench(lang(&args[2])?, &args[3], &args[4], &args[5], level, games)
+        }
+        Some("bot-ladder") if args.len() == 6 || args.len() == 7 => {
+            let games = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(60);
+            cmd_bot_ladder(lang(&args[2])?, &args[3], &args[4], &args[5], games)
         }
         Some("scan-bench") if args.len() == 5 => {
             cmd_scan_bench(lang(&args[2])?, &args[3], &args[4])

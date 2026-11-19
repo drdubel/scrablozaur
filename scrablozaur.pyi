@@ -389,6 +389,23 @@ class Board:
         Requires a GADDAG.
         """
 
+    def endgame_turn_value(
+        self,
+        dawg: Dawg,
+        my_rack: str,
+        opp_rack: str,
+        play: tuple[str, int, int, bool] | None,
+        max_nodes: int = 300000,
+    ) -> tuple[int, bool]:
+        """What one turn is worth with the bag empty, on `solve_endgame`'s
+        scale: the play's score -- `play` as `(word, row, col, horizontal)`, or
+        `None` for a pass -- then the rest of the game searched exactly as
+        `solve_endgame` searches it. Set against that search's `differential`,
+        it says what the turn gave away.
+
+        Returns `(value, exact)`. Requires a GADDAG.
+        """
+
     def unseen_tile_counts(self, rack: str) -> list[int]:
         """Counts of the tiles neither on the board nor in `rack` -- the bag
         plus every opponent's rack -- indexed by `LeaveNet.alphabet()`.

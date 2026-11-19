@@ -25,7 +25,7 @@ if str(SMART_PLAYER_SRC) not in sys.path:
     sys.path.insert(0, str(SMART_PLAYER_SRC))
 
 from board_features import encode_board  # noqa: E402
-from player import DEFAULT_LEAVE_WEIGHT, choose_move, leave_values, remove_used  # noqa: E402
+from player import DEFAULT_LEAVE_WEIGHT, DEFAULT_N_CANDIDATES, choose_move, leave_values, remove_used  # noqa: E402
 from sim_player import choose_move_sim, get_net  # noqa: E402
 from rules import (  # noqa: E402
     Streaks,
@@ -94,6 +94,73 @@ class ComputerMoveInfo:
 
 
 @dataclass
+class PlayRecord:
+    """A play a rack had, as a review of the game shows it beside the one made."""
+
+    word: str
+    score: int
+    row: int
+    col: int
+    horizontal: bool
+    #: The tiles it takes off the rack, one per new square in board order, `?` for a blank.
+    used: str
+
+
+@dataclass
+class EquityReview:
+    """A turn by equity -- its score plus the leave net's value of the tiles it
+    kept -- against the best turn there was (`review_equity`)."""
+
+    played: float
+    #: Never below `played`.
+    best: float
+    #: That turn when it beat the one taken: a play, or the tiles to exchange.
+    best_play: PlayRecord | None = None
+    best_exchange: str | None = None
+
+
+@dataclass
+class EndgameReview:
+    """A turn taken with the bag empty, as the endgame search sees it: final
+    margins from that position, rack adjustment included, on
+    `Board.solve_endgame`'s scale."""
+
+    played: int
+    best: int
+    #: The play leading to `best`; None when passing does.
+    best_play: PlayRecord | None
+    #: Both searches finished inside their limits.
+    exact: bool
+
+
+@dataclass
+class TurnRecord:
+    """One turn as it was taken, so that a finished game can be gone through
+    again. Undo takes turns back off the end."""
+
+    player: int
+    #: "play", "exchange", "pass" (a skip, or a computer with no move) or "resign".
+    action: str
+    word: str = ""
+    score: int = 0
+    row: int = 0
+    col: int = 0
+    horizontal: bool = True
+    #: Tiles off the rack: placed by a play, swapped by an exchange.
+    tiles: int = 0
+    #: The rack the turn was taken from.
+    rack: str = ""
+    #: A competitive human play's rating (`last_move_rating`), and the
+    #: highest-scoring play it was measured against.
+    rating: int | None = None
+    best: PlayRecord | None = None
+    #: A human's play or exchange counting the tiles it kept.
+    equity: EquityReview | None = None
+    #: A human's play or pass with the bag empty.
+    endgame: EndgameReview | None = None
+
+
+@dataclass
 class Player:
     name: str
     is_computer: bool
@@ -123,6 +190,8 @@ class UndoEntry:
     last_computer_move: ComputerMoveInfo | None
     tile_owners: list[list[int | None]]
     streaks: tuple[int, int]
+    #: How many turns the log held: undo cuts it back to this.
+    turns: int = 0
 
 
 @dataclass
@@ -145,6 +214,8 @@ class GameSession:
     streaks: Streaks = field(default_factory=Streaks)
     passed_players: set[int] = field(default_factory=set)
     last_move_rating: int | None = None
+    #: Every turn so far, oldest first.
+    turns: list[TurnRecord] = field(default_factory=list)
 
     @property
     def current_player(self) -> Player:
@@ -170,6 +241,7 @@ class GameSession:
                 last_computer_move=self.last_computer_move,
                 tile_owners=[row[:] for row in self.tile_owners],
                 streaks=(self.streaks.no_play, self.streaks.no_score),
+                turns=len(self.turns),
             )
         )
 
@@ -189,6 +261,7 @@ class GameSession:
         self.last_computer_move = entry.last_computer_move
         self.tile_owners = [row[:] for row in entry.tile_owners]
         self.streaks = Streaks(*entry.streaks)
+        del self.turns[entry.turns :]
         self.game_over = False
         return True
 
@@ -501,7 +574,9 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
         suggestions = get_suggestions(session, dawg, n=max(worst_rank, 1))
         sug = pick_by_rank(suggestions, level) if suggestions else None
 
+    rack = session.current_player.letters
     if sug is None:
+        session.turns.append(TurnRecord(player_idx, "pass", rack=rack))
         session.streaks.record(TurnResult.NO_ACTION)
         _check_game_over(session, player_idx)
         if not session.game_over:
@@ -516,6 +591,7 @@ def computer_auto_play(session: GameSession, dawg: Dawg) -> ComputerMoveInfo:
     session.board.place_word(word, row, col, horizontal, used)
     session.current_player.score += sug["score"]
     session.is_first_move = False
+    session.turns.append(TurnRecord(player_idx, "play", word, sug["score"], row, col, horizontal, len(used), rack))
 
     _deduct_tiles(session.current_player, word, grid, row, col, horizontal)
     _refill_rack(session, session.current_player)
@@ -677,16 +753,125 @@ def get_suggestions_for_letters(
 
 def compute_move_rating(session: GameSession, dawg: Dawg, letters: str, actual_score: int) -> int:
     """Rate actual_score 0–100 relative to best and worst possible scores with *letters*."""
-    all_moves = get_suggestions_for_letters(session, dawg, letters, n=999)
-    if not all_moves:
-        return 100
-    scores = [m["score"] for m in all_moves]
-    best = max(scores)
-    worst = min(scores)
+    return review_move(session, dawg, letters, actual_score)[0]
+
+
+# ── The turn log's reviews ────────────────────────────────────────────────────
+
+
+def _play_record(play) -> PlayRecord:
+    """An engine move tuple, `(word, score, (row, col, horizontal), used)`."""
+    word, score, (row, col, horizontal), used = play
+    return PlayRecord(word, score, row, col, horizontal, "".join(used))
+
+
+def review_move(session: GameSession, dawg: Dawg, letters: str, actual_score: int) -> tuple[int, PlayRecord | None]:
+    """`compute_move_rating`, and the play it measured `actual_score` against:
+    the highest-scoring one, first in score order as the hints list it."""
+    moves = session.board.get_best_words(dawg, letters, 999)
+    if not moves:
+        return 100, None
+    best = max(m[1] for m in moves)
+    worst = min(m[1] for m in moves)
+    top = _play_record(next(m for m in moves if m[1] == best))
     if best == worst:
-        return 100
+        return 100, top
     rating = (actual_score - worst) / (best - worst) * 100
-    return max(0, min(100, round(rating)))
+    return max(0, min(100, round(rating))), top
+
+
+def _exchanges(rack: str) -> list[tuple[str, str]]:
+    """Every distinct exchange `rack` allows: the tiles kept (sorted) and the
+    tiles swapped, keeping anything from none of the rack to all but one."""
+    n = len(rack)
+    seen: set[str] = set()
+    out = []
+    for mask in range((1 << n) - 1):
+        kept = "".join(sorted(rack[i] for i in range(n) if mask >> i & 1))
+        if kept not in seen:
+            seen.add(kept)
+            out.append((kept, "".join(rack[i] for i in range(n) if not mask >> i & 1)))
+    return out
+
+
+def review_equity(
+    board: Board, dawg: Dawg, language: str, rack: str, score: int, used: list[str], can_exchange: bool
+) -> EquityReview:
+    """Value a turn as `smart_player.player.choose_move` values its options --
+    score plus the leave net's value of the tiles kept -- against the best of
+    the same candidates it weighs, so "best" is what it would have played, and
+    (when the bag allows one) every exchange, which keeps a leave and scores
+    nothing. An exchange is `score` 0 with the swapped tiles as `used`. Rounded
+    to a tenth, as smart hints are."""
+    candidates = board.get_best_words(dawg, rack, DEFAULT_N_CANDIDATES)
+    exchanges = _exchanges(rack) if can_exchange else []
+    leaves = [remove_used(rack, used)] + [remove_used(rack, c[3]) for c in candidates] + [k for k, _ in exchanges]
+    unseen = sum(board.unseen_tile_counts(rack))
+    values = leave_values(leaves, unseen, encode_board(board), _leave_net_path(language))
+    played = score + DEFAULT_LEAVE_WEIGHT * values[0]
+    best, best_play, best_exchange = played, None, None
+    # Strictly better only: the turn taken, found again, is not a better one.
+    for c, v in zip(candidates, values[1 : 1 + len(candidates)]):
+        if c[1] + DEFAULT_LEAVE_WEIGHT * v > best:
+            best, best_play = c[1] + DEFAULT_LEAVE_WEIGHT * v, c
+    for (_, swapped), v in zip(exchanges, values[1 + len(candidates) :]):
+        if DEFAULT_LEAVE_WEIGHT * v > best:
+            best, best_play, best_exchange = DEFAULT_LEAVE_WEIGHT * v, None, swapped
+    return EquityReview(
+        round(played, 1), round(best, 1), _play_record(best_play) if best_play else None, best_exchange
+    )
+
+
+def review_turn(
+    session: GameSession,
+    dawg: Dawg,
+    *,
+    play: tuple[str, int, int, bool] | None = None,
+    score: int = 0,
+    used: list[str] | None = None,
+    exchange: str | None = None,
+) -> tuple[EquityReview | None, EndgameReview | None]:
+    """How the current human's turn compares with the best there was, from the
+    position before it: a play (`play`, `score`, `used`), an exchange of
+    `exchange`, or else a pass. By equity while the bag has tiles and the
+    language a leave net; by the endgame search once the bag is empty and one
+    opponent is left. Nothing for a computer, or outside a competitive game."""
+    me = session.current_player_idx
+    player = session.players[me]
+    rack = player.letters
+    if session.game_mode != GameMode.COMPETITIVE or player.is_computer or not rack:
+        return None, None
+    bag = session.tile_bag.remaining() if session.tile_bag else 0
+    if bag > 0:
+        if not has_leave_net(session.language) or (play is None and exchange is None):
+            return None, None
+        if exchange is not None:
+            score, used = 0, list(exchange)
+        return review_equity(session.board, dawg, session.language, rack, score, used or [], bag >= 7), None
+    # The bag is empty: what is left can be searched exactly, against the one
+    # opponent still in the game.
+    others = [i for i in range(len(session.players)) if i != me]
+    if len(others) != 1 or exchange is not None:
+        return None, None
+    opp_rack = session.players[others[0]].letters
+    if not opp_rack or len(opp_rack) > 7:
+        return None, None
+    word, best_score, position, best_used, differential, _nodes, best_exact = session.board.solve_endgame(
+        dawg, rack, opp_rack, WEB_ENDGAME_NODES
+    )
+    played, exact = session.board.endgame_turn_value(dawg, rack, opp_rack, play, WEB_ENDGAME_NODES)
+    return None, EndgameReview(
+        played=played,
+        # A capped search can miss the turn taken; it is then the best known.
+        best=max(differential, played),
+        best_play=_play_record((word, best_score, position, best_used)) if word else None,
+        exact=exact and best_exact,
+    )
+
+
+def new_tiles(grid: list[list[str]], word: str, row: int, col: int, horizontal: bool) -> int:
+    """How many squares a play along a line covers that are still empty."""
+    return sum(1 for i in range(len(word)) if grid[row if horizontal else row + i][col + i if horizontal else col] == "-")
 
 
 # ── Benchmark simulation (SANDBOX_AUTO, no human ever involved) ──────────────

@@ -16,8 +16,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::bot::{
-    choose_move, choose_move_sim, rank_suggestions, review_move, SimOptions, SortMode,
-    StaticOptions, Suggestion, INTERACTIVE_ENDGAME_NODES, SUGGEST_SIM_ITERATIONS,
+    choose_move, choose_move_sim, rank_suggestions, review_equity, review_move, SimOptions,
+    SortMode, StaticOptions, Suggestion, TakenTurn, INTERACTIVE_ENDGAME_NODES,
+    SUGGEST_SIM_ITERATIONS,
 };
 use super::difficulty::{
     clamp_level, engine_mode, max_level_for, pick_by_rank, pick_in_window, rank_window,
@@ -83,6 +84,13 @@ pub enum GameMode {
     SandboxAuto,
     /// One human against one computer, real bag, hidden computer rack.
     Competitive,
+    /// 2-4 seats taking turns at one device, people and computers, played as
+    /// a competitive game is: a real bag, racks, computers that play their
+    /// own turns. A seat that resigns leaves; the others play on.
+    ///
+    /// Extension: the web has no such mode, so the parity fixture never
+    /// plays one.
+    Multiplayer,
 }
 
 /// A seat as requested at the start of a game.
@@ -186,11 +194,40 @@ impl From<crate::BestWord> for PlayRecord {
     }
 }
 
+/// A turn valued as the static player values its options: equity, its score
+/// plus the leave net's value of the tiles it kept (`review_equity`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EquityReview {
+    /// The turn taken.
+    pub played: f64,
+    /// The best turn there was; never below `played`.
+    pub best: f64,
+    /// That turn when it beat the one taken: a play...
+    pub best_play: Option<PlayRecord>,
+    /// ...or the tiles to exchange.
+    pub best_exchange: Option<String>,
+}
+
+/// A turn taken with the bag empty, as the endgame search sees it: final
+/// margins from that position, rack adjustment included, on
+/// `Board::solve_endgame`'s scale.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndgameReview {
+    /// The margin the turn taken leads to, against the best replies.
+    pub played: i32,
+    /// The best margin there was...
+    pub best: i32,
+    /// ...and the play that leads to it; `None` when passing did.
+    pub best_play: Option<PlayRecord>,
+    /// Both searches finished inside their limits: the numbers are proved.
+    pub exact: bool,
+}
+
 /// One turn as it was taken, so that a finished game can be gone through
 /// again. Undo takes turns back off the end; a save carries them.
 ///
 /// Extension: the web keeps no record of the moves.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TurnRecord {
     pub player: usize,
     pub action: TurnAction,
@@ -209,6 +246,14 @@ pub struct TurnRecord {
     pub rating: Option<u8>,
     /// ...and the play it was measured against: the highest-scoring one.
     pub best: Option<PlayRecord>,
+    /// A human's play or exchange counting the tiles it kept, where the
+    /// language has a leave net and the bag still has tiles. The rating above
+    /// is the web's; this is the one that sees a rack thrown away for points.
+    #[serde(default)]
+    pub equity: Option<EquityReview>,
+    /// A human's play or pass with the bag empty and one opponent left.
+    #[serde(default)]
+    pub endgame: Option<EndgameReview>,
 }
 
 impl TurnRecord {
@@ -225,6 +270,8 @@ impl TurnRecord {
             rack: rack.to_string(),
             rating: None,
             best: None,
+            equity: None,
+            endgame: None,
         }
     }
 
@@ -246,6 +293,21 @@ impl TurnRecord {
             ..TurnRecord::new(player, TurnAction::Play, rack)
         }
     }
+}
+
+/// A human's turn, as `GameSession::review_turn` values it.
+#[derive(Clone, Copy)]
+enum Taken<'a> {
+    Play {
+        word: &'a str,
+        row: usize,
+        col: usize,
+        horizontal: bool,
+        score: u32,
+        used: &'a [char],
+    },
+    Exchange(&'a [char]),
+    Pass,
 }
 
 /// Why a move or action was refused. Variants, not messages, so the app can say
@@ -375,7 +437,7 @@ pub struct PlayerView {
 }
 
 /// Everything a screen needs to draw the game -- the web's `BoardStateResponse`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GameState {
     pub language: String,
     pub mode: GameMode,
@@ -398,6 +460,10 @@ pub struct GameState {
     pub last_move_rating: Option<u8>,
     /// Every turn so far, oldest first. Extension: not in the web's response.
     pub turns: Vec<TurnRecord>,
+    /// The tiles the player whose rack is on screen has not seen -- the bag
+    /// plus the other racks -- in the leave net's tile order, the blank first;
+    /// empty when no one's rack is (see `viewer`). Extension, as `turns`.
+    pub unseen: Vec<(char, u8)>,
 }
 
 type Owners = [[Option<u8>; BOARD_SIZE]; BOARD_SIZE];
@@ -482,6 +548,11 @@ fn validate_players(
                 return bad("a sandbox game has exactly one computer");
             }
         }
+        GameMode::Multiplayer => {
+            if players.len() < 2 || computers == players.len() {
+                return bad("a multiplayer game has 2 to 4 seats, at least one of them human");
+            }
+        }
     }
     for p in players.iter_mut() {
         // Clamp to what this language can actually field: without a trained
@@ -493,12 +564,13 @@ fn validate_players(
 }
 
 impl GameSession {
-    /// Deal a new game. Competitive and automatic games draw for first player
-    /// (closest to 'A' wins, a blank beats everything), put the drawn tiles
-    /// back, reshuffle, and deal seven each; the sandbox has no bag at all.
+    /// Deal a new game. Competitive, multiplayer and automatic games draw for
+    /// first player (closest to 'A' wins, a blank beats everything), put the
+    /// drawn tiles back, reshuffle, and deal seven each; the sandbox has no bag
+    /// at all.
     ///
-    /// In a competitive game the draw can land on the computer: check
-    /// `computer_to_move` afterwards, as after every other action.
+    /// In a competitive or multiplayer game the draw can land on a computer:
+    /// check `computer_to_move` afterwards, as after every other action.
     pub fn new(
         pack: LanguagePack,
         mode: GameMode,
@@ -582,13 +654,38 @@ impl GameSession {
         self.bag.as_ref().map_or(0, TileBag::remaining)
     }
 
+    /// A game played for real -- competitive or multiplayer: real racks, the
+    /// computers' hidden, computers that play their own turns, rated humans.
+    fn is_match(&self) -> bool {
+        matches!(self.mode, GameMode::Competitive | GameMode::Multiplayer)
+    }
+
+    /// The seat whose rack is on screen: a competitive game's human, or the
+    /// human whose turn it is in a multiplayer one -- where no rack shows while
+    /// a computer plays, as the device sits between people.
+    pub fn viewer(&self) -> Option<usize> {
+        match self.mode {
+            GameMode::Competitive => self.players.iter().position(|p| !p.is_computer),
+            GameMode::Multiplayer => {
+                (!self.players[self.current].is_computer).then_some(self.current)
+            }
+            GameMode::Sandbox | GameMode::SandboxAuto => None,
+        }
+    }
+
+    /// Seats still in the game: all of them, but in a multiplayer game the
+    /// ones that resigned.
+    fn active_seats(&self) -> Vec<usize> {
+        (0..self.players.len())
+            .filter(|i| self.mode != GameMode::Multiplayer || !self.resigned.contains(i))
+            .collect()
+    }
+
     /// Whether a computer's turn is due now. The web plays it inside the
     /// request that handed it the turn -- in a competitive game only; in the
     /// other modes the user advances the computers.
     pub fn computer_to_move(&self) -> bool {
-        self.mode == GameMode::Competitive
-            && !self.game_over
-            && self.players[self.current].is_computer
+        self.is_match() && !self.game_over && self.players[self.current].is_computer
     }
 
     /// The board as the web serves it (`_state_response`).
@@ -606,7 +703,7 @@ impl GameSession {
                     name: p.name.clone(),
                     is_computer: p.is_computer,
                     score: p.score,
-                    letters: if self.mode == GameMode::Competitive && p.is_computer {
+                    letters: if self.is_match() && p.is_computer {
                         String::new()
                     } else {
                         p.letters.clone()
@@ -629,10 +726,12 @@ impl GameSession {
                 .iter()
                 .map(|t| {
                     // A rack before a play, with the play, gives away the
-                    // tiles the computer kept.
-                    let hidden = self.mode == GameMode::Competitive
+                    // tiles kept: a computer's from the human, and in a
+                    // multiplayer game everyone's from everyone.
+                    let hidden = self.is_match()
                         && !self.game_over
-                        && self.players[t.player].is_computer;
+                        && (self.players[t.player].is_computer
+                            || self.mode == GameMode::Multiplayer);
                     if hidden {
                         TurnRecord {
                             rack: String::new(),
@@ -643,12 +742,25 @@ impl GameSession {
                     }
                 })
                 .collect(),
+            unseen: self.viewer().map_or_else(Vec::new, |v| {
+                let letters = self.pack.lang.eval_letters();
+                let counts = self.board.unseen_tile_counts(&self.players[v].letters);
+                letters.iter().copied().zip(counts).collect()
+            }),
         }
     }
 
+    /// The highest score wins -- in a multiplayer game, among the seats that
+    /// did not resign.
     fn winner(&self) -> Winner {
-        let best = self.players.iter().map(|p| p.score).max().unwrap_or(0);
-        let tied: Vec<usize> = (0..self.players.len())
+        let seats = self.active_seats();
+        let best = seats
+            .iter()
+            .map(|&i| self.players[i].score)
+            .max()
+            .unwrap_or(0);
+        let tied: Vec<usize> = seats
+            .into_iter()
             .filter(|&i| self.players[i].score == best)
             .collect();
         if tied.len() > 1 {
@@ -660,8 +772,18 @@ impl GameSession {
 
     // ── Bookkeeping ──────────────────────────────────────────────────────────
 
+    /// Pass the turn on -- past any seat that left a multiplayer game.
     fn advance_turn(&mut self) {
-        self.current = (self.current + 1) % self.players.len();
+        let n = self.players.len();
+        self.current = (self.current + 1) % n;
+        if self.mode == GameMode::Multiplayer {
+            for _ in 0..n {
+                if !self.resigned.contains(&self.current) {
+                    break;
+                }
+                self.current = (self.current + 1) % n;
+            }
+        }
         self.move_number += 1;
     }
 
@@ -882,6 +1004,86 @@ impl GameSession {
         Some(used)
     }
 
+    /// How the current human's turn compares with the best there was, from the
+    /// position before it: by equity while the bag has tiles and the language
+    /// a leave net; by the endgame search once the bag is empty and one
+    /// opponent is left. Nothing for a computer, or outside a match.
+    fn review_turn(&self, taken: Taken<'_>) -> (Option<EquityReview>, Option<EndgameReview>) {
+        let me = self.current;
+        let rack = &self.players[me].letters;
+        if !self.is_match() || self.players[me].is_computer || rack.is_empty() {
+            return (None, None);
+        }
+        let bag = self.bag_remaining();
+        if bag > 0 {
+            let Some(net) = self.pack.net() else {
+                return (None, None);
+            };
+            let check = match taken {
+                Taken::Play { score, used, .. } => TakenTurn::Play { score, used },
+                Taken::Exchange(tiles) => TakenTurn::Exchange { tiles },
+                Taken::Pass => return (None, None),
+            };
+            let e = review_equity(
+                &self.board,
+                &self.pack.lexicon,
+                net,
+                rack,
+                check,
+                bag >= RACK_SIZE,
+            );
+            let review = EquityReview {
+                played: e.played,
+                best: e.best,
+                best_play: e.best_play.map(PlayRecord::from),
+                best_exchange: e.best_exchange.map(|t| t.into_iter().collect()),
+            };
+            return (Some(review), None);
+        }
+        // The bag is empty: what is left can be searched exactly, against the
+        // one opponent still in the game.
+        let others: Vec<usize> = self
+            .active_seats()
+            .into_iter()
+            .filter(|&i| i != me)
+            .collect();
+        let [opponent] = others[..] else {
+            return (None, None);
+        };
+        let opp_rack = &self.players[opponent].letters;
+        if opp_rack.is_empty() || opp_rack.chars().count() > RACK_SIZE {
+            return (None, None);
+        }
+        let play = match taken {
+            Taken::Play {
+                word,
+                row,
+                col,
+                horizontal,
+                ..
+            } => Some((word, row, col, horizontal)),
+            Taken::Pass => None,
+            Taken::Exchange(_) => return (None, None),
+        };
+        let lexicon = &self.pack.lexicon;
+        let nodes = INTERACTIVE_ENDGAME_NODES;
+        let (Ok(best), Ok((played, exact))) = (
+            self.board.solve_endgame(lexicon, rack, opp_rack, nodes),
+            self.board
+                .endgame_turn_value(lexicon, rack, opp_rack, play, nodes),
+        ) else {
+            return (None, None);
+        };
+        let review = EndgameReview {
+            played,
+            // A capped search can miss the turn taken; it is then the best known.
+            best: best.differential.max(played),
+            best_play: best.best.map(PlayRecord::from),
+            exact: exact && best.exact,
+        };
+        (None, Some(review))
+    }
+
     // ── Actions ──────────────────────────────────────────────────────────────
 
     /// The current (human) player types a word (`POST /board/human-move`).
@@ -901,9 +1103,9 @@ impl GameSession {
         let word = word.to_lowercase();
         self.validate_typed_word(&word, row, col, horizontal)?;
 
-        let competitive = self.mode == GameMode::Competitive;
+        let is_match = self.is_match();
         let pre_letters = self.players[self.current].letters.clone();
-        let used = if competitive {
+        let used = if is_match {
             Some(
                 self.tiles_for_play(&pre_letters, &word, row, col, horizontal)
                     .ok_or(GameError::MissingTiles)?,
@@ -913,7 +1115,7 @@ impl GameSession {
         };
         // The real rack in competitive play (so blanks score 0); the word
         // itself in the sandbox, where every tile scores at face value.
-        let letters_for_scoring = if competitive {
+        let letters_for_scoring = if is_match {
             pre_letters.as_str()
         } else {
             word.as_str()
@@ -923,12 +1125,25 @@ impl GameSession {
                 .calculate_word_points(&word, row, col, horizontal, letters_for_scoring)?;
 
         // Rated against the position before the move.
-        let review = (competitive && !pre_letters.is_empty())
+        let review = (is_match && !pre_letters.is_empty())
             .then(|| review_move(&self.board, &self.pack.lexicon, &pre_letters, score));
         self.last_move_rating = review.as_ref().map(|r| r.0);
+        let (equity, endgame) = match &used {
+            Some(used) => self.review_turn(Taken::Play {
+                word: &word,
+                row,
+                col,
+                horizontal,
+                score,
+                used,
+            }),
+            None => (None, None),
+        };
         let turn = TurnRecord {
             rating: self.last_move_rating,
             best: review.and_then(|r| r.1).map(PlayRecord::from),
+            equity,
+            endgame,
             ..TurnRecord::play(
                 self.current,
                 &pre_letters,
@@ -965,11 +1180,14 @@ impl GameSession {
         if self.game_over {
             return Err(GameError::GameOver);
         }
+        let (_, endgame) = self.review_turn(Taken::Pass);
         self.push_undo();
         let rack = &self.players[self.current].letters;
-        self.turns
-            .push(TurnRecord::new(self.current, TurnAction::Pass, rack));
-        if self.mode == GameMode::Competitive {
+        self.turns.push(TurnRecord {
+            endgame,
+            ..TurnRecord::new(self.current, TurnAction::Pass, rack)
+        });
+        if self.is_match() {
             self.streaks.record(TurnResult::NoAction);
             self.check_game_over(self.current);
         }
@@ -991,7 +1209,7 @@ impl GameSession {
         if self.game_over {
             return Err(GameError::GameOver);
         }
-        if self.mode != GameMode::Competitive || self.bag.is_none() {
+        if !self.is_match() || self.bag.is_none() {
             return Err(GameError::WrongMode);
         }
         let letters: Vec<char> = letters.to_lowercase().chars().collect();
@@ -1013,9 +1231,11 @@ impl GameSession {
             }
         }
 
+        let (equity, _) = self.review_turn(Taken::Exchange(&letters));
         self.push_undo();
         self.turns.push(TurnRecord {
             tiles: letters.len(),
+            equity,
             ..TurnRecord::new(
                 self.current,
                 TurnAction::Exchange,
@@ -1037,7 +1257,9 @@ impl GameSession {
 
     /// The current human resigns ("Poddaj się", `POST /board/pass`): a
     /// deliberate stop, unlike `skip`. Once every human has resigned the game
-    /// ends, with no end-of-game rack adjustment.
+    /// ends, with no end-of-game rack adjustment. In a multiplayer game the
+    /// seat leaves instead, its turns skipped, and the game ends once at most
+    /// one seat is left.
     pub fn resign(&mut self) -> Result<(), GameError> {
         if self.game_over {
             return Err(GameError::GameOver);
@@ -1052,7 +1274,7 @@ impl GameSession {
         let all_humans_resigned = (0..self.players.len())
             .filter(|&i| !self.players[i].is_computer)
             .all(|i| self.resigned.contains(&i));
-        if all_humans_resigned {
+        if all_humans_resigned || self.active_seats().len() <= 1 {
             self.game_over = true;
         } else {
             self.advance_turn();
@@ -1079,6 +1301,19 @@ impl GameSession {
         self.tile_owners = entry.tile_owners;
         self.streaks = entry.streaks;
         self.turns.truncate(entry.turns);
+        if self.mode == GameMode::Multiplayer {
+            // A resignation taken back returns the seat to the game; the log
+            // still holds the ones that stand. (The other modes keep the web's
+            // bookkeeping, which never takes one back.)
+            self.resigned = self
+                .turns
+                .iter()
+                .filter(|t| t.action == TurnAction::Resign)
+                .map(|t| t.player)
+                .collect();
+            self.resigned.sort_unstable();
+            self.resigned.dedup();
+        }
         self.game_over = false;
         Ok(())
     }
@@ -1125,9 +1360,10 @@ impl GameSession {
         self.suggest(&self.players[self.current].letters, 10, sort)
     }
 
-    /// Competitive: twenty hints for the human's rack (`GET /board/hints`).
+    /// Competitive: twenty hints for the human's rack (`GET /board/hints`) --
+    /// in a multiplayer game, the rack of the human whose turn it is.
     pub fn hints(&self, sort: SortMode) -> Result<Vec<Suggestion>, GameError> {
-        if self.mode != GameMode::Competitive {
+        if !self.is_match() {
             return Err(GameError::WrongMode);
         }
         self.check_sort(sort)?;
@@ -1220,7 +1456,7 @@ impl GameSession {
             Err(_) => return Preview::InvalidPlacement,
             Ok(()) => {}
         }
-        let letters = if self.mode == GameMode::Competitive {
+        let letters = if self.is_match() {
             self.players[self.current].letters.clone()
         } else {
             word.clone()

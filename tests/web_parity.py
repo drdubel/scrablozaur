@@ -39,7 +39,7 @@ for _p in (
         sys.path.insert(0, str(_p))
 
 FIXTURE = _ROOT / "tests" / "fixtures" / "web_parity.json"
-FIXTURE_VERSION = 1
+FIXTURE_VERSION = 2
 # The interactive endgame budget both sides use (web/game.py's WEB_ENDGAME_NODES).
 ENDGAME_NODES = 50_000
 _MASK = (1 << 64) - 1
@@ -108,6 +108,33 @@ def _board_rows(board) -> list[str]:
     return [row.replace(" ", "") for row in str(board).strip().split("\n")]
 
 
+def _play(p: dict | None) -> list | None:
+    return None if p is None else [p["word"], p["score"], p["row"], p["col"], p["horizontal"], p["used"]]
+
+
+def _turn(t: dict) -> list:
+    """A logged turn, its reviews included -- equity as the web's own net
+    values it, which the port's agrees with to float noise."""
+    equity, endgame = t["equity"], t["endgame"]
+    return [
+        t["player"],
+        t["action"],
+        t["word"],
+        t["score"],
+        t["row"],
+        t["col"],
+        t["horizontal"],
+        t["tiles"],
+        t["rack"],
+        t["rating"],
+        _play(t["best"]),
+        None
+        if equity is None
+        else [equity["played"], equity["best"], _play(equity["best_play"]), equity["best_exchange"]],
+        None if endgame is None else [endgame["played"], endgame["best"], _play(endgame["best_play"]), endgame["exact"]],
+    ]
+
+
 def _state(body: dict) -> dict:
     """The fields of a `BoardStateResponse` the port must reproduce."""
     last = body["last_computer_move"]
@@ -135,6 +162,8 @@ def _state(body: dict) -> dict:
         "game_over": body["game_over"],
         "winner": body["winner_name"],
         "rating": body["last_move_rating"],
+        "turns": [_turn(t) for t in body["turns"]],
+        "unseen": [[t["letter"], t["count"]] for t in body["unseen"]],
     }
 
 

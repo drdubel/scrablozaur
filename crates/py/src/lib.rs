@@ -468,6 +468,27 @@ impl BoardPy {
         ))
     }
 
+    /// What one turn is worth with the bag empty, on `solve_endgame`'s scale:
+    /// `play` as `(word, row, col, horizontal)`, or `None` for a pass.
+    /// Returns `(value, exact)`.
+    #[pyo3(signature = (dawg, my_rack, opp_rack, play, max_nodes=300000))]
+    fn endgame_turn_value(
+        &self,
+        py: Python<'_>,
+        dawg: &DawgPy,
+        my_rack: &str,
+        opp_rack: &str,
+        play: Option<(String, usize, usize, bool)>,
+        max_nodes: usize,
+    ) -> PyResult<(i32, bool)> {
+        py.detach(|| {
+            let play = play.as_ref().map(|(w, r, c, h)| (w.as_str(), *r, *c, *h));
+            self.inner
+                .endgame_turn_value(&dawg.inner, my_rack, opp_rack, play, max_nodes)
+        })
+        .map_err(to_py)
+    }
+
     /// Counts of the tiles neither on the board nor in `rack` -- the bag plus
     /// every opponent's rack -- indexed by `LeaveNet.alphabet()`.
     fn unseen_tile_counts(&self, rack: &str) -> Vec<u8> {

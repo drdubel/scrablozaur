@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 from starlette.concurrency import run_in_threadpool
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -11,7 +13,7 @@ from languages import load as load_spec
 from web.game import GameMode, GameSession, Player, SessionStore, computer_auto_play
 from web.models import (BoardStateResponse, DifficultyLevelInfo, DifficultyLevelsResponse,
                         LanguageInfo, LanguagesResponse, LastComputerMove, NewGameRequest,
-                        PlayerState)
+                        PlayerState, TileCount, TurnModel)
 
 router = APIRouter(prefix="/game")
 
@@ -60,7 +62,28 @@ def _state_response(session: GameSession) -> BoardStateResponse:
         game_over=session.game_over,
         winner_name=_winner_name(session) if session.game_over else None,
         last_move_rating=session.last_move_rating,
+        turns=[_turn(session, t) for t in session.turns],
+        unseen=_unseen(session),
     )
+
+
+def _turn(session: GameSession, turn) -> TurnModel:
+    model = TurnModel.model_validate(dataclasses.asdict(turn))
+    # A rack before a play, with the play, gives away the tiles the computer kept.
+    competitive = session.game_mode == GameMode.COMPETITIVE
+    if competitive and not session.game_over and session.players[turn.player].is_computer:
+        model.rack = ""
+    return model
+
+
+def _unseen(session: GameSession) -> list[TileCount]:
+    """The human's unseen tiles in a competitive game -- the bag plus the
+    computer's rack -- counted off the board and the human's own rack."""
+    if session.game_mode != GameMode.COMPETITIVE:
+        return []
+    human = next(p for p in session.players if not p.is_computer)
+    counts = session.board.unseen_tile_counts(human.letters)
+    return [TileCount(letter=t, count=n) for t, n in zip(session.board.lang.eval_alphabet(), counts)]
 
 
 def _winner_name(session: GameSession) -> str | None:

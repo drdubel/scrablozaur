@@ -12,9 +12,9 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use scrablozaur_core::game::{
-    all_levels, run_benchmark, scan_suggestions, BenchmarkControl, BenchmarkResult, ComputerMove,
-    EngineMode, GameError, GameMode, GameSession, GameState, LanguagePack, PlayRecord,
-    PlayerConfig, Preview, SortMode, Suggestion, TurnAction, TurnRecord, Winner,
+    all_levels, check_play, run_benchmark, scan_suggestions, BenchmarkControl, BenchmarkResult,
+    ComputerMove, EngineMode, GameError, GameMode, GameSession, GameState, LanguagePack,
+    PlayRecord, PlayerConfig, Preview, SortMode, Suggestion, TurnAction, TurnRecord, Winner,
 };
 use scrablozaur_core::scan::decode::{decode, CellReading, DecodeOptions, Decoded, ScanBoard};
 use scrablozaur_core::scan::frame::read_frame;
@@ -310,6 +310,51 @@ impl LanguagePackHandle {
 
     pub fn is_word(&self, word: String) -> bool {
         self.pack.lexicon.contains(&word.to_lowercase())
+    }
+
+    /// Every word matching `pattern` that `letters` can complete: a letter is
+    /// itself, `-` one letter from `letters`, `*` any number of them; `?` in
+    /// `letters` is a blank. See `Lexicon::search` in the engine.
+    pub fn search(&self, pattern: String, letters: String) -> Vec<String> {
+        self.pack
+            .lexicon
+            .search(&pattern.to_lowercase(), &letters.to_lowercase())
+    }
+
+    /// Try `word` at `row`, `col` for `rack` on a board -- `letters` and
+    /// `blanks` as `decode_scan`'s prior. See `check_play` in the engine.
+    #[allow(clippy::too_many_arguments)]
+    pub fn check_play(
+        &self,
+        letters: Vec<String>,
+        blanks: Vec<bool>,
+        rack: String,
+        word: String,
+        row: u32,
+        col: u32,
+        horizontal: bool,
+    ) -> Result<PlayCheck, MoveError> {
+        let board = scan_board(letters, Some(blanks)).map_err(|e| MoveError::Engine {
+            detail: e.to_string(),
+        })?;
+        let c = check_play(
+            &self.pack,
+            &board.letters,
+            &board.blanks,
+            &rack,
+            &word,
+            row as usize,
+            col as usize,
+            horizontal,
+        )?;
+        Ok(PlayCheck {
+            score: c.score,
+            best_score: c.best_score,
+            better: c.better as u32,
+            plays: c.plays as u32,
+            equity: c.equity.as_ref().map(|e| e.played),
+            best_equity: c.equity.as_ref().map(|e| e.best),
+        })
     }
 
     /// The most probable legal board under `readings`, 225 squares row-major,
@@ -687,6 +732,29 @@ pub struct SquareReading {
     pub p_blank: f32,
 }
 
+/// A play tried on a board of the caller's: see `check_play` in the engine.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct PlayCheck {
+    /// `None` when it is not one of the rack's legal plays there.
+    pub score: Option<u32>,
+    /// The best any legal play scores there...
+    pub best_score: u32,
+    /// ...how many score more than this one, out of how many.
+    pub better: u32,
+    pub plays: u32,
+    /// Its equity and the best the static player weighs, with a leave net.
+    pub equity: Option<f64>,
+    pub best_equity: Option<f64>,
+}
+
+/// Elo of a computer at `level` and `strength` in `language`, measured by
+/// pitting the bots against each other; `None` where no ladder was measured.
+/// See `game::ladder` in the engine.
+#[uniffi::export]
+pub fn bot_rating(language: String, has_leave_net: bool, level: u8, strength: u8) -> Option<f64> {
+    scrablozaur_core::game::bot_rating(&language, has_leave_net, level, strength)
+}
+
 /// The board the decoder settled on, 225 squares row-major.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct DecodedBoard {
@@ -715,6 +783,8 @@ pub enum Mode {
     Sandbox,
     SandboxAuto,
     Competitive,
+    /// 2-4 seats at one device: see `GameMode::Multiplayer`.
+    Multiplayer,
 }
 
 impl From<Mode> for GameMode {
@@ -723,6 +793,7 @@ impl From<Mode> for GameMode {
             Mode::Sandbox => GameMode::Sandbox,
             Mode::SandboxAuto => GameMode::SandboxAuto,
             Mode::Competitive => GameMode::Competitive,
+            Mode::Multiplayer => GameMode::Multiplayer,
         }
     }
 }
@@ -733,6 +804,7 @@ impl From<GameMode> for Mode {
             GameMode::Sandbox => Mode::Sandbox,
             GameMode::SandboxAuto => Mode::SandboxAuto,
             GameMode::Competitive => Mode::Competitive,
+            GameMode::Multiplayer => Mode::Multiplayer,
         }
     }
 }
@@ -867,6 +939,33 @@ pub struct Turn {
     pub rating: Option<u8>,
     /// The highest-scoring play the rack had, for a rated play.
     pub best: Option<BestPlay>,
+    /// A human's play or exchange counting the tiles it kept.
+    pub equity: Option<EquityReview>,
+    /// A human's play or pass with the bag empty.
+    pub endgame: Option<EndgameReview>,
+}
+
+/// A turn by equity -- its score plus the leave net's value of the tiles it
+/// kept: see `EquityReview` in the engine.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct EquityReview {
+    pub played: f64,
+    /// Never below `played`.
+    pub best: f64,
+    /// The better turn when there was one: a play, or the tiles to exchange.
+    pub best_play: Option<BestPlay>,
+    pub best_exchange: Option<String>,
+}
+
+/// A turn with the bag empty, as the endgame search sees it: final margins,
+/// rack adjustment included. See `EndgameReview` in the engine.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct EndgameReview {
+    pub played: i32,
+    pub best: i32,
+    /// `None` when passing was best.
+    pub best_play: Option<BestPlay>,
+    pub exact: bool,
 }
 
 impl From<TurnRecord> for Turn {
@@ -888,8 +987,27 @@ impl From<TurnRecord> for Turn {
             rack: t.rack,
             rating: t.rating,
             best: t.best.map(Into::into),
+            equity: t.equity.map(|e| EquityReview {
+                played: e.played,
+                best: e.best,
+                best_play: e.best_play.map(Into::into),
+                best_exchange: e.best_exchange,
+            }),
+            endgame: t.endgame.map(|e| EndgameReview {
+                played: e.played,
+                best: e.best,
+                best_play: e.best_play.map(Into::into),
+                exact: e.exact,
+            }),
         }
     }
+}
+
+/// How many of one tile there are: see `GameView::unseen`.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct TileCount {
+    pub letter: String,
+    pub count: u32,
 }
 
 /// Everything a screen needs to draw a game.
@@ -919,6 +1037,10 @@ pub struct GameView {
     pub computer_to_move: bool,
     /// Every turn so far, oldest first.
     pub turns: Vec<Turn>,
+    /// The tiles the player on screen has not seen -- the bag and the other
+    /// racks -- in the leave net's tile order, the blank first; empty when no
+    /// rack is on screen. See `GameState::unseen`.
+    pub unseen: Vec<TileCount>,
 }
 
 fn flatten<T: Copy, U>(grid: &[[T; 15]; 15], f: impl Fn(T) -> U) -> Vec<U> {
@@ -964,6 +1086,14 @@ fn game_view(state: GameState, computer_to_move: bool) -> GameView {
         last_move_rating: state.last_move_rating,
         computer_to_move,
         turns: state.turns.into_iter().map(Into::into).collect(),
+        unseen: state
+            .unseen
+            .into_iter()
+            .map(|(letter, count)| TileCount {
+                letter: letter.to_string(),
+                count: count as u32,
+            })
+            .collect(),
     }
 }
 
