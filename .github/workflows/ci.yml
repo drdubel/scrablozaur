@@ -52,7 +52,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v10
+      # setup-uv publishes no major-version tag: pin the release.
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       # The lock pins torch's CUDA build on Linux: large, but what a Linux
