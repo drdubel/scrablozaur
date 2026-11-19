@@ -6,6 +6,7 @@ from starlette.concurrency import run_in_threadpool
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from web import leaderboard
 from web.deps import require_session, resolve_language
 from web.difficulty import DEFAULT_LEVEL, MIN_LEVEL, all_levels, max_level_for
 from web.engine import DEFAULT_LANGUAGE, Dawg, available
@@ -19,6 +20,7 @@ router = APIRouter(prefix="/game")
 
 
 def _state_response(session: GameSession) -> BoardStateResponse:
+    _record_if_finished(session)
     return BoardStateResponse(
         language=session.language,
         board=session.board_grid(),
@@ -65,6 +67,20 @@ def _state_response(session: GameSession) -> BoardStateResponse:
         turns=[_turn(session, t) for t in session.turns],
         unseen=_unseen(session),
     )
+
+
+def _record_if_finished(session: GameSession) -> None:
+    """Put a finished competitive game on the leaderboard, when this server
+    keeps one. Every action answers with `_state_response`, so this is where a
+    game is seen to end; one reopened by undo and finished differently
+    replaces its earlier ending."""
+    if not (session.game_over and session.game_mode == GameMode.COMPETITIVE and leaderboard.enabled()):
+        return
+    record = leaderboard.record_of(session)
+    unfinished = {k: v for k, v in record.items() if k != "finished"}
+    if unfinished != session.recorded:
+        leaderboard.add("web", [record])
+        session.recorded = unfinished
 
 
 def _turn(session: GameSession, turn) -> TurnModel:
@@ -218,6 +234,7 @@ async def list_languages() -> LanguagesResponse:
                 flag=spec.flag,
                 alphabet=spec.alphabet,
                 blank=spec.blank,
+                vowels=spec.vowels,
                 letter_values=spec.points,
                 tile_counts=spec.counts,
                 total_tiles=spec.total_tiles,

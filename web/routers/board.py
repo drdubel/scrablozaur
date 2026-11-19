@@ -280,6 +280,7 @@ async def undo_move(request: Request) -> BoardStateResponse:
     session = _require_session(request)
     if not session.pop_undo():
         raise HTTPException(status_code=400, detail="Brak ruchów do cofnięcia.")
+    session.undos += 1
     return _state_response(session)
 
 
@@ -327,6 +328,7 @@ async def get_hints(
         get_suggestions_for_letters, session, dawg, letters, 20, _check_sort(sort, session.language)
     )
     suggestions = [Suggestion(**s) for s in raw]
+    session.hint_turns.add(session.move_number)
     return SuggestionsResponse(suggestions=suggestions, letters=letters)
 
 

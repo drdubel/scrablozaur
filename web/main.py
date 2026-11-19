@@ -10,6 +10,7 @@ from web.game import shutdown_benchmark_pool
 from web.routers import benchmark as benchmark_router
 from web.routers import board as board_router
 from web.routers import game as game_router
+from web.routers import leaderboard as leaderboard_router
 from web.routers import scan as scan_router
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -30,6 +31,7 @@ app.include_router(game_router.router, prefix="/api")
 app.include_router(board_router.router, prefix="/api")
 app.include_router(scan_router.router, prefix="/api")
 app.include_router(benchmark_router.router, prefix="/api")
+app.include_router(leaderboard_router.router, prefix="/api")
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

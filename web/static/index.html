@@ -100,9 +100,35 @@
     </div>
   </dialog>
 
+  <!-- ── Ranking: the shared leaderboard, where the server keeps one (js/ranking.js) -->
+  <dialog id="dialog-ranking" class="dialog-ranking" aria-labelledby="ranking-title">
+    <div class="ranking-header">
+      <h2 id="ranking-title">Ranking</h2>
+      <button id="btn-ranking-close" class="btn btn-ghost btn-sm" aria-label="Zamknij">✕</button>
+    </div>
+    <select id="ranking-language" class="setup-select" aria-label="Język" hidden></select>
+    <p id="ranking-status" class="setup-note" hidden></p>
+    <div class="review-scroll">
+      <table id="ranking-players" class="review-table ranking-table" hidden>
+        <thead>
+          <tr>
+            <th></th><th>Gracz</th><th>Gry</th><th title="wygrane–przegrane–remisy">W–P</th>
+            <th>Wygrane</th><th>Średnio</th><th>Najlepszy</th><th title="średnia ocena ruchów">Ocena</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="ranking-top-wrap" hidden>
+      <h3 class="rating-title">Najlepsze wyniki</h3>
+      <ol id="ranking-top" class="ranking-top"></ol>
+    </div>
+  </dialog>
+
   <header>
     <h1>Scrablozaur</h1>
     <div class="header-actions">
+      <button id="btn-ranking" class="btn btn-ghost" hidden>Ranking</button>
       <button id="btn-undo" class="btn btn-ghost" disabled>Cofnij</button>
       <button id="btn-scan-board" class="btn btn-secondary">Skanuj</button>
       <button id="btn-new-game" class="btn btn-secondary">Nowa gra</button>
@@ -147,6 +173,14 @@
             <p class="rack-label">Twoje litery</p>
             <div id="tile-rack" class="tile-rack"></div>
           </div>
+
+          <!-- Competitive: the tiles not seen yet -- the bag and the computer's
+               rack -- counted off the board and the rack, as a player tracking
+               tiles would (state.unseen) -->
+          <details id="unseen-panel" class="unseen-panel" hidden>
+            <summary id="unseen-summary"></summary>
+            <div id="unseen-tiles" class="unseen-tiles"></div>
+          </details>
 
           <div id="computer-move-info" class="computer-move-info" hidden></div>
 
@@ -437,6 +471,7 @@
   <script src="/static/js/game.js"></script>
   <script src="/static/js/scan.js"></script>
   <script src="/static/js/benchmark.js"></script>
+  <script src="/static/js/ranking.js"></script>
   <script src="/static/js/main.js"></script>
 </body>
 </html>

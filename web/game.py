@@ -216,6 +216,15 @@ class GameSession:
     last_move_rating: int | None = None
     #: Every turn so far, oldest first.
     turns: list[TurnRecord] = field(default_factory=list)
+    #: When the game was dealt, the move numbers at which the hints were opened,
+    #: and how many moves were taken back: a record of the game says how much
+    #: help it had, as the app's does.
+    started_at: float = field(default_factory=time.time)
+    hint_turns: set[int] = field(default_factory=set)
+    undos: int = 0
+    #: The leaderboard's copy of this game once it ended, less its finishing
+    #: time: the same ending is not recorded twice.
+    recorded: dict | None = None
 
     @property
     def current_player(self) -> Player:

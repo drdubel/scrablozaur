@@ -127,6 +127,9 @@ class LanguageInfo(BaseModel):
     flag: str
     alphabet: str
     blank: str
+    #: Which letters are vowels -- the rest of the alphabet being consonants --
+    #: for the balance a player tracking the unseen tiles watches.
+    vowels: str
     letter_values: dict[str, int]
     tile_counts: dict[str, int]
     total_tiles: int
