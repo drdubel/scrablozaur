@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const controller = new GameController(api, boardEl);
   new ScanController(api, controller);
   new BenchmarkController(api, controller);
+  controller.attachRanking(new RankingController(api));
 
   // Fetch difficulty descriptions for bot labels before the first render. A failed load is not fatal (see js/difficulty.js), hence no catch
   // beyond the one inside load().

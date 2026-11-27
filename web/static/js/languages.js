@@ -40,7 +40,7 @@ const Languages = {
   /** @param {string} code */
   info(code) {
     return this._byCode.get(code) ?? {
-      code, name: code, flag: '', alphabet: '', blank: '?',
+      code, name: code, flag: '', alphabet: '', blank: '?', vowels: '',
       letter_values: {}, tile_counts: {}, total_tiles: 0,
       max_level: 10, has_ocr: false, ocr_experimental: false, has_leave_net: false,
     };

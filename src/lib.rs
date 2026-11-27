@@ -1,11 +1,21 @@
-use pyo3::exceptions::PyIOError;
-use pyo3::prelude::*;
+//! The Scrablozaur engine: language definitions, the DAWG/GADDAG lexicons,
+//! board state and scoring, move generation, simulation and endgame search,
+//! plus the diagnostic CLI.
+//!
+//! Plain Rust with no binding layer. The Python module is a thin wrapper in
+//! `crates/py`, the Android one in `crates/mobile`; both map `EngineError`
+//! onto their own error types.
+
+pub mod game;
+pub mod scan;
+
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // Per-quadrant bonus lookup. Index by (min(r, 14-r), min(c, 14-c)).
@@ -116,7 +126,39 @@ fn in_bounds(row: usize, col: usize) -> bool {
 
 /// A candidate move: the word, its score, its (row, col, horizontal)
 /// placement, and the letters drawn from the player's hand to play it.
-type BestWord = (String, u32, (usize, usize, bool), Vec<char>);
+pub type BestWord = (String, u32, (usize, usize, bool), Vec<char>);
+
+/// Why the engine refused a call. Each binding maps the three variants onto
+/// its own error type -- the Python module raises `ValueError`, `OSError` and
+/// `RuntimeError` respectively, exactly what it raised when the bindings lived
+/// in this file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineError {
+    /// The arguments describe something impossible: a malformed grid, a word
+    /// off the board, a dictionary in another language.
+    Value(String),
+    /// A file could not be read, or is not the kind of file it claims to be.
+    Io(String),
+    /// A valid call that arrives too late, e.g. resizing a thread pool that is
+    /// already running.
+    State(String),
+}
+
+impl fmt::Display for EngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EngineError::Value(m) | EngineError::Io(m) | EngineError::State(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for EngineError {}
+
+pub type EngineResult<T> = Result<T, EngineError>;
+
+fn value_error(message: impl Into<String>) -> EngineError {
+    EngineError::Value(message.into())
+}
 
 /// Count of each non-blank letter in a rack. Used to allocate a word's
 /// letters to real tiles before falling back to blanks, so a letter that
@@ -128,6 +170,13 @@ fn real_letter_counts(letters: &str) -> HashMap<char, u32> {
         *freq.entry(c).or_insert(0) += 1;
     }
     freq
+}
+
+/// `(letter_multiplier, word_multiplier)` of the square at (row, col) -- the
+/// board's premium layout, for anything that draws it. Read from the same
+/// table scoring uses, so a board on screen cannot disagree with the score.
+pub fn square_bonus(row: usize, col: usize) -> (u8, u8) {
+    quadrant_bonus(row.min(BOARD_SIZE - 1), col.min(BOARD_SIZE - 1))
 }
 
 /// Letter- and word-multiplier for the board square at (row, col), read via
@@ -267,8 +316,9 @@ impl Language {
         }
 
         for (&c, &value) in points {
-            let value = u8::try_from(value)
-                .map_err(|_| format!("language '{code}': '{c}' scores {value}, too much for a tile"))?;
+            let value = u8::try_from(value).map_err(|_| {
+                format!("language '{code}': '{c}' scores {value}, too much for a tile")
+            })?;
             // Both cases carry the value: the engine plays in lowercase, but
             // callers score user input that may arrive either way.
             for variant in [c, c.to_uppercase().next().unwrap_or(c)] {
@@ -433,9 +483,66 @@ impl Language {
         let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let file: LanguageFile =
             serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        Language::from_definition(&file)
+    }
+
+    fn from_definition(file: &LanguageFile) -> Result<Self, String> {
         let counts = file.tiles.iter().map(|(&c, t)| (c, t.count)).collect();
         let points = file.tiles.iter().map(|(&c, t)| (c, t.points)).collect();
         Language::new(&file.code, &file.alphabet, file.blank, &counts, &points)
+    }
+
+    /// Validate and intern a definition built from plain values. `counts` and
+    /// `points` must cover every alphabet letter and the blank.
+    pub fn define(
+        code: &str,
+        alphabet: &str,
+        blank: char,
+        counts: &HashMap<char, u32>,
+        points: &HashMap<char, u32>,
+    ) -> EngineResult<&'static Language> {
+        Language::new(code, alphabet, blank, counts, points)
+            .map(intern_language)
+            .map_err(EngineError::Value)
+    }
+
+    /// Validate and intern a definition from the text of a
+    /// `languages/<code>.json` file -- for callers that ship the file as data
+    /// rather than reading it off a path, like the Android app's assets.
+    pub fn from_json(text: &str) -> EngineResult<&'static Language> {
+        let file: LanguageFile =
+            serde_json::from_str(text).map_err(|e| value_error(e.to_string()))?;
+        Language::from_definition(&file)
+            .map(intern_language)
+            .map_err(EngineError::Value)
+    }
+
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    /// The letters, in collation order.
+    pub fn alphabet(&self) -> String {
+        self.letters.iter().collect()
+    }
+
+    pub fn blank(&self) -> char {
+        self.blank
+    }
+
+    /// The full tile distribution, in the order a fresh bag holds it.
+    pub fn bag(&self) -> &[char] {
+        &self.bag
+    }
+
+    /// Tile symbols in the leave-value net's feature order.
+    pub fn eval_letters(&self) -> &[char] {
+        &self.eval_letters
+    }
+
+    /// Face value of a single tile. The blank scores 0.
+    pub fn letter_points(&self, letter: char) -> u32 {
+        self.points(letter)
     }
 }
 
@@ -477,7 +584,9 @@ fn find_language_file(code: &str) -> Result<std::path::PathBuf, String> {
 
 /// Load a language by code, for the CLI.
 fn load_language(code: &str) -> Result<&'static Language, String> {
-    Ok(intern_language(Language::from_file(&find_language_file(code)?)?))
+    Ok(intern_language(Language::from_file(&find_language_file(
+        code,
+    )?)?))
 }
 
 // ---------------------------------------------------------------------------
@@ -607,7 +716,11 @@ impl Dawg {
             let name = |k: u8| if k == KIND_GADDAG { "GADDAG" } else { "DAWG" };
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("'{path}' is a {}, expected a {}", name(dawg.kind), name(want)),
+                format!(
+                    "'{path}' is a {}, expected a {}",
+                    name(dawg.kind),
+                    name(want)
+                ),
             ));
         }
         Ok(dawg)
@@ -677,7 +790,11 @@ impl Dawg {
                 let cid = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
                 pos += 8;
                 let ch = char::from_u32(cp).unwrap();
-                children.push(Child { ch, bit: lang.letter_bit(ch), id: cid });
+                children.push(Child {
+                    ch,
+                    bit: lang.letter_bit(ch),
+                    id: cid,
+                });
             }
             // Pack this node's children in symbol-index order (any non-alphabet,
             // non-SEP edge sorts after all known symbols) so the child bitmap and
@@ -941,90 +1058,21 @@ impl Dawg {
 }
 
 // ---------------------------------------------------------------------------
-// Python-exposed types
+// Lexicon: the dictionary pair every caller hands the engine
 // ---------------------------------------------------------------------------
 
-/// A language definition, built from the values in `languages/<code>.json`.
-/// Every `Board` and `Dawg` is bound to one, and pairing a board with a
-/// dictionary in another language is rejected rather than silently mis-scored.
-// `skip_from_py_object` for the same reason `Board` uses it: `Clone` is here so
-// getters can hand one back by value, not so pyo3 extracts one by value at the
-// FFI boundary. Every parameter takes `&LanguagePy`.
-#[pyclass(name = "Language", frozen, skip_from_py_object)]
-#[derive(Clone)]
-struct LanguagePy {
-    inner: &'static Language,
-}
-
-#[pymethods]
-impl LanguagePy {
-    /// `counts` and `points` must each have an entry for every letter of
-    /// `alphabet` plus the blank. The bag is built in `alphabet` order with the
-    /// blanks last, so `alphabet` fixes both the cross-check bit indexes and
-    /// the shuffle order a seeded board replays.
-    #[new]
-    #[pyo3(signature = (code, alphabet, counts, points, blank='?'))]
-    fn new(
-        code: &str,
-        alphabet: &str,
-        counts: HashMap<char, u32>,
-        points: HashMap<char, u32>,
-        blank: char,
-    ) -> PyResult<Self> {
-        let lang = Language::new(code, alphabet, blank, &counts, &points)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
-        Ok(Self {
-            inner: intern_language(lang),
-        })
-    }
-
-    #[getter]
-    fn code(&self) -> &str {
-        &self.inner.code
-    }
-
-    #[getter]
-    fn alphabet(&self) -> String {
-        self.inner.letters.iter().collect()
-    }
-
-    #[getter]
-    fn blank(&self) -> char {
-        self.inner.blank
-    }
-
-    /// The full tile distribution, in the order a fresh bag holds it.
-    fn fresh_tile_bag(&self) -> Vec<char> {
-        self.inner.bag.clone()
-    }
-
-    /// Tile symbols in the leave-value net's feature order.
-    fn eval_alphabet(&self) -> Vec<char> {
-        self.inner.eval_letters.clone()
-    }
-
-    fn letter_points(&self, letter: char) -> u32 {
-        self.inner.points(letter)
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "Language('{}', {} letters, {} tiles)",
-            self.inner.code,
-            self.inner.letters.len(),
-            self.inner.bag.len()
-        )
-    }
-}
-
-#[pyclass(name = "Dawg")]
-struct DawgPy {
-    inner: Dawg,
-    /// The GADDAG for the same lexicon, driving `get_best_words`. Loaded from
-    /// `gaddag.bin` alongside the DAWG (auto-located next to it, or given
-    /// explicitly). `None` if no GADDAG file is present, in which case move
-    /// generation falls back to the legacy DAWG pattern search.
+/// A dictionary as the rest of the engine uses it: the compact DAWG that
+/// answers "is this a word", plus the GADDAG for the same lexicon that drives
+/// move generation. Without a GADDAG, `Board::get_best_words` falls back to the
+/// legacy pattern search, and the calls that must enumerate every play refuse.
+///
+/// This is what the Python module calls `Dawg`.
+pub struct Lexicon {
+    dawg: Dawg,
     gaddag: Option<Dawg>,
+    /// Per DAWG node, bit `k` set when a word ends exactly `k` letters below
+    /// it. Only the scan decoder needs it, so it is built on first use.
+    word_lengths: OnceLock<Vec<u16>>,
 }
 
 /// If `path` is `.../dawg.bin`, the sibling `.../gaddag.bin`; otherwise `None`.
@@ -1038,21 +1086,20 @@ fn sibling_gaddag_path(path: &str) -> Option<String> {
     Some(p.with_file_name(sibling).to_str()?.to_string())
 }
 
-#[pymethods]
-impl DawgPy {
+impl Lexicon {
     /// Load a `lang` DAWG from `path`. If `gaddag_path` is omitted, a sibling
     /// `gaddag.bin` (same directory, `dawg`→`gaddag` in the filename) is loaded
     /// when present; move generation uses it automatically. Passing a path that
     /// does not exist is an error; omitting it and finding no sibling simply
     /// leaves the GADDAG absent (legacy generation).
-    #[new]
-    #[pyo3(signature = (lang, path, gaddag_path=None))]
-    fn new(lang: &LanguagePy, path: &str, gaddag_path: Option<&str>) -> PyResult<Self> {
-        let inner = Dawg::load_kind(path, lang.inner, KIND_DAWG)
-            .map_err(|e| PyIOError::new_err(e.to_string()))?;
-        let load_gaddag = |gp: &str| {
-            Dawg::load_kind(gp, lang.inner, KIND_GADDAG).map_err(|e| PyIOError::new_err(e.to_string()))
-        };
+    pub fn open(
+        lang: &'static Language,
+        path: &str,
+        gaddag_path: Option<&str>,
+    ) -> EngineResult<Self> {
+        let io = |e: io::Error| EngineError::Io(e.to_string());
+        let dawg = Dawg::load_kind(path, lang, KIND_DAWG).map_err(io)?;
+        let load_gaddag = |gp: &str| Dawg::load_kind(gp, lang, KIND_GADDAG).map_err(io);
         let gaddag = match gaddag_path {
             Some(gp) => Some(load_gaddag(gp)?),
             None => match sibling_gaddag_path(path) {
@@ -1060,36 +1107,56 @@ impl DawgPy {
                 _ => None,
             },
         };
-        Ok(DawgPy { inner, gaddag })
+        Ok(Lexicon::from_parts(dawg, gaddag))
     }
 
-    /// The language this lexicon was loaded under.
-    #[getter]
-    fn lang(&self) -> LanguagePy {
-        LanguagePy {
-            inner: self.inner.lang,
+    fn from_parts(dawg: Dawg, gaddag: Option<Dawg>) -> Self {
+        Lexicon {
+            dawg,
+            gaddag,
+            word_lengths: OnceLock::new(),
         }
     }
 
-    fn contains(&self, word: &str) -> bool {
-        self.inner.contains(word)
+    /// See the `word_lengths` field.
+    pub(crate) fn word_lengths(&self) -> &[u16] {
+        self.word_lengths
+            .get_or_init(|| scan::decode::word_lengths(&self.dawg))
     }
 
-    fn __contains__(&self, word: &str) -> bool {
-        self.inner.contains(word)
+    /// The language this lexicon was loaded under. Its edge letters were
+    /// decoded into symbol indexes at load, so it is bound to that alphabet.
+    pub fn lang(&self) -> &'static Language {
+        self.dawg.lang
     }
 
-    fn node_count(&self) -> usize {
-        self.inner.node_count()
+    pub fn contains(&self, word: &str) -> bool {
+        self.dawg.contains(word)
+    }
+
+    /// Number of DAWG nodes after minimization.
+    pub fn node_count(&self) -> usize {
+        self.dawg.node_count()
     }
 
     /// Whether a GADDAG is loaded (so `get_best_words` uses the fast path).
-    fn has_gaddag(&self) -> bool {
+    pub fn has_gaddag(&self) -> bool {
         self.gaddag.is_some()
     }
 
-    fn search(&self, pattern: &str, letters: &str) -> Vec<String> {
-        self.inner.search_inner(pattern, letters)
+    /// Every word matching `pattern` that `letters` can complete -- see
+    /// `Dawg::match_pattern` for the syntax.
+    pub fn search(&self, pattern: &str, letters: &str) -> Vec<String> {
+        self.dawg.search_inner(pattern, letters)
+    }
+
+    /// The GADDAG, or the error a caller that needs one should report.
+    fn require_gaddag(&self, what: &str) -> EngineResult<&Dawg> {
+        self.gaddag.as_ref().ok_or_else(|| {
+            value_error(format!(
+                "{what} needs a GADDAG; this Dawg was loaded without one"
+            ))
+        })
     }
 }
 
@@ -1132,13 +1199,11 @@ fn shuffle(tiles: &mut [char], rng: &mut u64) {
     }
 }
 
-// `skip_from_py_object`: deriving Clone would otherwise opt `Board` into
-// by-value extraction from Python. Nothing here wants that -- every Rust-side
-// use borrows -- and a silent clone at an FFI boundary is exactly the kind of
-// thing that makes a search layer mysteriously slow.
-#[pyclass(name = "Board", skip_from_py_object)]
+/// A position: the grid, which squares hold blanks, the bag, and whether the
+/// opening move is still to come. `Clone` is a deep copy -- the only faithful
+/// way to branch a position, and the basis of make/unmake search.
 #[derive(Clone)]
-struct Board {
+pub struct Board {
     /// The language whose alphabet, points and distribution this position is
     /// played under. A pointer copy on clone, which matters: `Board` is cloned
     /// per endgame node and per rollout ply.
@@ -1156,32 +1221,129 @@ struct Board {
     rng: u64,
 }
 
-#[pymethods]
+impl fmt::Display for Board {
+    /// One line per row, cells separated by spaces, `-` for an empty square.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let rows: Vec<String> = self.board.iter().map(row_to_string).collect();
+        f.write_str(&rows.join("\n"))
+    }
+}
+
+/// A board as plain data: what a saved game and an undo entry hold. Unlike
+/// `from_grid` it keeps everything -- blanks, the bag in draw order, the
+/// opening flag and the draw RNG's position -- so a restored board is the same
+/// position, not a reconstruction of one.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BoardSnapshot {
+    /// 15 rows of 15 cells, `-` for an empty square.
+    pub rows: Vec<String>,
+    /// Occupied squares that hold a blank, as `(row, col)`.
+    pub blanks: Vec<(u8, u8)>,
+    /// The bag in draw order (last character drawn first).
+    pub bag: String,
+    pub first: bool,
+    pub rng: u64,
+}
+
 impl Board {
-    #[new]
-    fn new(lang: &LanguagePy) -> PyResult<Self> {
-        Ok(Self::with_seed(lang.inner, time_seed()))
+    pub fn to_snapshot(&self) -> BoardSnapshot {
+        let mut blanks = Vec::new();
+        for r in 0..BOARD_SIZE {
+            for c in 0..BOARD_SIZE {
+                if self.blanks[r][c] {
+                    blanks.push((r as u8, c as u8));
+                }
+            }
+        }
+        BoardSnapshot {
+            rows: self.board.iter().map(|row| row.iter().collect()).collect(),
+            blanks,
+            bag: self.tile_bag.iter().collect(),
+            first: self.first,
+            rng: self.rng,
+        }
+    }
+
+    /// Rebuild a board from `to_snapshot`'s output, refusing anything that is
+    /// not a position in `lang`: a cell outside the alphabet, a blank on an
+    /// empty square, a bag holding a tile the language does not have.
+    pub fn from_snapshot(lang: &'static Language, snap: &BoardSnapshot) -> EngineResult<Board> {
+        if snap.rows.len() != BOARD_SIZE {
+            return Err(value_error("board must have exactly 15 rows"));
+        }
+        let mut board = [['-'; BOARD_SIZE]; BOARD_SIZE];
+        for (r, row) in snap.rows.iter().enumerate() {
+            let cells: Vec<char> = row.chars().collect();
+            if cells.len() != BOARD_SIZE {
+                return Err(value_error("each row must have exactly 15 columns"));
+            }
+            for (c, &ch) in cells.iter().enumerate() {
+                if ch != '-' && lang.letter_index(ch).is_none() {
+                    return Err(value_error(format!(
+                        "'{ch}' is not a letter of '{}'",
+                        lang.code
+                    )));
+                }
+                board[r][c] = ch;
+            }
+        }
+        let mut blanks = [[false; BOARD_SIZE]; BOARD_SIZE];
+        for &(r, c) in &snap.blanks {
+            let (r, c) = (r as usize, c as usize);
+            if !in_bounds(r, c) || board[r][c] == '-' {
+                return Err(value_error("a blank must sit on an occupied square"));
+            }
+            blanks[r][c] = true;
+        }
+        let tile_bag: Vec<char> = snap.bag.chars().collect();
+        if let Some(&bad) = tile_bag
+            .iter()
+            .find(|&&ch| ch != lang.blank && lang.letter_index(ch).is_none())
+        {
+            return Err(value_error(format!(
+                "the bag holds '{bad}', not a tile of '{}'",
+                lang.code
+            )));
+        }
+        Ok(Board {
+            lang,
+            board,
+            blanks,
+            tile_bag,
+            first: snap.first,
+            // A zero state would never move; nudge it like `with_seed` does.
+            rng: if snap.rng == 0 {
+                0x9E3779B97F4A7C15
+            } else {
+                snap.rng
+            },
+        })
+    }
+}
+
+impl Board {
+    /// An empty board with a full `lang` bag, its draw order seeded from the
+    /// clock. Use `Board::seeded` when it must be repeatable.
+    pub fn new(lang: &'static Language) -> Board {
+        Self::with_seed(lang, time_seed())
     }
 
     /// A fresh board whose bag is shuffled deterministically from `seed`. Two
     /// boards built with the same seed deal the same tiles in the same order,
     /// which is what lets the arena play one bag twice with the seats swapped.
-    #[staticmethod]
-    fn seeded(lang: &LanguagePy, seed: u64) -> PyResult<Self> {
-        Ok(Self::with_seed(lang.inner, seed))
+    pub fn seeded(lang: &'static Language, seed: u64) -> Board {
+        Self::with_seed(lang, seed)
     }
 
     /// The language this position is played under.
-    #[getter]
-    fn lang(&self) -> LanguagePy {
-        LanguagePy { inner: self.lang }
+    pub fn lang(&self) -> &'static Language {
+        self.lang
     }
 
-    /// Deep copy, including the bag and the RNG stream position. The only way
-    /// to branch a position without the lossy `str()` -> `from_grid()` round
-    /// trip, and the basis of make/unmake search.
-    fn copy(&self) -> Board {
-        self.clone()
+    /// Whether the opening move -- the one that must cover the centre square
+    /// -- is still to be played. Retired only by an actual placement.
+    pub fn is_first(&self) -> bool {
+        self.first
     }
 
     /// Construct a board pre-filled from a 15x15 grid of single-character
@@ -1194,57 +1356,45 @@ impl Board {
     /// error rather than a silently over-drawn bag -- which is why a played
     /// blank must be declared in `blanks`: it consumes a blank from the bag,
     /// not a copy of the letter it stands in for.
-    #[staticmethod]
-    #[pyo3(signature = (lang, board, blanks=None))]
-    fn from_grid(
-        lang: &LanguagePy,
-        board: Vec<Vec<String>>,
-        blanks: Option<Vec<Vec<bool>>>,
-    ) -> PyResult<Self> {
+    pub fn from_grid<S: AsRef<str>>(
+        lang: &'static Language,
+        board: &[Vec<S>],
+        blanks: Option<&[Vec<bool>]>,
+    ) -> EngineResult<Board> {
         if board.len() != BOARD_SIZE {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "board must have exactly 15 rows",
-            ));
+            return Err(value_error("board must have exactly 15 rows"));
         }
-        if let Some(mask) = &blanks {
+        if let Some(mask) = blanks {
             if mask.len() != BOARD_SIZE || mask.iter().any(|row| row.len() != BOARD_SIZE) {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "blanks mask must be 15x15",
-                ));
+                return Err(value_error("blanks mask must be 15x15"));
             }
         }
         let mut result = [['-'; BOARD_SIZE]; BOARD_SIZE];
         let mut blank_mask = [[false; BOARD_SIZE]; BOARD_SIZE];
         let mut first = true;
-        let mut tile_bag = lang.inner.bag.clone();
+        let mut tile_bag = lang.bag.clone();
         for (r, row) in board.iter().enumerate() {
             if row.len() != BOARD_SIZE {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "each row must have exactly 15 columns",
-                ));
+                return Err(value_error("each row must have exactly 15 columns"));
             }
             for (c, cell) in row.iter().enumerate() {
-                let mut chars = cell.chars();
-                let ch = chars
-                    .next()
-                    .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("empty cell"))?;
+                let mut chars = cell.as_ref().chars();
+                let ch = chars.next().ok_or_else(|| value_error("empty cell"))?;
                 if chars.next().is_some() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(
-                        "cell must contain exactly one character",
-                    ));
+                    return Err(value_error("cell must contain exactly one character"));
                 }
                 result[r][c] = ch;
                 if ch != '-' {
                     first = false;
-                    let is_blank = blanks.as_ref().is_some_and(|m| m[r][c]);
+                    let is_blank = blanks.is_some_and(|m| m[r][c]);
                     blank_mask[r][c] = is_blank;
                     // A blank on the board consumes a '?' from the bag, not a
                     // copy of the letter it happens to be standing in for.
-                    let consumed = if is_blank { lang.inner.blank } else { ch };
+                    let consumed = if is_blank { lang.blank } else { ch };
                     if let Some(pos) = tile_bag.iter().position(|&x| x == consumed) {
                         tile_bag.remove(pos);
                     } else {
-                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        return Err(value_error(format!(
                             "letter '{}' not available in tile bag",
                             consumed
                         )));
@@ -1257,7 +1407,7 @@ impl Board {
         let mut rng = time_seed();
         shuffle(&mut tile_bag, &mut rng);
         Ok(Board {
-            lang: lang.inner,
+            lang,
             board: result,
             blanks: blank_mask,
             tile_bag,
@@ -1266,15 +1416,9 @@ impl Board {
         })
     }
 
-    fn __str__(&self) -> String {
-        self.board
-            .iter()
-            .map(row_to_string)
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn give_letters(&mut self, letters: &str) -> String {
+    /// Draw from the bag to fill a hand holding `letters` up to a full rack,
+    /// returning only the newly drawn tiles.
+    pub fn give_letters(&mut self, letters: &str) -> String {
         let mut drawn = String::new();
         let held = letters.chars().count();
         // A rack over capacity (shouldn't happen, but don't underflow on it).
@@ -1294,14 +1438,14 @@ impl Board {
 
     /// How many tiles are left in the bag. Public information in Scrabble --
     /// unlike `bag_tiles`, this is safe to expose to a player.
-    fn bag_remaining(&self) -> usize {
+    pub fn bag_remaining(&self) -> usize {
         self.tile_bag.len()
     }
 
     /// The bag's actual contents, in draw order — the *last* element is the
     /// next tile out. Hidden information: for the arena, tests and endgame
     /// setup, never for a player's own decision-making.
-    fn bag_tiles(&self) -> Vec<char> {
+    pub fn bag_tiles(&self) -> Vec<char> {
         self.tile_bag.clone()
     }
 
@@ -1309,17 +1453,17 @@ impl Board {
     /// Used to construct exact positions (endgame tests, pre-endgame
     /// enumeration) without replaying a whole game. Not shuffled — the caller
     /// decides the order, which is the point.
-    fn set_bag(&mut self, tiles: Vec<char>) {
+    pub fn set_bag(&mut self, tiles: Vec<char>) {
         self.tile_bag = tiles;
     }
 
     /// Which occupied squares hold a blank, as a 15x15 mask. Pairs with
     /// `from_grid(grid, blanks)` to round-trip a position losslessly.
-    fn blank_mask(&self) -> Vec<Vec<bool>> {
+    pub fn blank_mask(&self) -> Vec<Vec<bool>> {
         self.blanks.iter().map(|row| row.to_vec()).collect()
     }
 
-    fn exchange_letters(&mut self, letters: &str, letters_to_exchange: &str) -> String {
+    pub fn exchange_letters(&mut self, letters: &str, letters_to_exchange: &str) -> String {
         let mut remaining: Vec<char> = letters.chars().collect();
         for ch in letters_to_exchange.chars() {
             if let Some(pos) = remaining.iter().position(|&c| c == ch) {
@@ -1343,14 +1487,14 @@ impl Board {
     /// Standard Scrabble rule: exchanging tiles for new ones from the bag is
     /// only allowed while at least a full rack's worth of tiles remain in
     /// the bag, regardless of how many tiles the player wants to exchange.
-    fn can_exchange(&self) -> bool {
+    pub fn can_exchange(&self) -> bool {
         let bag_remaining = self.tile_bag.len();
         bag_remaining >= RACK_SIZE
     }
 
     /// This language's full tile distribution, as `Board()` and
     /// `Board.from_grid()` each start with.
-    fn fresh_tile_bag(&self) -> Vec<char> {
+    pub fn fresh_tile_bag(&self) -> Vec<char> {
         self.lang.bag.clone()
     }
 
@@ -1358,13 +1502,13 @@ impl Board {
     /// their in-play scoring) -- used for the standard end-of-game scoring
     /// adjustment: the player who goes out gains this value from each
     /// opponent's rack, everyone else loses it from their own.
-    fn rack_value(&self, letters: &str) -> u32 {
+    pub fn rack_value(&self, letters: &str) -> u32 {
         letters.chars().map(|c| self.lang.points(c)).sum()
     }
 
     /// Face point value of a single letter. Blanks score 0 here, same as
     /// their fixed in-play scoring in `calculate_word_points`.
-    fn letter_points(&self, letter: char) -> u32 {
+    pub fn letter_points(&self, letter: char) -> u32 {
         self.lang.points(letter)
     }
 
@@ -1373,7 +1517,7 @@ impl Board {
     /// letter. Returns the *index* into `draws` of the winner (first index wins
     /// ties). Drawn tiles are not consumed here -- the caller is responsible for
     /// returning them to the bag before dealing real racks.
-    fn first_draw_winner(&self, draws: Vec<char>) -> usize {
+    pub fn first_draw_winner(&self, draws: &[char]) -> usize {
         draws
             .iter()
             .enumerate()
@@ -1381,14 +1525,18 @@ impl Board {
             .map_or(0, |(i, _)| i)
     }
 
-    fn calculate_word_points(
+    /// Points for placing `word` at (row, col) with `letters` as the hand:
+    /// bonus squares under newly placed tiles, every cross-word scored on its
+    /// own, the bingo bonus for a full rack. Call before `place_word` -- once
+    /// the tiles are down, their squares no longer count as bonuses.
+    pub fn calculate_word_points(
         &self,
         word: &str,
         row: usize,
         col: usize,
         horizontal: bool,
         letters: &str,
-    ) -> PyResult<u32> {
+    ) -> EngineResult<u32> {
         // The main word and every cross-word it forms are each scored
         // independently (own letter multipliers + own word multiplier, from
         // only the one square where the shared new tile lands), then summed
@@ -1408,9 +1556,7 @@ impl Board {
         for (i, ch) in word.chars().enumerate() {
             let (r, c) = word_cell(row, col, horizontal, i);
             if !in_bounds(r, c) {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "word out of bounds",
-                ));
+                return Err(value_error("word out of bounds"));
             }
             let bonus = quadrant_bonus(r, c);
 
@@ -1439,7 +1585,7 @@ impl Board {
                 }
             } else {
                 if ch != self.board[r][c] {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    return Err(value_error(format!(
                         "letter on board '{}' does not match word letter '{}'",
                         self.board[r][c], ch,
                     )));
@@ -1454,36 +1600,36 @@ impl Board {
             + if tiles_from_hand == RACK_SIZE { 50 } else { 0 })
     }
 
-    fn check_word_placement(
+    /// Check the cross-words a placement would form. Errors if the play is
+    /// shorter than 2 letters, runs off the board, or forms a perpendicular
+    /// word the dictionary lacks. Checks neither the main word nor
+    /// connectivity -- callers accepting arbitrary moves must do both.
+    pub fn check_word_placement(
         &self,
-        dawg: &DawgPy,
+        lexicon: &Lexicon,
         word: &str,
         row: usize,
         col: usize,
         horizontal: bool,
-    ) -> PyResult<()> {
+    ) -> EngineResult<()> {
         // Standard rule: a play must be at least 2 letters -- enforced
         // explicitly rather than relying on the dictionary happening to
         // have no 1-letter entries.
         if word.chars().count() < 2 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "word must be at least 2 letters",
-            ));
+            return Err(value_error("word must be at least 2 letters"));
         }
         for (i, ch) in word.chars().enumerate() {
             let (r, c) = word_cell(row, col, horizontal, i);
             if !in_bounds(r, c) {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "word out of bounds",
-                ));
+                return Err(value_error("word out of bounds"));
             }
             if self.board[r][c] != '-' {
                 continue;
             }
 
             let adjacent = self.cross_word(r, c, horizontal, ch);
-            if adjacent.len() > 1 && !dawg.contains(&adjacent) {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            if adjacent.len() > 1 && !lexicon.contains(&adjacent) {
+                return Err(value_error(format!(
                     "cross-word '{adjacent}' formed by '{ch}' is not in the dictionary",
                 )));
             }
@@ -1499,22 +1645,19 @@ impl Board {
     /// it is what lets the board remember that a square holds a blank, so the
     /// square keeps scoring 0 for every later cross-word. Omitting it treats
     /// every placed tile as a real one.
-    #[pyo3(signature = (word, row, col, horizontal, used=None))]
-    fn place_word(
+    pub fn place_word(
         &mut self,
         word: &str,
         row: usize,
         col: usize,
         horizontal: bool,
-        used: Option<Vec<char>>,
-    ) -> PyResult<Vec<(usize, usize)>> {
+        used: Option<&[char]>,
+    ) -> EngineResult<Vec<(usize, usize)>> {
         let mut filled = Vec::new();
         for (i, ch) in word.chars().enumerate() {
             let (r, c) = word_cell(row, col, horizontal, i);
             if !in_bounds(r, c) {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "word out of bounds",
-                ));
+                return Err(value_error("word out of bounds"));
             }
             if self.board[r][c] == '-' {
                 filled.push((r, c));
@@ -1523,7 +1666,7 @@ impl Board {
         }
         if let Some(used) = used {
             if used.len() != filled.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(value_error(format!(
                     "used has {} tiles but the play covers {} empty squares",
                     used.len(),
                     filled.len(),
@@ -1540,13 +1683,10 @@ impl Board {
     /// Undo a `place_word`, given the cells it returned. `was_first` restores
     /// the opening-move flag (a search that unwinds the first play must put it
     /// back). Cheaper than cloning the board at every node of a search.
-    #[pyo3(signature = (cells, was_first=false))]
-    fn unplace_word(&mut self, cells: Vec<(usize, usize)>, was_first: bool) -> PyResult<()> {
-        for &(r, c) in &cells {
+    pub fn unplace_word(&mut self, cells: &[(usize, usize)], was_first: bool) -> EngineResult<()> {
+        for &(r, c) in cells {
             if !in_bounds(r, c) {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "cell out of bounds",
-                ));
+                return Err(value_error("cell out of bounds"));
             }
             self.board[r][c] = '-';
             self.blanks[r][c] = false;
@@ -1555,7 +1695,7 @@ impl Board {
         Ok(())
     }
 
-    fn get_row_patterns(&self, row_idx: usize) -> Vec<(usize, usize)> {
+    pub fn get_row_patterns(&self, row_idx: usize) -> Vec<(usize, usize)> {
         let row = &self.board.as_slice()[row_idx];
         let n = row.len();
         let empty = |i: usize| row.get(i).copied() == Some('-');
@@ -1619,7 +1759,7 @@ impl Board {
         patterns
     }
 
-    fn get_col_patterns(&self, col_idx: usize) -> Vec<(usize, usize)> {
+    pub fn get_col_patterns(&self, col_idx: usize) -> Vec<(usize, usize)> {
         let n = BOARD_SIZE;
         let empty = |i: usize| self.board[i][col_idx] == '-';
         let valid_start = |i: usize| i == 0 || empty(i - 1);
@@ -1687,7 +1827,7 @@ impl Board {
         patterns
     }
 
-    fn get_all_patterns(&self) -> Vec<(usize, usize, usize, bool)> {
+    pub fn get_all_patterns(&self) -> Vec<(usize, usize, usize, bool)> {
         let mut patterns = Vec::new();
         for i in 0..BOARD_SIZE {
             for (start, end) in self.get_row_patterns(i) {
@@ -1700,49 +1840,51 @@ impl Board {
         patterns
     }
 
-    fn best_word_from_pattern(
+    pub fn best_word_from_pattern(
         &self,
-        dawg: &DawgPy,
+        lexicon: &Lexicon,
         row: usize,
         start: usize,
         end: usize,
         horizontal: bool,
         letters: &str,
     ) -> String {
-        self.best_word_from_pattern_inner(&dawg.inner, row, start, end, horizontal, letters)
+        self.best_word_from_pattern_inner(&lexicon.dawg, row, start, end, horizontal, letters)
             .0
     }
 
-    #[pyo3(signature = (dawg, letters, n, parallel=true))]
-    fn get_best_words(
+    /// The `n` best-scoring plays for `letters`, best first. Enumerates every
+    /// legal play when the lexicon has a GADDAG, so the top `n` are the true
+    /// top `n`; the legacy fallback keeps only the best word per board span.
+    pub fn get_best_words(
         &self,
-        dawg: &DawgPy,
+        lexicon: &Lexicon,
         letters: &str,
         n: usize,
         parallel: bool,
     ) -> Vec<BestWord> {
         if self.first {
-            self.best_opening_words(dawg, letters, n)
-        } else if let Some(gaddag) = &dawg.gaddag {
+            self.best_opening_words(lexicon, letters, n)
+        } else if let Some(gaddag) = &lexicon.gaddag {
             // Fast path: GADDAG anchor generation (equivalent to the legacy
             // pattern search, verified by the `gen-verify` CLI command).
-            self.gaddag_best_words(&dawg.inner, gaddag, letters, n, parallel)
+            self.gaddag_best_words(&lexicon.dawg, gaddag, letters, n, parallel)
         } else {
-            self.best_words_from_patterns(dawg, letters, n, parallel)
+            self.best_words_from_patterns(lexicon, letters, n, parallel)
         }
     }
 
     /// Best-scoring first moves: the centre square must be covered, so
     /// every word/offset combination that does so is a candidate.
-    fn best_opening_words(&self, dawg: &DawgPy, letters: &str, n: usize) -> Vec<BestWord> {
-        self.best_opening_words_inner(&dawg.inner, letters, n)
+    pub fn best_opening_words(&self, lexicon: &Lexicon, letters: &str, n: usize) -> Vec<BestWord> {
+        self.best_opening_words_inner(&lexicon.dawg, letters, n)
     }
 
     /// Best-scoring moves across every valid placement pattern already on
     /// the board (i.e. every move but the opening one).
-    fn best_words_from_patterns(
+    pub fn best_words_from_patterns(
         &self,
-        dawg: &DawgPy,
+        lexicon: &Lexicon,
         letters: &str,
         n: usize,
         parallel: bool,
@@ -1755,7 +1897,7 @@ impl Board {
                 (start, row)
             };
             let (word, score) =
-                self.best_word_from_pattern_inner(&dawg.inner, ar, ac, end, horizontal, letters);
+                self.best_word_from_pattern_inner(&lexicon.dawg, ar, ac, end, horizontal, letters);
             if word.is_empty() {
                 None
             } else {
@@ -1778,9 +1920,10 @@ impl Board {
             .collect()
     }
 
-    #[pyo3(signature = (dawg, letters, parallel=true))]
-    fn get_best_word(&self, dawg: &DawgPy, letters: &str, parallel: bool) -> BestWord {
-        self.get_best_words(dawg, letters, 1, parallel)
+    /// `get_best_words(.., 1, ..)`'s only entry, or an empty word scoring 0
+    /// when nothing can be played.
+    pub fn get_best_word(&self, lexicon: &Lexicon, letters: &str, parallel: bool) -> BestWord {
+        self.get_best_words(lexicon, letters, 1, parallel)
             .into_iter()
             .next()
             .unwrap_or_else(|| (String::new(), 0, (0, 0, true), Vec::new()))
@@ -1796,19 +1939,19 @@ impl Board {
     /// Requires a GADDAG: the legacy pattern search only ever yields the best
     /// word per board span, so it cannot enumerate. Raises rather than
     /// returning an empty list, which a caller would read as "no legal plays".
-    #[pyo3(signature = (dawg, letters, parallel=true))]
-    fn all_moves(&self, dawg: &DawgPy, letters: &str, parallel: bool) -> PyResult<Vec<BestWord>> {
-        self.require_same_lang(dawg.inner.lang, "dictionary")?;
+    pub fn all_moves(
+        &self,
+        lexicon: &Lexicon,
+        letters: &str,
+        parallel: bool,
+    ) -> EngineResult<Vec<BestWord>> {
+        self.require_same_lang(lexicon.lang(), "dictionary")?;
         if self.first {
-            return Ok(self.best_opening_words(dawg, letters, usize::MAX));
+            return Ok(self.best_opening_words(lexicon, letters, usize::MAX));
         }
-        let Some(gaddag) = &dawg.gaddag else {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "all_moves needs a GADDAG; this Dawg was loaded without one",
-            ));
-        };
+        let gaddag = lexicon.require_gaddag("all_moves")?;
         Ok(self
-            .gaddag_generate(&dawg.inner, gaddag, letters, parallel, true)
+            .gaddag_generate(&lexicon.dawg, gaddag, letters, parallel, true)
             .into_iter()
             .map(|(r, c, horizontal, word, score)| {
                 let used = self.hand_tiles_for_word(&word, r, c, horizontal, letters);
@@ -1821,69 +1964,118 @@ impl Board {
     /// the same five scalars `smart_player/board_features.encode_board`
     /// computes, straight from the engine's own bonus layout instead of a
     /// transcription of it.
-    fn board_feature_scalars(&self) -> [f32; N_BOARD_FEATURES] {
+    pub fn board_feature_scalars(&self) -> [f32; N_BOARD_FEATURES] {
         self.board_features()
     }
 
     /// Best play with the bag empty, searched rather than sampled.
     ///
-    /// Returns `(word, score, (row, col, horizontal), used, differential,
-    /// nodes, exact)`. `differential` is the final score margin this play leads
-    /// to, in points, counting the end-of-game rack adjustment; `exact` is true
-    /// when the search proved it -- false means the node cap or the per-ply
-    /// branching limit bit, and the move is good rather than provably optimal.
-    /// An empty word means passing beats every play, which does happen when
-    /// every legal move opens something worse than it scores.
+    /// `differential` is the final score margin this play leads to, in points,
+    /// counting the end-of-game rack adjustment; `exact` is true when the
+    /// search proved it -- false means the node cap or the per-ply branching
+    /// limit bit, and the move is good rather than provably optimal. No move
+    /// means passing beats every play, which does happen when every legal move
+    /// opens something worse than it scores.
     ///
     /// `opp_rack` must be the opponent's actual tiles. With the bag empty that
     /// is exactly `unseen_tile_counts(my_rack)`, which is legitimate
     /// information: it follows from the board, your own rack, and the tile
     /// distribution.
-    #[allow(clippy::type_complexity)]
-    #[pyo3(signature = (dawg, my_rack, opp_rack, max_nodes=300000))]
-    fn solve_endgame(
+    pub fn solve_endgame(
         &self,
-        py: Python<'_>,
-        dawg: &DawgPy,
+        lexicon: &Lexicon,
         my_rack: &str,
         opp_rack: &str,
         max_nodes: usize,
-    ) -> PyResult<(String, u32, (usize, usize, bool), Vec<char>, i32, usize, bool)> {
-        self.require_same_lang(dawg.inner.lang, "dictionary")?;
-        let Some(gaddag) = &dawg.gaddag else {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "solve_endgame needs a GADDAG; this Dawg was loaded without one",
-            ));
-        };
+    ) -> EngineResult<EndgameOutcome> {
+        self.require_same_lang(lexicon.lang(), "dictionary")?;
+        let gaddag = lexicon.require_gaddag("solve_endgame")?;
         let mut board = self.clone();
-        let (best, value, stats) = py.detach(|| {
-            board.solve_endgame_inner(
-                &dawg.inner, gaddag, my_rack, opp_rack, max_nodes, &EG_BRANCH, EG_MAX_DEPTH,
-            )
-        });
-        Ok(match best {
-            Some((r, c, horizontal, word, score)) => {
+        let (best, differential, stats) = board.solve_endgame_inner(
+            &lexicon.dawg,
+            gaddag,
+            my_rack,
+            opp_rack,
+            max_nodes,
+            &EG_BRANCH,
+            EG_MAX_DEPTH,
+        );
+        Ok(EndgameOutcome {
+            best: best.map(|(r, c, horizontal, word, score)| {
                 let used = self.hand_tiles_for_word(&word, r, c, horizontal, my_rack);
-                (
-                    word,
-                    score,
-                    (r, c, horizontal),
-                    used,
-                    value,
-                    stats.nodes,
-                    !stats.capped && !stats.truncated,
-                )
-            }
-            None => (
-                String::new(),
-                0,
-                (0, 0, true),
-                Vec::new(),
-                value,
-                stats.nodes,
-                !stats.capped && !stats.truncated,
-            ),
+                (word, score, (r, c, horizontal), used)
+            }),
+            differential,
+            nodes: stats.nodes,
+            exact: !stats.capped && !stats.truncated,
         })
+    }
+
+    /// What one turn is worth with the bag empty, on `solve_endgame`'s scale:
+    /// the play's score -- or a pass, for `None` -- then the rest of the game
+    /// searched exactly as `solve_endgame` searches it. Set against that
+    /// search's `differential`, it says what the turn gave away. `exact` as
+    /// there.
+    pub fn endgame_turn_value(
+        &self,
+        lexicon: &Lexicon,
+        my_rack: &str,
+        opp_rack: &str,
+        play: Option<(&str, usize, usize, bool)>,
+        max_nodes: usize,
+    ) -> EngineResult<(i32, bool)> {
+        self.require_same_lang(lexicon.lang(), "dictionary")?;
+        let gaddag = lexicon.require_gaddag("endgame_turn_value")?;
+        let mut board = self.clone();
+        let mut stats = EndgameStats {
+            nodes: 0,
+            capped: false,
+            truncated: false,
+        };
+        // The same three cases, and the same calls, as solve_endgame_inner's
+        // root: its pass baseline, a play that goes out, any other play.
+        let value = match play {
+            None => -board.endgame_value(
+                &lexicon.dawg,
+                gaddag,
+                opp_rack,
+                my_rack,
+                1,
+                i32::MIN + 1,
+                i32::MAX - 1,
+                1,
+                &mut stats,
+                max_nodes,
+                &EG_BRANCH,
+                EG_MAX_DEPTH,
+            ),
+            Some((word, row, col, horizontal)) => {
+                let score = self.calculate_word_points(word, row, col, horizontal, my_rack)? as i32;
+                let used = self.hand_tiles_for_word(word, row, col, horizontal, my_rack);
+                let left = rack_after(my_rack, &used);
+                board.apply_move(word, row, col, horizontal, &used);
+                if left.is_empty() {
+                    score + self.lang.rack_points(opp_rack)
+                } else {
+                    score
+                        - board.endgame_value(
+                            &lexicon.dawg,
+                            gaddag,
+                            opp_rack,
+                            &left,
+                            0,
+                            i32::MIN + 1,
+                            i32::MAX - 1,
+                            1,
+                            &mut stats,
+                            max_nodes,
+                            &EG_BRANCH,
+                            EG_MAX_DEPTH,
+                        )
+                }
+            }
+        };
+        Ok((value, !stats.capped && !stats.truncated))
     }
 
     /// Counts of the tiles neither on the board nor in `rack` -- the bag plus
@@ -1892,7 +2084,7 @@ impl Board {
     /// Legitimate information: a player can see the board and their own rack.
     /// It is only *correct* because the board remembers which squares hold
     /// blanks.
-    fn unseen_tile_counts(&self, rack: &str) -> Vec<u8> {
+    pub fn unseen_tile_counts(&self, rack: &str) -> Vec<u8> {
         // Only the prefix this language actually uses: the buffer is sized for
         // the widest alphabet, and callers index it positionally against their
         // own tile list (see `smart_player/player.py`'s opponent-rack
@@ -1900,87 +2092,123 @@ impl Board {
         self.unseen_counts(rack)[..self.lang.eval_size()].to_vec()
     }
 
-    /// Rank this rack's plays by Monte-Carlo simulation.
+    /// Rank this rack's plays by Monte-Carlo simulation, best equity first.
     ///
-    /// Returns `(word, score, (row, col, horizontal), used, equity, stderr,
-    /// iterations)` per surviving candidate, best equity first. `equity` is the
-    /// simulated score differential over the rollout window plus the difference
-    /// in what each side is left holding, so it is on the same points scale as
-    /// a move's score -- but unlike `score` it accounts for what the move hands
-    /// the opponent.
+    /// `equity` is the simulated score differential over the rollout window
+    /// plus the difference in what each side is left holding, so it is on the
+    /// same points scale as a move's score -- but unlike `score` it accounts
+    /// for what the move hands the opponent.
     ///
     /// Candidates are seeded from the *whole* legal move list ranked by static
     /// equity, not the top-n by score. Every candidate in one iteration is
     /// rolled out against the same sampled tiles, and candidates whose interval
     /// falls clear of the leader's stop being sampled.
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (dawg, net, letters, candidates=20, iterations=200, plies=1, batch=25, root_eval_cap=150, leave_weight=1.0, seed=0))]
-    fn simulate(
+    pub fn simulate(
         &self,
-        py: Python<'_>,
-        dawg: &DawgPy,
-        net: &LeaveNetPy,
+        lexicon: &Lexicon,
+        net: &LeaveNet,
         letters: &str,
-        candidates: usize,
-        iterations: usize,
-        plies: usize,
-        batch: usize,
-        root_eval_cap: usize,
-        leave_weight: f64,
-        seed: u64,
-    ) -> PyResult<Vec<(String, u32, (usize, usize, bool), Vec<char>, f64, f64, usize)>> {
-        self.require_same_lang(dawg.inner.lang, "dictionary")?;
+        params: SimParams,
+    ) -> EngineResult<Vec<SimOutcome>> {
+        self.require_same_lang(lexicon.lang(), "dictionary")?;
         // A leave net encodes one slot per tile type, so a net for another
         // language does not merely score badly -- it reads the wrong features.
         self.require_same_lang(net.lang, "leave net")?;
-        let Some(gaddag) = &dawg.gaddag else {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "simulate needs a GADDAG; this Dawg was loaded without one",
-            ));
-        };
+        let gaddag = lexicon.require_gaddag("simulate")?;
         let opts = SimOpts {
-            candidates,
-            iterations,
-            batch,
-            plies,
-            root_eval_cap,
-            leave_weight,
+            candidates: params.candidates,
+            iterations: params.iterations,
+            batch: params.batch,
+            plies: params.plies,
+            root_eval_cap: params.root_eval_cap,
+            leave_weight: params.leave_weight,
             // A fixed default seed would make every position in every game
             // sample the same tile orders; mix in the position so it doesn't.
-            seed: if seed == 0 { time_seed() } else { seed },
+            seed: if params.seed == 0 {
+                time_seed()
+            } else {
+                params.seed
+            },
         };
-        // Nothing below touches Python, and a simulation is long enough that
-        // holding the GIL through it would stall every other thread.
-        let out = py.detach(|| {
-            self.simulate_inner(&dawg.inner, gaddag, &net.inner, letters, opts)
-                .into_iter()
-                .map(|c| {
-                    (
-                        c.word.clone(),
-                        c.score,
-                        c.pos,
-                        c.used.clone(),
-                        c.mean(),
-                        c.stderr(),
-                        c.n,
-                    )
-                })
-                .collect()
-        });
-        Ok(out)
+        Ok(self
+            .simulate_inner(&lexicon.dawg, gaddag, net, letters, opts)
+            .into_iter()
+            .map(|c| SimOutcome {
+                equity: c.mean(),
+                stderr: c.stderr(),
+                iterations: c.n,
+                play: (c.word, c.score, c.pos, c.used),
+            })
+            .collect())
     }
 }
 
-// Pure Rust methods — no PyO3 overhead, safe to call from rayon threads.
+/// What `Board::solve_endgame` found.
+#[derive(Debug, Clone)]
+pub struct EndgameOutcome {
+    /// The play to make, or `None` when passing beats every play.
+    pub best: Option<BestWord>,
+    /// Final score margin the play leads to, rack adjustment included.
+    pub differential: i32,
+    pub nodes: usize,
+    /// Whether the search finished inside every limit, i.e. proved its answer.
+    pub exact: bool,
+}
+
+/// `Board::simulate`'s knobs. `Default` gives the values the Python API has
+/// always defaulted to.
+#[derive(Debug, Clone, Copy)]
+pub struct SimParams {
+    /// Candidates carried into simulation, by static equity.
+    pub candidates: usize,
+    pub iterations: usize,
+    /// Half-moves simulated after the candidate, opponent first. Prefer odd.
+    pub plies: usize,
+    /// Iterations between pruning passes.
+    pub batch: usize,
+    /// Root moves the net scores, by raw score.
+    pub root_eval_cap: usize,
+    pub leave_weight: f64,
+    /// 0 picks one from the clock; anything else makes the run reproducible.
+    pub seed: u64,
+}
+
+impl Default for SimParams {
+    fn default() -> Self {
+        SimParams {
+            candidates: 20,
+            iterations: 200,
+            plies: 1,
+            batch: 25,
+            root_eval_cap: 150,
+            leave_weight: 1.0,
+            seed: 0,
+        }
+    }
+}
+
+/// One simulated candidate.
+#[derive(Debug, Clone)]
+pub struct SimOutcome {
+    pub play: BestWord,
+    pub equity: f64,
+    /// Standard error of `equity`; `NaN` until there are two samples.
+    pub stderr: f64,
+    /// Rollouts actually spent on this candidate before it was kept or pruned.
+    pub iterations: usize,
+}
+
+// Internal methods, shared by move generation, simulation and search; safe to
+// call from rayon threads.
 impl Board {
     /// Reject a board/dictionary pairing from different languages.
     ///
     /// Interning makes this a pointer comparison: two `Language` objects built
     /// from the same definition are the same object. Without it, a mismatch
     /// scores every move with the wrong point table instead of failing.
-    fn require_same_lang(&self, other: &'static Language, what: &str) -> PyResult<()> {
+    fn require_same_lang(&self, other: &'static Language, what: &str) -> EngineResult<()> {
         if !std::ptr::eq(self.lang, other) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(value_error(format!(
                 "board is '{}' but the {what} is '{}'",
                 self.lang.code, other.code
             )));
@@ -2190,7 +2418,7 @@ impl Board {
     }
 
     /// `best_opening_words` against a raw `Dawg`, so the simulator can call it
-    /// without a `DawgPy` wrapper to hand.
+    /// without a `Lexicon` wrapper to hand.
     fn best_opening_words_inner(&self, dawg: &Dawg, letters: &str, n: usize) -> Vec<BestWord> {
         let mut candidates: Vec<BestWord> = Vec::new();
         for word in dawg.search_inner("*", letters) {
@@ -2729,7 +2957,15 @@ impl Board {
                     ac,
                     horizontal,
                 };
-                ctx.gen(gaddag.root, 0, budget, &mut freq, &mut left, &mut right, &mut out);
+                ctx.gen(
+                    gaddag.root,
+                    0,
+                    budget,
+                    &mut freq,
+                    &mut left,
+                    &mut right,
+                    &mut out,
+                );
                 left.clear();
                 right.clear();
             }
@@ -2856,8 +3092,12 @@ fn compact(arena: &Arena, root: u32) -> (Arena, u32) {
     order.push(root);
 
     while let Some(old) = stack.pop() {
-        let mut children: Vec<(char, u32)> =
-            arena.node(old).children.iter().map(|(&c, &id)| (c, id)).collect();
+        let mut children: Vec<(char, u32)> = arena
+            .node(old)
+            .children
+            .iter()
+            .map(|(&c, &id)| (c, id))
+            .collect();
         children.sort_unstable_by_key(|&(c, _)| c);
         for (_, cid) in children {
             if let std::collections::hash_map::Entry::Vacant(e) = remap.entry(cid) {
@@ -2873,8 +3113,11 @@ fn compact(arena: &Arena, root: u32) -> (Arena, u32) {
         let nid = new_arena.alloc();
         let src = arena.node(old);
         let is_terminal = src.is_terminal;
-        let children: Vec<(char, u32)> =
-            src.children.iter().map(|(&c, &cid)| (c, remap[&cid])).collect();
+        let children: Vec<(char, u32)> = src
+            .children
+            .iter()
+            .map(|(&c, &cid)| (c, remap[&cid]))
+            .collect();
         let node = new_arena.node_mut(nid);
         node.is_terminal = is_terminal;
         for (c, cid) in children {
@@ -2978,13 +3221,61 @@ struct DenseLayer {
 /// The exported leave-value MLP. ReLU between layers, none on the output,
 /// matching `LeaveValueNet.forward`.
 pub struct LeaveNet {
+    /// The language whose tile alphabet the input slots encode -- a net is
+    /// only valid for the alphabet it was trained on.
+    lang: &'static Language,
     input_dim: usize,
     layers: Vec<DenseLayer>,
 }
 
 impl LeaveNet {
-    fn load(path: &str, lang: &Language) -> io::Result<Self> {
-        let data = fs::read(path)?;
+    /// Load an exported net for `lang`. Fails if the file is not a SCRBNET1
+    /// export, is truncated, or takes a different number of inputs than `lang`
+    /// encodes -- which is what catches a net trained for another language.
+    pub fn open(lang: &'static Language, path: &str) -> EngineResult<Self> {
+        LeaveNet::load(path, lang).map_err(|e| EngineError::Io(format!("{path}: {e}")))
+    }
+
+    /// The same as `open`, for a net already in memory (an app asset).
+    pub fn from_bytes(lang: &'static Language, data: &[u8]) -> EngineResult<Self> {
+        LeaveNet::parse(data, lang).map_err(|e| EngineError::Io(e.to_string()))
+    }
+
+    pub fn lang(&self) -> &'static Language {
+        self.lang
+    }
+
+    /// Forward pass on an already-encoded feature vector. Exists so a test can
+    /// check the engine's arithmetic against PyTorch's on identical input.
+    pub fn raw(&self, x: &[f32]) -> EngineResult<f32> {
+        if x.len() != self.input_dim {
+            return Err(value_error(format!(
+                "expected {} features, got {}",
+                self.input_dim,
+                x.len()
+            )));
+        }
+        Ok(self.forward(x))
+    }
+
+    /// Predicted value of holding `leave`, in `board`'s context, for a player
+    /// whose full rack is `rack` (which fixes the unseen-tile count).
+    pub fn value(&self, board: &Board, leave: &str, rack: &str) -> f32 {
+        let feats = board.board_features();
+        let unseen: usize = board.unseen_counts(rack).iter().map(|&c| c as usize).sum();
+        leave_value(self, board.lang, leave, unseen, &feats)
+    }
+
+    /// The tile-symbol order the feature vector's leading slots use.
+    pub fn alphabet(&self) -> Vec<char> {
+        self.lang.eval_letters.clone()
+    }
+
+    fn load(path: &str, lang: &'static Language) -> io::Result<Self> {
+        LeaveNet::parse(&fs::read(path)?, lang)
+    }
+
+    fn parse(data: &[u8], lang: &'static Language) -> io::Result<Self> {
         let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
         if data.len() < 16 || &data[..8] != b"SCRBNET1" {
             return Err(bad("not a SCRBNET1 file (re-run export_weights.py)"));
@@ -3036,12 +3327,21 @@ impl LeaveNet {
             };
             let w = read_f32s(n_w);
             let b = read_f32s(out_dim);
-            layers.push(DenseLayer { in_dim, out_dim, w, b });
+            layers.push(DenseLayer {
+                in_dim,
+                out_dim,
+                w,
+                b,
+            });
         }
         if layers.last().map(|l| l.out_dim) != Some(1) {
             return Err(bad("net must end in a scalar head"));
         }
-        Ok(LeaveNet { input_dim, layers })
+        Ok(LeaveNet {
+            lang,
+            input_dim,
+            layers,
+        })
     }
 
     /// Predicted leave value for one already-encoded feature vector.
@@ -3335,11 +3635,7 @@ impl Board {
             moves.truncate(eval_cap);
         }
         let feats = self.board_features();
-        let unseen_total: usize = self
-            .unseen_counts(rack)
-            .iter()
-            .map(|&c| c as usize)
-            .sum();
+        let unseen_total: usize = self.unseen_counts(rack).iter().map(|&c| c as usize).sum();
         let mut best_i = 0usize;
         let mut best_v = f64::NEG_INFINITY;
         for (i, m) in moves.iter().enumerate() {
@@ -3513,18 +3809,33 @@ impl Board {
             let batch = opts.batch.max(1).min(opts.iterations - done);
             // Each iteration gets its own shuffle, shared by every candidate in
             // it, and derived from the seed so a run is reproducible.
+            //
+            // One task per rollout, not per iteration: an iteration's 20-odd
+            // rollouts as one task let a slow core hold up the whole batch. On
+            // a Galaxy A54 (4 fast + 4 efficiency cores) a level-10 move took
+            // 1.39 s with 8 threads that way, slower than with 6; per rollout
+            // it takes 0.87 s (and 156 -> 88 ms on an Apple M5 Max). Collection
+            // keeps the order, so every result is the same either way.
             let results: Vec<Vec<f64>> = gen_pool().install(|| {
                 (done..done + batch)
                     .into_par_iter()
                     .map(|iter| {
-                        let mut rng = splitmix64(opts.seed ^ (iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                        let mut rng = splitmix64(
+                            opts.seed ^ (iter as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                        );
                         let mut shuffled = pool.clone();
                         shuffle(&mut shuffled, &mut rng);
                         cands
-                            .iter()
+                            .par_iter()
                             .map(|c| {
                                 self.rollout(
-                                    dawg, gaddag, net, c, &shuffled, opts.plies, opts.leave_weight,
+                                    dawg,
+                                    gaddag,
+                                    net,
+                                    c,
+                                    &shuffled,
+                                    opts.plies,
+                                    opts.leave_weight,
                                 )
                             })
                             .collect()
@@ -3568,53 +3879,6 @@ impl Board {
 
         cands.sort_by(|a, b| b.mean().partial_cmp(&a.mean()).unwrap());
         cands
-    }
-}
-
-/// The leave-value net, loaded from `export_weights.py`'s output.
-#[pyclass(name = "LeaveNet")]
-struct LeaveNetPy {
-    inner: LeaveNet,
-    lang: &'static Language,
-}
-
-#[pymethods]
-impl LeaveNetPy {
-    #[new]
-    fn new(lang: &LanguagePy, path: &str) -> PyResult<Self> {
-        LeaveNet::load(path, lang.inner)
-            .map(|inner| LeaveNetPy {
-                inner,
-                lang: lang.inner,
-            })
-            .map_err(|e| PyIOError::new_err(format!("{path}: {e}")))
-    }
-
-    /// Forward pass on an already-encoded feature vector. Exists so a test can
-    /// check the engine's arithmetic against PyTorch's on identical input.
-    fn raw(&self, x: Vec<f32>) -> PyResult<f32> {
-        if x.len() != self.inner.input_dim {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "expected {} features, got {}",
-                self.inner.input_dim,
-                x.len()
-            )));
-        }
-        Ok(self.inner.forward(&x))
-    }
-
-    /// Predicted value of holding `leave`, in `board`'s context, for a player
-    /// whose full rack is `rack` (which fixes the unseen-tile count).
-    fn value(&self, board: &Board, leave: &str, rack: &str) -> f32 {
-        let feats = board.board_features();
-        let unseen: usize = board.unseen_counts(rack).iter().map(|&c| c as usize).sum();
-        leave_value(&self.inner, board.lang, leave, unseen, &feats)
-    }
-
-    /// The tile-symbol order the feature vector's leading slots use, so a test
-    /// can assert it matches `model.ALPHABET`.
-    fn alphabet(&self) -> Vec<char> {
-        self.lang.eval_letters.clone()
     }
 }
 
@@ -3707,8 +3971,18 @@ impl Board {
         // Passing is always legal, and occasionally right — declining to open
         // a lane can be worth more than the points on offer.
         let mut best = -self.endgame_value(
-            dawg, gaddag, them, me, passes + 1, -beta, -alpha, depth + 1, stats, max_nodes,
-            limits, max_depth,
+            dawg,
+            gaddag,
+            them,
+            me,
+            passes + 1,
+            -beta,
+            -alpha,
+            depth + 1,
+            stats,
+            max_nodes,
+            limits,
+            max_depth,
         );
         alpha = alpha.max(best);
         if alpha >= beta {
@@ -3747,8 +4021,18 @@ impl Board {
             } else {
                 score as i32
                     - self.endgame_value(
-                        dawg, gaddag, them, &left, 0, -beta, -alpha, depth + 1, stats, max_nodes,
-                        limits, max_depth,
+                        dawg,
+                        gaddag,
+                        them,
+                        &left,
+                        0,
+                        -beta,
+                        -alpha,
+                        depth + 1,
+                        stats,
+                        max_nodes,
+                        limits,
+                        max_depth,
                     )
             };
 
@@ -3777,7 +4061,11 @@ impl Board {
         limits: &[usize],
         max_depth: usize,
     ) -> (Option<GenMove>, i32, EndgameStats) {
-        let mut stats = EndgameStats { nodes: 0, capped: false, truncated: false };
+        let mut stats = EndgameStats {
+            nodes: 0,
+            capped: false,
+            truncated: false,
+        };
         // Passing is the baseline every play has to beat. Usually trivially
         // beaten, but not always: declining to open the board can be worth
         // more than the points on offer.
@@ -3866,9 +4154,17 @@ fn usage(prog: &str) {
                     {prog} lookup        <lang> <dawg.bin>  <word>\n  \
                     {prog} bench         <lang> <dawg.bin>  <words.txt>\n  \
                     {prog} gen-verify    <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
-                    {prog} gen-bench     <lang> <dawg.bin>  <gaddag.bin>  [games]\n\n\
+                    {prog} gen-bench     <lang> <dawg.bin>  <gaddag.bin>  [games]\n  \
+                    {prog} bot-bench     <lang> <dawg.bin>  <gaddag.bin>  <leave_value.bin|-> <level> [games]\n  \
+                    {prog} bot-ladder    <lang> <dawg.bin>  <gaddag.bin>  <leave_value.bin|-> [games]\n  \
+                    {prog} scan-bench    <lang> <dawg.bin>  <cases.json>\n  \
+                    {prog} frame-bench   <lang> <dawg.bin>  <grid_finder.bin> <cell_reader.bin> <frames.bin>\n\n\
          <lang> is a language code with a definition in languages/<lang>.json\n\
-         (e.g. `pl`), searched for in the current directory and its parents."
+         (e.g. `pl`), searched for in the current directory and its parents.\n\
+         bot-bench times a bot's moves at a level (1-10) with RAYON_NUM_THREADS threads.\n\
+         bot-ladder plays the bots against each other and fits their Elo (game::ladder).\n\
+         scan-bench times the scan decoder on the cases `eval_decoder.py --dump` writes.\n\
+         frame-bench times the whole live scan on raw RGB frames (see cmd_frame_bench)."
     );
 }
 
@@ -4016,17 +4312,17 @@ fn cmd_bench(lang: &'static Language, dawg_path: &str, words_path: &str) -> io::
 /// returning false when no move is possible (game over for our purposes).
 /// Draws the rack up to a full hand, plays the engine's best word, and removes
 /// the used tiles from `rack`.
-fn selfplay_step(board: &mut Board, dpy: &DawgPy, rack: &mut String) -> bool {
+fn selfplay_step(board: &mut Board, lexicon: &Lexicon, rack: &mut String) -> bool {
     let drawn = board.give_letters(rack);
     rack.push_str(&drawn);
     if rack.is_empty() {
         return false;
     }
-    let (word, _score, (r, c, horizontal), used) = board.get_best_word(dpy, rack, false);
+    let (word, _score, (r, c, horizontal), used) = board.get_best_word(lexicon, rack, false);
     if word.is_empty() {
         return false;
     }
-    let _ = board.place_word(&word, r, c, horizontal, Some(used.clone()));
+    let _ = board.place_word(&word, r, c, horizontal, Some(&used));
     for ch in used {
         if let Some(pos) = rack.char_indices().find(|&(_, x)| x == ch).map(|(i, _)| i) {
             rack.remove(pos);
@@ -4045,11 +4341,8 @@ fn cmd_gen_verify(
 ) -> io::Result<()> {
     let dawg = Dawg::load_kind(dawg_path, lang, KIND_DAWG)?;
     let gaddag = Dawg::load_kind(gaddag_path, lang, KIND_GADDAG)?;
-    let dpy = DawgPy {
-        inner: dawg,
-        gaddag: Some(gaddag),
-    };
-    let gad = dpy.gaddag.as_ref().unwrap();
+    let lexicon = Lexicon::from_parts(dawg, Some(gaddag));
+    let gad = lexicon.gaddag.as_ref().unwrap();
 
     let mut positions = 0usize;
     let mut mismatches = 0usize; // gaddag best score != legacy best score
@@ -4069,11 +4362,11 @@ fn cmd_gen_verify(
             if !board.first {
                 positions += 1;
                 // Production path: generate with the left-limit, already scored.
-                let limited = board.gaddag_generate(&dpy.inner, gad, &rack, false, true);
+                let limited = board.gaddag_generate(&lexicon.dawg, gad, &rack, false, true);
                 let gs = limited.iter().map(|m| m.4).max().unwrap_or(0);
 
                 // Best-move parity vs the legacy pattern search.
-                let legacy = board.best_words_from_patterns(&dpy, &rack, 1, false);
+                let legacy = board.best_words_from_patterns(&lexicon, &rack, 1, false);
                 let ls = legacy.first().map(|m| m.1).unwrap_or(0);
                 if ls != gs {
                     mismatches += 1;
@@ -4081,18 +4374,22 @@ fn cmd_gen_verify(
                         eprintln!(
                             "\nMISMATCH game {g}: legacy={ls} {:?}  gaddag={gs}\nrack: {rack}\n{}",
                             legacy.first().map(|m| (&m.0, m.1)),
-                            board.__str__(),
+                            board,
                         );
                     }
                 }
 
                 // (a) The in-place fast score must equal calculate_word_points.
                 for (r, c, h, word, score) in &limited {
-                    let auth = board.calculate_word_points(word, *r, *c, *h, &rack).unwrap_or(0);
+                    let auth = board
+                        .calculate_word_points(word, *r, *c, *h, &rack)
+                        .unwrap_or(0);
                     if *score != auth {
                         score_mismatches += 1;
                         if score_mismatches <= 10 {
-                            eprintln!("SCORE MISMATCH {word} @({r},{c},{h}): fast={score} auth={auth}");
+                            eprintln!(
+                                "SCORE MISMATCH {word} @({r},{c},{h}): fast={score} auth={auth}"
+                            );
                         }
                     }
                 }
@@ -4106,7 +4403,7 @@ fn cmd_gen_verify(
                         dup_found += 1;
                     }
                 }
-                let unlimited = board.gaddag_generate(&dpy.inner, gad, &rack, false, false);
+                let unlimited = board.gaddag_generate(&lexicon.dawg, gad, &rack, false, false);
                 let mut seen = std::collections::HashSet::new();
                 let mut unl_scores: Vec<u32> = Vec::new();
                 for (r, c, h, w, s) in &unlimited {
@@ -4129,11 +4426,11 @@ fn cmd_gen_verify(
                 }
             }
             // Advance the position with the (gaddag) best move.
-            let (word, _s, (r, c, h), used) = board.get_best_word(&dpy, &rack, false);
+            let (word, _s, (r, c, h), used) = board.get_best_word(&lexicon, &rack, false);
             if word.is_empty() {
                 break;
             }
-            let _ = board.place_word(&word, r, c, h, Some(used.clone()));
+            let _ = board.place_word(&word, r, c, h, Some(&used));
             for ch in used {
                 if let Some(p) = rack.char_indices().find(|&(_, x)| x == ch).map(|(i, _)| i) {
                     rack.remove(p);
@@ -4162,11 +4459,8 @@ fn cmd_gen_bench(
 ) -> io::Result<()> {
     let dawg = Dawg::load_kind(dawg_path, lang, KIND_DAWG)?;
     let gaddag = Dawg::load_kind(gaddag_path, lang, KIND_GADDAG)?;
-    let dpy = DawgPy {
-        inner: dawg,
-        gaddag: Some(gaddag),
-    };
-    let gad = dpy.gaddag.as_ref().unwrap();
+    let lexicon = Lexicon::from_parts(dawg, Some(gaddag));
+    let gad = lexicon.gaddag.as_ref().unwrap();
 
     let mut positions = 0usize;
     let mut leg_secs = 0.0f64;
@@ -4182,15 +4476,22 @@ fn cmd_gen_bench(
             }
             if !board.first {
                 let t = Instant::now();
-                let leg = std::hint::black_box(board.best_words_from_patterns(&dpy, &rack, 1, false));
+                let leg =
+                    std::hint::black_box(board.best_words_from_patterns(&lexicon, &rack, 1, false));
                 leg_secs += t.elapsed().as_secs_f64();
                 let t = Instant::now();
-                let g = std::hint::black_box(board.gaddag_best_words(&dpy.inner, gad, &rack, 1, false));
+                let g = std::hint::black_box(board.gaddag_best_words(
+                    &lexicon.dawg,
+                    gad,
+                    &rack,
+                    1,
+                    false,
+                ));
                 gad_secs += t.elapsed().as_secs_f64();
                 let _ = (leg, g);
                 positions += 1;
             }
-            if !selfplay_step(&mut board, &dpy, &mut rack) {
+            if !selfplay_step(&mut board, &lexicon, &mut rack) {
                 break;
             }
         }
@@ -4201,7 +4502,354 @@ fn cmd_gen_bench(
     println!("\ngen-bench ({positions} positions, single-threaded):");
     println!("  legacy pattern search : {leg_ms:.3} ms/position");
     println!("  gaddag generation     : {gad_ms:.3} ms/position");
-    println!("  speedup               : {:.2}x", leg_secs / gad_secs.max(1e-12));
+    println!(
+        "  speedup               : {:.2}x",
+        leg_secs / gad_secs.max(1e-12)
+    );
+    Ok(())
+}
+
+/// Benchmark: what a bot at `level` costs per move, as the apps run it --
+/// automatic games through `GameSession`, every move timed. The pool size comes
+/// from `RAYON_NUM_THREADS`, so running this once per thread count on a phone
+/// is how its pool gets sized. Games are seeded; the simulating levels still
+/// sample their rollouts from the clock, so their games vary a little.
+fn cmd_bot_bench(
+    lang: &'static Language,
+    dawg_path: &str,
+    gaddag_path: &str,
+    net_path: &str,
+    level: u8,
+    games: usize,
+) -> io::Result<()> {
+    use game::{GameMode, GameSession, LanguagePack, PlayerConfig};
+
+    let invalid = |e: &dyn fmt::Display| io::Error::new(io::ErrorKind::InvalidInput, e.to_string());
+    let lexicon = Lexicon::open(lang, dawg_path, Some(gaddag_path)).map_err(|e| invalid(&e))?;
+    let net = match net_path {
+        "-" => None,
+        path => Some(Arc::new(
+            LeaveNet::open(lang, path).map_err(|e| invalid(&e))?,
+        )),
+    };
+    let pack = LanguagePack::new(Arc::new(lexicon), net).map_err(|e| invalid(&e))?;
+    let level = game::clamp_level(level as i64, pack.max_level());
+
+    // With the bag empty the bots search the endgame instead, a different cost.
+    let mut midgame = Vec::new();
+    let mut endgame = Vec::new();
+    // Final scores and a digest of the final board, so runs can be checked to
+    // have played the same games (across thread counts, or before and after
+    // an optimisation that must not change any decision).
+    let mut played = Vec::new();
+    for g in 0..games {
+        let seats = vec![
+            PlayerConfig::computer("A", level, 100),
+            PlayerConfig::computer("B", level, 100),
+        ];
+        let mut session =
+            GameSession::new(pack.clone(), GameMode::SandboxAuto, seats, 0xB07 + g as u64)
+                .map_err(|e| invalid(&e))?;
+        while !session.is_over() {
+            let bag_empty = session.bag_remaining() == 0;
+            let t = Instant::now();
+            session.next_auto_move().map_err(|e| invalid(&e))?;
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            if bag_empty {
+                endgame.push(ms);
+            } else {
+                midgame.push(ms);
+            }
+        }
+        let state = session.state();
+        // FNV-1a over the final grid.
+        let digest = state
+            .board
+            .iter()
+            .flatten()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, &ch| {
+                (h ^ ch as u64).wrapping_mul(0x0100_0000_01b3)
+            });
+        let scores: Vec<String> = state.players.iter().map(|p| p.score.to_string()).collect();
+        played.push(format!("{} {digest:016x}", scores.join("-")));
+    }
+
+    let summary = |label: &str, times: &mut Vec<f64>| {
+        if times.is_empty() {
+            println!("  {label}: none");
+            return;
+        }
+        times.sort_by(f64::total_cmp);
+        let at = |p: f64| times[((times.len() - 1) as f64 * p).round() as usize];
+        let mean = times.iter().sum::<f64>() / times.len() as f64;
+        println!(
+            "  {label}: {:3} moves | mean {mean:8.1} ms | p50 {:8.1} | p90 {:8.1} | max {:8.1}",
+            times.len(),
+            at(0.5),
+            at(0.9),
+            at(1.0),
+        );
+    };
+    println!(
+        "\nbot-bench {} level {level} ({:?}), {} threads, {games} games:",
+        lang.code(),
+        game::engine_mode(level),
+        num_threads(),
+    );
+    summary("bag not empty", &mut midgame);
+    summary("bag empty    ", &mut endgame);
+    println!("  games played : {}", played.join(" | "));
+    Ok(())
+}
+
+/// `bot-ladder`: play every pairing of `game::ladder_plan` `games` times, fit
+/// the seats' Elo, and print the `Ladder` entry to paste into
+/// `game::ladder::LADDERS`. Deterministic: each pairing is seeded by its index.
+fn cmd_bot_ladder(
+    lang: &'static Language,
+    dawg_path: &str,
+    gaddag_path: &str,
+    net_path: &str,
+    games: usize,
+) -> io::Result<()> {
+    use game::LanguagePack;
+
+    let invalid = |e: &dyn fmt::Display| io::Error::new(io::ErrorKind::InvalidInput, e.to_string());
+    let lexicon = Lexicon::open(lang, dawg_path, Some(gaddag_path)).map_err(|e| invalid(&e))?;
+    let net = match net_path {
+        "-" => None,
+        path => Some(Arc::new(
+            LeaveNet::open(lang, path).map_err(|e| invalid(&e))?,
+        )),
+    };
+    let pack = LanguagePack::new(Arc::new(lexicon), net).map_err(|e| invalid(&e))?;
+    let start = Instant::now();
+    eprintln!(
+        "bot-ladder {}: {games} games a pairing, {} threads",
+        lang.code(),
+        num_threads()
+    );
+    let (seats, matches) = game::run_ladder(&pack, games, |m, seats| {
+        eprintln!(
+            "  [{:6.0} s] L{} {:3}% vs L{} {:3}%: {:3}-{:3} ({} tied)",
+            start.elapsed().as_secs_f64(),
+            seats[m.a].0,
+            seats[m.a].1,
+            seats[m.b].0,
+            seats[m.b].1,
+            m.a_wins,
+            m.b_wins,
+            m.ties
+        );
+    })
+    .map_err(|e| invalid(&e))?;
+    let ratings = game::fit_ratings(seats.len(), &matches, game::anchor_seat(&seats));
+    println!("\nbot-ladder {} ({games} games a pairing):", lang.code());
+    for (seat, r) in seats.iter().zip(&ratings) {
+        println!("  level {:2} {:3}%: {r:6.0}", seat.0, seat.1);
+    }
+    println!("\n{}", game::ladder_source(lang.code(), &seats, &ratings));
+    Ok(())
+}
+
+/// `scan-bench`: decode every case of a file `board_reader/scripts/
+/// eval_decoder.py --dump` wrote, timing each, so the decoder can be timed on
+/// a phone as well. Ends with a digest of every decoded board: the decoder
+/// has no clock, no randomness and no threads, so any two machines must agree.
+fn cmd_scan_bench(lang: &'static Language, dawg_path: &str, cases_path: &str) -> io::Result<()> {
+    use scan::decode::{decode, CellReading, DecodeOptions, ScanBoard};
+
+    /// `(p_tile, [(letter, p)], p_blank)`, as `CellReading` holds them.
+    type Reading = (f32, Vec<(char, f32)>, f32);
+    #[derive(serde::Deserialize)]
+    struct Case {
+        label: String,
+        readings: Vec<Vec<Reading>>,
+        prior: Option<Vec<Vec<char>>>,
+        prior_blanks: Option<Vec<Vec<bool>>>,
+    }
+    let invalid = |e: &dyn fmt::Display| io::Error::new(io::ErrorKind::InvalidInput, e.to_string());
+    let lexicon = Lexicon::open(lang, dawg_path, None).map_err(|e| invalid(&e))?;
+    let cases: Vec<Case> =
+        serde_json::from_str(&fs::read_to_string(cases_path)?).map_err(|e| invalid(&e))?;
+    fn square<T>(rows: &[Vec<T>]) -> bool {
+        rows.len() == BOARD_SIZE && rows.iter().all(|r| r.len() == BOARD_SIZE)
+    }
+
+    // label -> (ms per decode, legal, complete), in first-seen order
+    let mut groups: Vec<(String, Vec<f64>, usize, usize)> = Vec::new();
+    let mut digest = 0xcbf2_9ce4_8422_2325u64;
+    let options = DecodeOptions::default();
+    for case in &cases {
+        if !square(&case.readings) {
+            return Err(invalid(&"every case needs 15x15 readings"));
+        }
+        let readings: scan::Grid<CellReading> = std::array::from_fn(|r| {
+            std::array::from_fn(|c| {
+                let (p_tile, letters, p_blank) = &case.readings[r][c];
+                CellReading {
+                    p_tile: *p_tile,
+                    letters: letters.clone(),
+                    p_blank: *p_blank,
+                }
+            })
+        });
+        let prior = match &case.prior {
+            Some(letters) if square(letters) => Some(ScanBoard {
+                letters: std::array::from_fn(|r| std::array::from_fn(|c| letters[r][c])),
+                blanks: std::array::from_fn(|r| {
+                    std::array::from_fn(|c| case.prior_blanks.as_ref().is_some_and(|b| b[r][c]))
+                }),
+            }),
+            Some(_) => return Err(invalid(&"a prior must be 15x15")),
+            None => None,
+        };
+        let t = Instant::now();
+        let out = decode(&lexicon, &readings, prior.as_ref(), &options).map_err(|e| invalid(&e))?;
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        for (&ch, &blank) in out
+            .board
+            .letters
+            .iter()
+            .flatten()
+            .zip(out.board.blanks.iter().flatten())
+        {
+            digest = (digest ^ (ch as u64) ^ ((blank as u64) << 32)).wrapping_mul(0x0100_0000_01b3);
+        }
+        let i = match groups.iter().position(|g| g.0 == case.label) {
+            Some(i) => i,
+            None => {
+                groups.push((case.label.clone(), Vec::new(), 0, 0));
+                groups.len() - 1
+            }
+        };
+        let g = &mut groups[i];
+        g.1.push(ms);
+        g.2 += out.legal as usize;
+        g.3 += out.complete as usize;
+    }
+    println!("\nscan-bench {}, {} cases:", lang.code(), cases.len());
+    for (label, times, legal, complete) in &mut groups {
+        times.sort_by(f64::total_cmp);
+        let at = |p: f64| times[((times.len() - 1) as f64 * p).round() as usize];
+        let n = times.len();
+        println!(
+            "  {label:8}: {n:4} boards | mean {:7.2} ms | p50 {:7.2} | p90 {:7.2} | max {:8.1} | legal {:3}% complete {:3}%",
+            times.iter().sum::<f64>() / n as f64,
+            at(0.5),
+            at(0.9),
+            at(1.0),
+            100 * *legal / n,
+            100 * *complete / n,
+        );
+    }
+    println!("  boards decoded: {digest:016x}");
+    Ok(())
+}
+
+/// `frame-bench`: the live scanner's pipeline timed on camera frames, so it
+/// can be timed on a phone. `frames.bin` is `SCRBFRM1`, a frame count, then
+/// per frame its width, height (u32) and focal length in pixels (f32), then
+/// its RGB bytes. Times finding the grid alone, as a preview would every
+/// frame, and the whole scan: find, straighten, turn upright, read, decode.
+fn cmd_frame_bench(
+    lang: &'static Language,
+    dawg_path: &str,
+    finder_path: &str,
+    reader_path: &str,
+    frames_path: &str,
+) -> io::Result<()> {
+    use scan::decode::DecodeOptions;
+    use scan::frame::scan_frame;
+    use scan::grid::GridFinder;
+    use scan::reader::CellReader;
+
+    let invalid = |e: &dyn fmt::Display| io::Error::new(io::ErrorKind::InvalidInput, e.to_string());
+    let lexicon = Lexicon::open(lang, dawg_path, None).map_err(|e| invalid(&e))?;
+    let finder = GridFinder::open(finder_path).map_err(|e| invalid(&e))?;
+    let reader = CellReader::open(lang, reader_path).map_err(|e| invalid(&e))?;
+    let data = fs::read(frames_path)?;
+    if data.len() < 12 || &data[..8] != b"SCRBFRM1" {
+        return Err(invalid(&"not a SCRBFRM1 file"));
+    }
+    let u32_at = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+    let count = u32_at(8);
+    let mut at = 12;
+    let (mut finding, mut scanning) = (Vec::new(), Vec::new());
+    let options = DecodeOptions::default();
+    for i in 0..count {
+        if at + 12 > data.len() {
+            return Err(invalid(&"truncated frames file"));
+        }
+        let (w, h) = (u32_at(at), u32_at(at + 4));
+        let focal = f32::from_le_bytes(data[at + 8..at + 12].try_into().unwrap()) as f64;
+        at += 12;
+        let rgb = data
+            .get(at..at + w * h * 3)
+            .ok_or_else(|| invalid(&"truncated frame"))?;
+        at += w * h * 3;
+        let t = Instant::now();
+        let found = finder.find(rgb, w, h).map_err(|e| invalid(&e))?;
+        finding.push(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        let scan = scan_frame(&finder, &reader, &lexicon, rgb, w, h, focal, None, &options)
+            .map_err(|e| invalid(&e))?;
+        scanning.push(t.elapsed().as_secs_f64() * 1e3);
+        // The same stages one by one, to see where the time goes.
+        if let Some(corners) = found {
+            let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+            let t = Instant::now();
+            let tops = scan::geometry::tile_tops(&corners, w, h, focal).unwrap_or(corners);
+            let side = (BOARD_SIZE + 2) * reader.cell_size();
+            let image = scan::geometry::straighten(rgb, w, h, &tops, reader.cell_size())
+                .map_err(|e| invalid(&e))?;
+            let straighten_ms = ms(t);
+            let t = Instant::now();
+            let reading = reader.read(&image, side).map_err(|e| invalid(&e))?;
+            let read_ms = ms(t);
+            let t = Instant::now();
+            let readings = reading.cells(reading.upright().unwrap_or(0));
+            let upright_ms = ms(t);
+            let t = Instant::now();
+            let decoded = scan::decode::decode(&lexicon, &readings, None, &options)
+                .map_err(|e| invalid(&e))?;
+            println!(
+                "    straighten {straighten_ms:.0} ms, read {read_ms:.0} ms, upright {upright_ms:.0} ms, \
+                 decode {:.0} ms ({} work, legal {})",
+                ms(t),
+                decoded.work,
+                decoded.legal
+            );
+        }
+        let tiles = scan.as_ref().map(|s| {
+            s.decoded
+                .board
+                .letters
+                .iter()
+                .flatten()
+                .filter(|&&c| c != '-')
+                .count()
+        });
+        println!(
+            "  frame {i}: {w}x{h}, grid {}, {} tiles, find {:.0} ms, whole scan {:.0} ms",
+            if found.is_some() {
+                "found"
+            } else {
+                "not found"
+            },
+            tiles.unwrap_or(0),
+            finding.last().unwrap(),
+            scanning.last().unwrap()
+        );
+    }
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    println!(
+        "frame-bench {}, {count} frames, {} threads: find {:.0} ms, whole scan {:.0} ms on average",
+        lang.code(),
+        num_threads(),
+        mean(&finding),
+        mean(&scanning)
+    );
     Ok(())
 }
 
@@ -4227,6 +4875,23 @@ pub fn main_cli() -> io::Result<()> {
             let games = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
             cmd_gen_bench(lang(&args[2])?, &args[3], &args[4], games)
         }
+        Some("bot-bench") if args.len() == 7 || args.len() == 8 => {
+            let level = args[6]
+                .parse()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "level must be 1-10"))?;
+            let games = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(2);
+            cmd_bot_bench(lang(&args[2])?, &args[3], &args[4], &args[5], level, games)
+        }
+        Some("bot-ladder") if args.len() == 6 || args.len() == 7 => {
+            let games = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(60);
+            cmd_bot_ladder(lang(&args[2])?, &args[3], &args[4], &args[5], games)
+        }
+        Some("scan-bench") if args.len() == 5 => {
+            cmd_scan_bench(lang(&args[2])?, &args[3], &args[4])
+        }
+        Some("frame-bench") if args.len() == 7 => {
+            cmd_frame_bench(lang(&args[2])?, &args[3], &args[4], &args[5], &args[6])
+        }
         _ => {
             usage(&args[0]);
             std::process::exit(1);
@@ -4235,23 +4900,21 @@ pub fn main_cli() -> io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Python module
+// Thread pool control
 // ---------------------------------------------------------------------------
 
-/// Set how many threads parallel move generation (`get_best_words(..., parallel=True)`)
-/// uses. Must be called before the first generation; raises `RuntimeError` if the
-/// pool is already built. Overrides the `RAYON_NUM_THREADS` env var and the
-/// `min(8, cores)` default.
-#[pyfunction]
-fn set_num_threads(n: usize) -> PyResult<()> {
+/// Set how many threads parallel move generation (`get_best_words(..., parallel = true)`)
+/// uses. Must be called before the first generation; refused once the pool is
+/// built. Overrides the `RAYON_NUM_THREADS` env var and the `min(8, cores)`
+/// default.
+pub fn set_num_threads(n: usize) -> EngineResult<()> {
     if n == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "num_threads must be >= 1",
-        ));
+        return Err(value_error("num_threads must be >= 1"));
     }
     if GEN_POOL.get().is_some() {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "thread pool already initialised; call set_num_threads before the first move generation",
+        return Err(EngineError::State(
+            "thread pool already initialised; call set_num_threads before the first move generation"
+                .into(),
         ));
     }
     REQUESTED_THREADS.store(n, Ordering::Relaxed);
@@ -4260,20 +4923,8 @@ fn set_num_threads(n: usize) -> PyResult<()> {
 
 /// Number of threads parallel move generation will use (builds the pool on the
 /// first call if it does not exist yet).
-#[pyfunction]
-fn num_threads() -> usize {
+pub fn num_threads() -> usize {
     gen_pool().current_num_threads()
-}
-
-#[pymodule]
-fn scrablozaur(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<LanguagePy>()?;
-    m.add_class::<DawgPy>()?;
-    m.add_class::<Board>()?;
-    m.add_class::<LeaveNetPy>()?;
-    m.add_function(pyo3::wrap_pyfunction!(set_num_threads, m)?)?;
-    m.add_function(pyo3::wrap_pyfunction!(num_threads, m)?)?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4295,16 +4946,62 @@ mod gaddag_tests {
     /// and points are the standard set.
     fn en() -> &'static Language {
         let counts = [
-            ('a', 9), ('b', 2), ('c', 2), ('d', 4), ('e', 12), ('f', 2), ('g', 3), ('h', 2),
-            ('i', 9), ('j', 1), ('k', 1), ('l', 4), ('m', 2), ('n', 6), ('o', 8), ('p', 2),
-            ('q', 1), ('r', 6), ('s', 4), ('t', 6), ('u', 4), ('v', 2), ('w', 2), ('x', 1),
-            ('y', 2), ('z', 1), ('?', 2),
+            ('a', 9),
+            ('b', 2),
+            ('c', 2),
+            ('d', 4),
+            ('e', 12),
+            ('f', 2),
+            ('g', 3),
+            ('h', 2),
+            ('i', 9),
+            ('j', 1),
+            ('k', 1),
+            ('l', 4),
+            ('m', 2),
+            ('n', 6),
+            ('o', 8),
+            ('p', 2),
+            ('q', 1),
+            ('r', 6),
+            ('s', 4),
+            ('t', 6),
+            ('u', 4),
+            ('v', 2),
+            ('w', 2),
+            ('x', 1),
+            ('y', 2),
+            ('z', 1),
+            ('?', 2),
         ];
         let points = [
-            ('a', 1), ('b', 3), ('c', 3), ('d', 2), ('e', 1), ('f', 4), ('g', 2), ('h', 4),
-            ('i', 1), ('j', 8), ('k', 5), ('l', 1), ('m', 3), ('n', 1), ('o', 1), ('p', 3),
-            ('q', 10), ('r', 1), ('s', 1), ('t', 1), ('u', 1), ('v', 4), ('w', 4), ('x', 8),
-            ('y', 4), ('z', 10), ('?', 0),
+            ('a', 1),
+            ('b', 3),
+            ('c', 3),
+            ('d', 2),
+            ('e', 1),
+            ('f', 4),
+            ('g', 2),
+            ('h', 4),
+            ('i', 1),
+            ('j', 8),
+            ('k', 5),
+            ('l', 1),
+            ('m', 3),
+            ('n', 1),
+            ('o', 1),
+            ('p', 3),
+            ('q', 10),
+            ('r', 1),
+            ('s', 1),
+            ('t', 1),
+            ('u', 1),
+            ('v', 4),
+            ('w', 4),
+            ('x', 8),
+            ('y', 4),
+            ('z', 10),
+            ('?', 0),
         ];
         intern_language(
             Language::new(
@@ -4385,7 +5082,11 @@ mod gaddag_tests {
         for c in OLD_ALPHABET.chars() {
             assert_eq!(lang.points(c), old_points(c), "points for '{c}'");
             let upper = c.to_uppercase().next().unwrap();
-            assert_eq!(lang.points(upper), old_points(upper), "points for '{upper}'");
+            assert_eq!(
+                lang.points(upper),
+                old_points(upper),
+                "points for '{upper}'"
+            );
         }
         assert_eq!(lang.points('?'), 0);
 
@@ -4404,9 +5105,16 @@ mod gaddag_tests {
     fn eval_alphabet_is_derived_from_the_bag() {
         const OLD_EVAL_ALPHABET: &str = "?abcdefghijklmnoprstuwyzóąćęłńśźż";
         let lang = pl();
-        assert_eq!(lang.eval_letters.iter().collect::<String>(), OLD_EVAL_ALPHABET);
+        assert_eq!(
+            lang.eval_letters.iter().collect::<String>(),
+            OLD_EVAL_ALPHABET
+        );
         assert_eq!(lang.eval_size(), 33);
-        assert_eq!(lang.eval_input_dim(), 39, "the committed nets take 39 inputs");
+        assert_eq!(
+            lang.eval_input_dim(),
+            39,
+            "the committed nets take 39 inputs"
+        );
     }
 
     /// Seeded deals must be byte-identical to what the compiled-in bag produced,
@@ -4622,7 +5330,9 @@ mod gaddag_tests {
         }
         // A non-word must not appear as any anchor's path.
         let n = g.find_child(g.root, 'x');
-        assert!(n.is_none() || !g.node_is_terminal(g.find_child(n.unwrap(), SEP).unwrap_or(g.root)));
+        assert!(
+            n.is_none() || !g.node_is_terminal(g.find_child(n.unwrap(), SEP).unwrap_or(g.root))
+        );
     }
 
     /// cross_bits sets exactly the letters that complete a valid cross-word.
@@ -4681,13 +5391,18 @@ mod gaddag_tests {
         // the centre double-word square; k=2, o=1, t=2 at face value.
         let mut board = Board::with_seed(pl(), time_seed());
         board
-            .place_word("kot", 7, 7, true, Some(vec!['k', 'o', '?']))
+            .place_word("kot", 7, 7, true, Some(&['k', 'o', '?']))
             .unwrap();
         assert!(board.blanks[7][9], "the 't' square should be flagged blank");
 
         // Extending to "koty" re-scores the whole main word. k(2) + o(1) +
         // blank t(0) + y(2) = 5. Without blank tracking this comes out 7.
-        assert_eq!(board.calculate_word_points("koty", 7, 7, true, "y").unwrap(), 5);
+        assert_eq!(
+            board
+                .calculate_word_points("koty", 7, 7, true, "y")
+                .unwrap(),
+            5
+        );
 
         // The same must hold through the fast generator path used in search.
         let moves = board.gaddag_best_words(&dawg, &gaddag, "y", 5, false);
@@ -4696,7 +5411,10 @@ mod gaddag_tests {
 
         // And through a cross-word: "ty" played vertically off the blank 't'
         // scores blank t(0) + y(2) = 2.
-        assert_eq!(board.calculate_word_points("ty", 7, 9, false, "y").unwrap(), 2);
+        assert_eq!(
+            board.calculate_word_points("ty", 7, 9, false, "y").unwrap(),
+            2
+        );
     }
 
     /// The same seed deals the same tiles in the same order, and different
@@ -4711,7 +5429,10 @@ mod gaddag_tests {
         assert_ne!(deal(12345), deal(12346));
         // Seed 0 is xorshift64's fixed point and must not deal a constant bag.
         let zero = deal(0);
-        assert!(zero[0] != zero[1], "seed 0 degenerated into a constant stream");
+        assert!(
+            zero[0] != zero[1],
+            "seed 0 degenerated into a constant stream"
+        );
     }
 
     /// Exchanged tiles go back into the bag, but not in time to be drawn as
@@ -4782,14 +5503,19 @@ mod gaddag_tests {
             let mut brute_board = board.clone();
             let expected = brute_endgame(&mut brute_board, &dawg, &gaddag, me, them, 0);
             assert_eq!(
-                brute_board.__str__(),
-                board.__str__(),
+                brute_board.to_string(),
+                board.to_string(),
                 "brute force left the board dirty"
             );
 
-            let (_mv, value, stats) =
-                board.solve_endgame_inner(
-                &dawg, &gaddag, me, them, 10_000_000, &[usize::MAX; 16], 64,
+            let (_mv, value, stats) = board.solve_endgame_inner(
+                &dawg,
+                &gaddag,
+                me,
+                them,
+                10_000_000,
+                &[usize::MAX; 16],
+                64,
             );
             assert!(
                 !stats.capped && !stats.truncated,
@@ -4810,29 +5536,46 @@ mod gaddag_tests {
         let dawg = compile_in(pl(), &words);
         let gaddag = compile_gaddag_in(pl(), &words);
         let mut board = Board::with_seed(pl(), time_seed());
-        board.place_word("kot", 7, 7, true, Some(vec!['k', 'o', '?'])).unwrap();
+        board
+            .place_word("kot", 7, 7, true, Some(&['k', 'o', '?']))
+            .unwrap();
         board.set_bag(Vec::new());
 
-        let before = board.__str__();
+        let before = board.to_string();
         let blanks_before = board.blanks;
-        board.solve_endgame_inner(&dawg, &gaddag, "oty", "k", 100_000, &EG_BRANCH, EG_MAX_DEPTH);
-        assert_eq!(board.__str__(), before, "search left tiles on the board");
-        assert_eq!(board.blanks, blanks_before, "search left a stale blank flag");
+        board.solve_endgame_inner(
+            &dawg,
+            &gaddag,
+            "oty",
+            "k",
+            100_000,
+            &EG_BRANCH,
+            EG_MAX_DEPTH,
+        );
+        assert_eq!(board.to_string(), before, "search left tiles on the board");
+        assert_eq!(
+            board.blanks, blanks_before,
+            "search left a stale blank flag"
+        );
     }
 
-    /// `copy()` is a real deep copy, and `unplace_word` restores the position
+    /// `clone()` is a real deep copy, and `unplace_word` restores the position
     /// exactly -- both are load-bearing for make/unmake search.
     #[test]
     fn copy_and_unplace_restore_the_position() {
         let mut board = Board::with_seed(pl(), time_seed());
-        let before = board.__str__();
+        let before = board.to_string();
         let cells = board
-            .place_word("kot", 7, 7, true, Some(vec!['k', 'o', '?']))
+            .place_word("kot", 7, 7, true, Some(&['k', 'o', '?']))
             .unwrap();
 
-        let branch = board.copy();
-        board.unplace_word(cells, true).unwrap();
-        assert_eq!(board.__str__(), before, "unplace did not restore the grid");
+        let branch = board.clone();
+        board.unplace_word(&cells, true).unwrap();
+        assert_eq!(
+            board.to_string(),
+            before,
+            "unplace did not restore the grid"
+        );
         assert!(board.first, "unplace did not restore the opening flag");
         assert!(!board.blanks[7][9], "unplace left a stale blank flag");
 

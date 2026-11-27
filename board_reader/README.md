@@ -92,6 +92,131 @@ Hard-difficulty photos are excluded by default (extreme angle/lighting that woul
 mostly just add noise to the aggregate score) -- pass `-d emh` to include them.
 Both scripts also report board-detection failures separately (currently 0).
 
+## The learned cell reader
+
+`scripts/train_cell_reader.py` trains a small CNN (150k parameters) that reads
+every square of a straightened board -- empty, a blank, or which letter --
+from a crop one and a half squares wide. It is the live scanner's reader: the
+engine runs it itself (`src/scan/reader.rs`, `scrablozaur.CellReader`),
+matching PyTorch to within 1e-7, at about 10 ms a board on a laptop and
+160 ms on a Galaxy A54. Its training images come from
+`scripts/export_scan_dataset.py`, which straightens the tiles' *top faces*:
+tiles stand a quarter of a square proud, so the camera's pose displaces them
+from the printed grid.
+
+A board can be seen from any side, and only its letters show which way up it
+is, so every letter is four classes, one per quarter turn that would stand
+the tile upright. One read of the board as it lies says what each tile is
+and, summed over the tiles, how far to turn the board: held out, every one
+of the 324 turned boards (81 boards, four ways each) came back upright.
+
+Held out by layout, squares read wrong against the classical pipeline on the
+same 81 boards:
+
+| photos | classical | learned | learned: tiles found, letters right |
+|---|---|---|---|
+| easy (44) | 38 | 22 | 100%, 99.0% |
+| medium (28) | 73 | 5 | 100%, 99.6% |
+| hard (9) | 105 | 3 | 100%, 99.2% |
+
+Its weak spot is the rarest diacritics: 'ś' (one tile in a bag, eight in the
+easy photos) is mostly read as 's'. Only one test photo shows a blank, so it
+learns blanks from tiles with their ink painted out.
+
+## The learned grid finder
+
+`scripts/train_grid_finder.py` trains a small fully-convolutional net (52k
+parameters) that draws a heatmap peaking at the playing grid's four outer
+corners in a camera frame. Of the strongest peaks, the four making the
+likeliest grid are kept, then found again on the region they outline, scaled
+up. It trains on random homographies of the exported photos -- the grid
+anywhere in the frame, at any rotation, scale and perspective. Held out by
+layout, the corners land a median 0.12 squares from where they should
+(90% within 0.20; 0.9% beyond half a square), within the cell reader's
+tolerance. Which corner is the board's top left is the reader's to say:
+the premium squares look the same from all four sides, the letters do not.
+
+The engine runs it (`src/scan/grid.rs`, `scrablozaur.GridFinder`; 10 ms a
+1080p frame on a laptop) and `tests/test_grid_finder.py` holds it to PyTorch.
+`src/scan/frame.rs` (`scrablozaur.scan_frame`) chains everything the live
+scanner does: find the grid, straighten the tiles' tops from the camera's
+pose, read every square as the board lies -- which also says which way up it
+is, by the last confirmed board's tiles or, on a first scan, by its letters
+-- and decode. A 1080p frame takes about 0.24 s on a Galaxy A54
+(`scrablozaur frame-bench`). `src/scan/live.rs` decides when the app's camera
+reads a frame -- once no corner of the grid has strayed 0.2 squares in 0.4 s
+-- and when a scan is done: two readings in a row, the board held still,
+giving the same board, legal as read (not `doubtful`, see below) and nearly
+all of whose tiles the reader saw itself. That last check is not a
+formality: the decoder keeps the last confirmed board's tiles whatever the
+frame shows, so a grid found in a wall decodes to that board, legal.
+
+## Camera frames, and training on the app's scans
+
+A phone's camera stream is a quarter of a photo's resolution, noisier and
+softer. Simulated from the test photos -- downscaled to 1080p, then blurred
+and noised -- and read through the engine's whole pipeline by readers that
+never saw the board's layout (`train_cell_reader.py --save-folds`), they come
+out at 0.44 wrong squares per board; 0.41-0.53 with blur or noise, 0.41 at
+720p. The photo crops' own figure is 0.37. Between two noise draws of one
+frame, the grid finder's corners move a median 0.003 squares (worst 0.15),
+well inside the camera's 0.2-square stillness rule.
+
+Real frames make better training data still. Ticking "Zapisz do treningu OCR"
+before confirming a scan in the app keeps the frame and the confirmed board;
+`scripts/import_app_scans.py` brings them over (adb, or `--from DIR`) into
+`test/app/`, and `export_scan_dataset.py` exports them with the photos: the
+grid from the corners the app's grid finder found, the truth the board the
+player confirmed, difficulty `c`, one layout per game. The cell reader trains
+on them; the grid finder does not -- their corners are its own answers -- and
+`eval_decoder.py` leaves them out, as it draws on the classical pipeline's
+readings, which they lack.
+
+## Dictionary decoding
+
+A real board obeys rules no single square knows about: every line of two or
+more tiles is a word, the tiles form one group through the centre, no letter
+appears more often than the bag holds it. The engine's `src/scan/decode.rs`
+(`scrablozaur.decode_scan` from Python) finds the most probable board obeying
+all of them, weighing each square's calibrated tile and letter probabilities
+against the dictionary: it corrects letters, restores missed tiles, drops
+false ones and works out which letter each blank plays. The web's photo scan
+reads through the same pipeline as the app (`scan_frame`) for a language with
+the scanner's models, and falls back on the classical pipeline and
+`web/scan.py`'s single-letter pass for the rest.
+
+`scripts/eval_decoder.py` scores it. Most test layouts are deliberate
+non-words, so it uses legal self-play boards instead, giving each square a
+reading a reader really produced on a test photo of the same difficulty --
+the classical pipeline's, or the learned reader's while that photo was held
+out (`--reader`). Squares are drawn independently, which is kinder than a
+real photo, whose errors cluster. Wrong squares per board, over 213 boards
+(median 67 tiles), readings → decoded:
+
+| photos | reader | first scan of a game | later scans, previous board confirmed |
+|---|---|---|---|
+| easy | classical | 2.72 → 0.49 (exact boards 6% → 64%) | 0.30 → 0.03 (76% → 98%) |
+| easy | learned | 2.62 → 0.44 (3% → 62%) | 0.21 → 0.08 (81% → 93%) |
+| medium | classical | 5.13 → 1.52 (2% → 37%) | 0.58 → 0.09 (56% → 92%) |
+| medium | learned | 2.29 → 0.43 (5% → 62%) | 0.10 → 0.03 (91% → 97%) |
+| hard | classical | 18.6 → 17.2 (0% → 0.5%) | 1.03 → 0.71 (34% → 59%) |
+| hard | learned | 2.31 → 0.45 (5% → 64%) | 0.10 → 0.04 (91% → 96%) |
+
+A legal board is not always the right one. Given a word the dictionary
+lacks, the decoder finds the nearest legal board by overriding letters the
+reader was sure of. On the self-play boards above with one word made a
+non-word, its rewrite costs 6.9 nats or more nine times in ten -- the letter
+floor's price of one sure letter -- where later scans of the legal boards
+cost 0 nine times in ten. Above `TRUSTED_COST` (4 nats) a board is
+`doubtful`: the app never takes it by itself, and `to_check` points at the
+squares the decoder changed rather than at none.
+
+Most of what the learned reader leaves is blanks -- a blank shows no letter,
+so where its words allow several, the decoder can only guess -- and 'ś'.
+`web/scan.py`'s pass changes nothing on these readings: neither reader's
+second guesses reach its 0.15 threshold. A decode takes a few milliseconds
+on average on a laptop, 0.2 s at worst.
+
 ## Tuning
 
 Every detection stage's parameters can be tuned interactively against

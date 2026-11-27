@@ -71,6 +71,17 @@ class OcrPaths:
 
 
 @dataclass(frozen=True)
+class ScannerPaths:
+    """The live scanner's models, which the engine runs itself: the grid
+    finder (where the board's grid is in a camera frame) and the cell reader
+    (what each square holds). Trained by `board_reader/scripts/
+    train_grid_finder.py` and `train_cell_reader.py`."""
+
+    grid_finder: Path
+    cell_reader: Path
+
+
+@dataclass(frozen=True)
 class LanguageSpec:
     code: str
     name: str
@@ -89,6 +100,7 @@ class LanguageSpec:
     gaddag: Path
     leave_net: LeaveNetPaths | None
     ocr: OcrPaths | None
+    scanner: ScannerPaths | None
     definitions: tuple[str, ...]
 
     @property
@@ -132,6 +144,11 @@ class LanguageSpec:
         """
         return self.has_ocr and self.ocr is not None and self.ocr.real_templates is None
 
+    @property
+    def has_scanner(self) -> bool:
+        """Whether the live scanner's models are on disk for this language."""
+        return self.scanner is not None and self.scanner.grid_finder.exists() and self.scanner.cell_reader.exists()
+
     def missing_artifacts(self) -> list[Path]:
         """Declared files that are not on disk. The dictionary is committed, but
         OCR templates are harvested locally and a language may ship before its
@@ -141,6 +158,8 @@ class LanguageSpec:
             paths += [self.leave_net.checkpoint, self.leave_net.weights]
         if self.ocr is not None:
             paths += [p for p in (self.ocr.letter_cnn, self.ocr.digit_cnn) if p is not None]
+        if self.scanner is not None:
+            paths += [self.scanner.grid_finder, self.scanner.cell_reader]
         return [p for p in paths if not p.exists()]
 
 
@@ -204,6 +223,7 @@ def _parse(code: str, raw: dict) -> LanguageSpec:
 
     leave_net = raw.get("leave_net")
     ocr = raw.get("ocr")
+    scanner = raw.get("scanner")
     return LanguageSpec(
         code=code,
         name=raw["name"],
@@ -228,6 +248,9 @@ def _parse(code: str, raw: dict) -> LanguageSpec:
             _ROOT / ocr["real_templates"] if ocr.get("real_templates") else None,
             bool(ocr.get("use_point_prior", True)),
         ),
+        scanner=None
+        if scanner is None
+        else ScannerPaths(_ROOT / scanner["grid_finder"], _ROOT / scanner["cell_reader"]),
         definitions=tuple(raw.get("definitions", ())),
     )
 

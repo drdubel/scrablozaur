@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What Auto Backup keeps on Android 11 and older (data_extraction_rules.xml
+     says the same for 12 and newer): the game history, the game in progress,
+     the scan session and the settings. Nothing else: the engine's data comes
+     with the APK, and a backup over 25 MB is not made at all. -->
+<full-backup-content>
+    <include domain="file" path="history.jsonl" />
+    <include domain="file" path="current_game.json" />
+    <include domain="file" path="scan_session.json" />
+    <include domain="sharedpref" path="settings.xml" />
+</full-backup-content>

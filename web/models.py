@@ -127,6 +127,9 @@ class LanguageInfo(BaseModel):
     flag: str
     alphabet: str
     blank: str
+    #: Which letters are vowels -- the rest of the alphabet being consonants --
+    #: for the balance a player tracking the unseen tiles watches.
+    vowels: str
     letter_values: dict[str, int]
     tile_counts: dict[str, int]
     total_tiles: int
@@ -170,6 +173,60 @@ class Suggestion(BaseModel):
     value: float | None = None
 
 
+class PlayRecordModel(BaseModel):
+    word: str
+    score: int
+    row: int
+    col: int
+    horizontal: bool
+    #: One tile per newly covered square, in board order, `?` for a blank.
+    used: str
+
+
+class EquityReviewModel(BaseModel):
+    """A turn by equity -- its score plus the leave net's value of the tiles it
+    kept -- against the best turn there was."""
+
+    played: float
+    best: float
+    best_play: PlayRecordModel | None = None
+    best_exchange: str | None = None
+
+
+class EndgameReviewModel(BaseModel):
+    """A turn taken with the bag empty, as the endgame search sees it."""
+
+    played: int
+    best: int
+    best_play: PlayRecordModel | None = None
+    exact: bool
+
+
+class TurnModel(BaseModel):
+    """One turn as it was taken (`web.game.TurnRecord`)."""
+
+    player: int
+    #: "play", "exchange", "pass" or "resign".
+    action: str
+    word: str = ""
+    score: int = 0
+    row: int = 0
+    col: int = 0
+    horizontal: bool = True
+    tiles: int = 0
+    #: Empty for a competitive computer's turn until the game is over.
+    rack: str = ""
+    rating: int | None = None
+    best: PlayRecordModel | None = None
+    equity: EquityReviewModel | None = None
+    endgame: EndgameReviewModel | None = None
+
+
+class TileCount(BaseModel):
+    letter: str
+    count: int
+
+
 class BoardStateResponse(BaseModel):
     language: str = "pl"
     board: list[list[str]]
@@ -191,6 +248,11 @@ class BoardStateResponse(BaseModel):
     game_over: bool = False
     winner_name: str | None = None
     last_move_rating: int | None = None
+    # Every turn so far, oldest first -- what a game's review is made from.
+    turns: list[TurnModel] = Field(default_factory=list)
+    # The tiles the human has not seen -- the bag and the computer's rack -- in
+    # the leave net's tile order, the blank first. Competitive games only.
+    unseen: list[TileCount] = Field(default_factory=list)
 
 
 class PreviewScoreResponse(BaseModel):

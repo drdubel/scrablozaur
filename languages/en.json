@@ -55,5 +55,7 @@
     "use_point_prior": false
   },
 
+  "scanner": null,
+
   "definitions": ["wiktionary", "dictionaryapi"]
 }

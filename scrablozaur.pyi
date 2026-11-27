@@ -389,6 +389,23 @@ class Board:
         Requires a GADDAG.
         """
 
+    def endgame_turn_value(
+        self,
+        dawg: Dawg,
+        my_rack: str,
+        opp_rack: str,
+        play: tuple[str, int, int, bool] | None,
+        max_nodes: int = 300000,
+    ) -> tuple[int, bool]:
+        """What one turn is worth with the bag empty, on `solve_endgame`'s
+        scale: the play's score -- `play` as `(word, row, col, horizontal)`, or
+        `None` for a pass -- then the rest of the game searched exactly as
+        `solve_endgame` searches it. Set against that search's `differential`,
+        it says what the turn gave away.
+
+        Returns `(value, exact)`. Requires a GADDAG.
+        """
+
     def unseen_tile_counts(self, rack: str) -> list[int]:
         """Counts of the tiles neither on the board nor in `rack` -- the bag
         plus every opponent's rack -- indexed by `LeaveNet.alphabet()`.
@@ -516,3 +533,186 @@ class LeaveNet:
         Must equal `smart_player.model.ALPHABET`; if it ever diverges, every
         prediction is silently wrong, so it is asserted in the tests.
         """
+
+
+class CellReader:
+    """The cell reader: a small CNN, run by the engine, that reads every
+    square of a straightened board -- empty, a blank, or which letter.
+    `board_reader/scripts/train_cell_reader.py --final` writes it; the `.pt`
+    stays the source of truth."""
+
+    def __init__(self, lang: Language, path: str) -> None:
+        """Load a reader for `lang`. Raises `OSError` if the file is not a
+        SCRBCNN2 export or was trained on another alphabet."""
+
+    @property
+    def cell_size(self) -> int:
+        """Pixels per square: the board image is `17 * cell_size` square."""
+
+    def raw(self, crop: list[float]) -> list[float]:
+        """The logits for one crop (`crop * crop * 3` values 0-255, row-major
+        RGB), before temperature: for checking against PyTorch."""
+
+    def upright(self, rgb: bytes, side: int) -> int | None:
+        """Quarter turns clockwise that stand the letters of a straightened
+        board upright -- a grid's corners cannot say which way up it is. Each
+        letter is four classes, one per turn that stands its tile upright, so
+        this is one read of the board as it lies. `None` if it sees no tiles."""
+
+    def read_board(self, rgb: bytes, side: int) -> list[list[tuple[float, list[tuple[str, float]], float]]]:
+        """Every square of a straightened board already upright, `side *
+        side` RGB pixels with one square of margin around the grid, read as
+        `decode_scan` takes it."""
+
+
+class GridFinder:
+    """The grid finder: a small fully-convolutional net, run by the engine,
+    that finds the playing grid's four outer corners in a camera frame.
+    `board_reader/scripts/train_grid_finder.py --final` writes it."""
+
+    def __init__(self, path: str) -> None:
+        """Load a SCRBGRD1 export. Raises `OSError` if it is not one."""
+
+    def raw(self, input: list[float]) -> list[float]:
+        """The heatmap's logits for a square RGB input of 0-255 values,
+        row-major: for checking against PyTorch."""
+
+    def find(
+        self, rgb: bytes, width: int, height: int
+    ) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]] | None:
+        """The grid's corners in an RGB frame (`width * height * 3` bytes),
+        clockwise from the one nearest the frame's top left -- which is the
+        board's own top left, `CellReader.upright` says. `None` if no
+        grid-like quadrilateral shows."""
+
+
+class DecodedScan:
+    """The board `decode_scan` settled on. Every grid is 15x15, row-major."""
+
+    letters: list[list[str]]
+    """The board's letters, `'-'` for an empty square."""
+    blanks: list[list[bool]]
+    """Squares holding a blank playing as the letter shown."""
+    corrected: list[list[bool]]
+    """Squares where the board differs from the readings' own best guess: a
+    letter changed, a tile added or removed, a blank seen where a letter was
+    read or the reverse. Never the prior board's tiles, which are kept
+    whatever was read."""
+    flagged: list[list[bool]]
+    """Squares still in a non-word or standing alone; only ever set when the
+    board is not `legal`."""
+    to_check: list[list[bool]]
+    """The squares a player should look at: `flagged` or, on a `doubtful`
+    board, `corrected`."""
+    doubtful: bool
+    """Legal only by overriding letters the reader was sure of: `cost` above
+    the engine's `TRUSTED_COST` (4 nats; overriding one sure letter costs about
+    6.9). What the decoder makes of a word the dictionary lacks."""
+    legal: bool
+    """Every rule holds. When no legal board was found, `letters` is instead
+    the readings' best guess after the web scanner's single-letter correction
+    pass, with `'?'` for a tile whose letter is unknown, and `flagged` set."""
+    complete: bool
+    """The search finished within its budget."""
+    cost: float
+    """The board's cost minus that of the readings' best guess, in nats: how
+    far the rules forced the decoder from the readings. `inf` unless legal."""
+    work: int
+    """Work done, in the units of `budget`."""
+
+
+def decode_scan(
+    dawg: Dawg,
+    readings: list[list[tuple[float, list[tuple[str, float]], float]]],
+    prior: list[list[str]] | None = None,
+    prior_blanks: list[list[bool]] | None = None,
+    *,
+    min_p_tile: float | None = None,
+    max_p_tile: float | None = None,
+    letter_floor: float | None = None,
+    blank_floor: float | None = None,
+    max_flips: int | None = None,
+    budget: int | None = None,
+) -> DecodedScan:
+    """The most probable legal board given what a scanner read of each square.
+
+    `readings` is 15x15 of `(p_tile, letters, p_blank)`: the probability that
+    the square holds a tile, the probabilities of the letter such a tile shows
+    (lowercase, any order; letters left out share what the listed ones leave,
+    and an empty list says nothing about the letter), and the probability that
+    the tile is a blank. These should be calibrated probabilities, not raw
+    classifier scores: the decoder weighs them against each other and against
+    the dictionary.
+
+    The board found has every line of two or more tiles a word, no tile on its
+    own, no letter more often than the bag holds it (blanks covering any
+    excess), and every tile of `prior` -- the last confirmed board, with
+    `prior_blanks` marking its blanks -- exactly as it was.
+
+    The options, `None` for the engine's default: `p_tile` is clamped into
+    `[min_p_tile, max_p_tile]`; no letter's probability counts as less than
+    `letter_floor`, no blank's as less than `blank_floor`; up to `max_flips`
+    rounds toggle a square between tile and empty; `budget` caps the work.
+
+    Raises `ValueError` for a grid that is not 15x15 or a `prior` letter that
+    is not in the dictionary's alphabet.
+    """
+
+
+def scan_tile_tops(
+    corners: tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]],
+    width: int,
+    height: int,
+    focal_px: float,
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]] | None:
+    """Where the grid's corners (top left, top right, bottom right, bottom
+    left, in frame pixels) would be at the height of the tiles' tops, for a
+    `width` x `height` frame taken with a focal length of `focal_px` pixels:
+    tiles stand a quarter of a square proud, so a camera at an angle sees
+    their letters displaced from the printed grid. `None` for a degenerate
+    quadrilateral."""
+
+
+def scan_straighten(
+    rgb: bytes,
+    width: int,
+    height: int,
+    corners: tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]],
+    cell: int,
+) -> bytes:
+    """The cell reader's image of an RGB frame (`width * height * 3` bytes):
+    the grid with corners `corners` straightened to `17 * cell` pixels
+    square, RGB, with one square of margin around it. Pass the corners
+    `scan_tile_tops` gives to straighten the tiles' tops."""
+
+
+class FrameScan:
+    """What `scan_frame` made of a camera frame."""
+
+    corners: tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]
+    """The grid's corners in the frame, from the board's own top left, clockwise."""
+    image: bytes
+    """The board straightened and turned upright, as read: RGB, `side` pixels
+    square, one square of margin around the grid."""
+    side: int
+    readings: list[list[tuple[float, list[tuple[str, float]], float]]]
+    """Every square as the cell reader read it, as `decode_scan` takes it."""
+    decoded: DecodedScan
+
+
+def scan_frame(
+    finder: GridFinder,
+    reader: CellReader,
+    dawg: Dawg,
+    rgb: bytes,
+    width: int,
+    height: int,
+    focal_px: float,
+    prior: list[list[str]] | None = None,
+    prior_blanks: list[list[bool]] | None = None,
+) -> FrameScan | None:
+    """A camera frame to a decoded board, the live scanner's whole pipeline:
+    find the grid, straighten the tiles' tops (`focal_px` is the lens's focal
+    length in pixels), turn the board upright -- as `prior`, the last
+    confirmed board, says, or as its letters read best -- then read every
+    square and decode. `None` if no grid shows."""

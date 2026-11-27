@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A letter tile: cream square, a bold "S", and its point value. The safe zone
+     of an adaptive icon is the central 66dp of 108dp, so the tile sits there. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFF6E7C1"
+        android:pathData="M30,25 h48 a5,5 0 0 1 5,5 v48 a5,5 0 0 1 -5,5 h-48 a5,5 0 0 1 -5,-5 v-48 a5,5 0 0 1 5,-5 z" />
+    <path
+        android:fillColor="#FF3B2A1A"
+        android:pathData="M64,40 C61,36.5 57.5,35 53,35 C46,35 41.5,39 41.5,44.5 C41.5,50.5 46.5,52.5 52,54 C56.5,55.2 59,56.3 59,59.2 C59,62 56.5,63.8 52.8,63.8 C48.8,63.8 45.8,62 43.6,59.3 L39.5,63.6 C42.6,67.4 47.2,69.5 52.6,69.5 C60.2,69.5 65.2,65.4 65.2,59 C65.2,52.8 60.4,50.7 54.6,49.1 C50.3,47.9 47.8,47 47.8,44.2 C47.8,41.8 50,40.4 53.1,40.4 C56,40.4 58.3,41.6 60.2,43.8 Z" />
+    <path
+        android:fillColor="#FF3B2A1A"
+        android:pathData="M69,68 h3.2 v8 h-3.2 z" />
+</vector>

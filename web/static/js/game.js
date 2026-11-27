@@ -3,6 +3,19 @@
 // Difficulty names/emoji/descriptions all come from the server-backed level
 // table in js/difficulty.js -- see there for why they aren't hardcoded here.
 
+const PLAYER_NAME_KEY = 'scrablozaur.playerName';
+
+/** The name the player typed last time in this browser, or null. Storage can
+ * be off (a private window, a locked-down browser): the name is then simply
+ * not remembered. */
+function storedPlayerName() {
+  try { return localStorage.getItem(PLAYER_NAME_KEY); } catch { return null; }
+}
+
+function storePlayerName(name) {
+  try { localStorage.setItem(PLAYER_NAME_KEY, name); } catch { /* not remembered */ }
+}
+
 class GameController {
   constructor(api, board) {
     this._api         = api;
@@ -20,12 +33,12 @@ class GameController {
     this._selectedExchangeIndices = new Set();
 
     this._lastMode      = 'competitive';
-    this._lastHumanName = 'Gracz';
+    this._lastHumanName = storedPlayerName() || 'Gracz';
     // Chosen language, remembered across dialog reopens. Also decides which
     // point table the board renders with and which letters count as typeable.
     this._language      = Languages.default;
     this._playerConfig  = [
-      { name: 'Gracz', is_computer: false },
+      { name: this._lastHumanName, is_computer: false },
       { name: 'Komputer', is_computer: true },
     ];
 
@@ -90,6 +103,9 @@ class GameController {
 
     this._elTileRackWrap    = document.getElementById('tile-rack-wrap');
     this._elTileRack        = document.getElementById('tile-rack');
+    this._elUnseenPanel     = document.getElementById('unseen-panel');
+    this._elUnseenSummary   = document.getElementById('unseen-summary');
+    this._elUnseenTiles     = document.getElementById('unseen-tiles');
     this._elCompMoveInfo    = document.getElementById('computer-move-info');
     this._elTypingInput     = document.getElementById('board-typing-input');
 
@@ -542,6 +558,9 @@ class GameController {
    * (e.g. first-ever page load). */
   openSetupDialog() { this._openSetupDialog(); }
 
+  /** The leaderboard (js/ranking.js), which a finished game offers a way to. */
+  attachRanking(ranking) { this._ranking = ranking; }
+
   /** Show the normal game (sandbox/competitive) view, hiding scan-view.
    * If no game has ever been started this session, there's nothing to
    * show -- open the mode picker instead rather than an empty board. */
@@ -575,7 +594,10 @@ class GameController {
     this._setLoading(this._btnStartGame, true);
     try {
       this._lastMode = config.game_mode === 'sandbox_auto' ? 'sandbox' : config.game_mode;
-      if (config.game_mode === 'competitive') this._lastHumanName = config.players[0].name;
+      if (config.game_mode === 'competitive') {
+        this._lastHumanName = config.players[0].name;
+        storePlayerName(this._lastHumanName);
+      }
       else if (config.game_mode !== 'sandbox_auto') this._playerConfig = config.players;
       this._stopAutoplay();
       const state = await this._api.resetGame(config);
@@ -608,6 +630,7 @@ class GameController {
     this._typingStartC = null;
     this._players = state.players;
     this._hideHints();
+    this._elUnseenPanel.hidden = true;
     if (state.move_number === 0) {
       this._ratingHistory = [];
       if (this._elRatingPanel) this._elRatingPanel.style.visibility = 'hidden';
@@ -654,6 +677,7 @@ class GameController {
     if (state.game_mode === 'competitive') {
       this._panelAuto.hidden = true;
       this._renderTileRack(state);
+      this._renderUnseen(state);
       this._renderCompMoveInfo(state);
       this._panelComputer.hidden = true;
       this._panelHuman.hidden    = false;
@@ -823,24 +847,141 @@ class GameController {
     this._elCompMoveInfo.hidden = false;
   }
 
+  /** The tiles the player has not seen -- the bag and the computer's rack --
+   * with the vowel/consonant balance that decides what to keep. Every letter
+   * is listed, the ones all out greyed, so "no Z left" is as plain to see. */
+  _renderUnseen(state) {
+    const unseen = state.unseen ?? [];
+    const total = unseen.reduce((n, t) => n + t.count, 0);
+    if (total === 0) return;
+    const info = Languages.info(state.language);
+    const vowels = new Set(info.vowels);
+    let v = 0, blanks = 0;
+    for (const t of unseen) {
+      if (t.letter === info.blank) blanks += t.count;
+      else if (vowels.has(t.letter)) v += t.count;
+    }
+    this._elUnseenSummary.textContent =
+      `Pozostałe płytki: ${total} · samogłoski ${v} · spółgłoski ${total - v - blanks}` +
+      (blanks ? ` · ${plural(blanks, 'blank', 'blanki', 'blanków')} ${blanks}` : '');
+    this._elUnseenTiles.innerHTML = unseen.map(t => {
+      const label = t.letter === info.blank ? '★' : t.letter.toUpperCase();
+      const gone = t.count === 0 ? ' unseen-tile--gone' : '';
+      return `<span class="unseen-tile${gone}"><span class="tile-letter">${escapeHtml(label)}</span>` +
+        `<span class="unseen-count">${t.count}</span></span>`;
+    }).join('');
+    this._elUnseenPanel.hidden = false;
+  }
+
   _showGameOver(state) {
     this._elGameOver?.remove();
+    const wrap = document.createElement('div');
+    wrap.className = 'game-over-wrap';
     const el = document.createElement('div');
     el.id = 'game-over-panel';
     el.className = 'game-over-panel';
     const sorted = [...state.players].sort((a, b) => b.score - a.score);
     const winner = state.winner_name;
     const title = winner === 'Remis' ? 'Remis!' : `Wygrał: ${escapeHtml(winner)}!`;
+    const ranking = this._ranking?.enabled
+      ? '<button id="btn-game-over-ranking" class="btn btn-secondary">Ranking</button>'
+      : '';
     el.innerHTML = `
       <h2 class="game-over-title">${title}</h2>
       <ul class="game-over-scores">
         ${sorted.map(p => `<li><span>${escapeHtml(p.name)}</span><span>${p.score} pkt</span></li>`).join('')}
       </ul>
-      <button id="btn-game-over-new" class="btn btn-primary">Nowa gra</button>
+      ${this._reviewSummary(state)}
+      <div class="btn-row game-over-actions">
+        <button id="btn-game-over-new" class="btn btn-primary">Nowa gra</button>
+        ${ranking}
+      </div>
     `;
-    this._elScoreboard.parentNode.insertBefore(el, this._elScoreboard.nextSibling);
-    this._elGameOver = el;
+    wrap.appendChild(el);
+    if (state.turns?.length) wrap.appendChild(this._buildGameReview(state));
+    this._elScoreboard.parentNode.insertBefore(wrap, this._elScoreboard.nextSibling);
+    this._elGameOver = wrap;
     el.querySelector('#btn-game-over-new').addEventListener('click', () => this._openSetupDialog());
+    el.querySelector('#btn-game-over-ranking')?.addEventListener('click', () => this._ranking.open());
+  }
+
+  // ── Game review (the turn log, state.turns) ──────────────────────────────
+
+  /** What the player's own turns came to, by each measure the log keeps: the
+   * points-only rating, the equity given away against what the Strateg
+   * (level 9) would have played, and the endgame against a full search.
+   * Competitive games only: the one mode with a player to review. */
+  _reviewSummary(state) {
+    if (state.game_mode !== 'competitive') return '';
+    const me = state.players.findIndex(p => !p.is_computer);
+    const mine = (state.turns ?? []).filter(t => t.player === me);
+    const lines = [];
+    const rated = mine.filter(t => t.rating != null);
+    if (rated.length) {
+      const avg = Math.round(rated.reduce((s, t) => s + t.rating, 0) / rated.length);
+      lines.push(`Średnia ocena ruchów: <strong>${avg}/100</strong> ` +
+        `(${rated.length} ${plural(rated.length, 'ruch', 'ruchy', 'ruchów')})`);
+    }
+    const valued = mine.filter(t => t.equity);
+    if (valued.length) {
+      const lost = valued.reduce((s, t) => s + equityLoss(t), 0);
+      const best = valued.filter(t => equityLoss(t) === 0).length;
+      lines.push(`Strata względem Stratega: <strong>${lost.toFixed(1)} pkt</strong> · ` +
+        `najlepszy ruch ${best} z ${valued.length}`);
+    }
+    const endgame = mine.filter(t => t.endgame);
+    if (endgame.length) {
+      const lost = endgame.reduce((s, t) => s + t.endgame.best - t.endgame.played, 0);
+      const exact = endgame.every(t => t.endgame.exact) ? '' : ' (wg przybliżonego przeszukania)';
+      lines.push(lost === 0
+        ? `Końcówka rozegrana bezbłędnie${exact}`
+        : `Końcówka: <strong>${lost} pkt</strong> straty${exact}`);
+    }
+    return lines.length ? `<ul class="game-over-review">${lines.map(l => `<li>${l}</li>`).join('')}</ul>` : '';
+  }
+
+  /** The game move by move: what each turn was and scored, and for the
+   * player's own how it rated and the better turn there was. A play's row
+   * marks its word on the final board, where it still lies. */
+  _buildGameReview(state) {
+    const section = document.createElement('details');
+    section.className = 'game-review';
+    section.open = state.game_mode === 'competitive';
+    const n = state.turns.length;
+    section.innerHTML =
+      `<summary>Przebieg gry: ${n} ${plural(n, 'ruch', 'ruchy', 'ruchów')}</summary>` +
+      `<div class="review-scroll"><table class="review-table">
+        <thead><tr>
+          <th>#</th><th>Gracz</th><th>Ruch</th><th>Pkt</th>
+          <th title="0–100 wobec najwyżej punktowanego ruchu">Ocena</th>
+          <th title="ekwiwalent (punkty i wartość zostawionych liter) albo wynik końcówki">Strata</th>
+          <th>Lepszy ruch</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>`;
+    const body = section.querySelector('tbody');
+    for (const [i, t] of state.turns.entries()) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${i + 1}</td>
+        <td><span class="player-dot player-dot-${t.player}"></span>${escapeHtml(state.players[t.player]?.name ?? '')}</td>
+        <td>${turnLabel(t)}</td>
+        <td>${t.action === 'play' ? t.score : ''}</td>
+        <td>${t.rating ?? ''}</td>
+        <td>${lossLabel(t)}</td>
+        <td>${betterTurnLabel(t)}</td>`;
+      if (t.action === 'play') {
+        tr.className = 'review-row-play';
+        tr.addEventListener('click', () => {
+          body.querySelectorAll('tr').forEach(row => row.classList.remove('active'));
+          tr.classList.add('active');
+          const cells = [...t.word].map((_, k) => t.horizontal ? [t.row, t.col + k] : [t.row + k, t.col]);
+          this._board.highlightHint({ cells });
+        });
+      }
+      body.appendChild(tr);
+    }
+    return section;
   }
 
   _transitionToSandbox(current) {
@@ -1391,4 +1532,53 @@ class GameController {
     btn.disabled = loading;
     btn.classList.toggle('loading', loading);
   }
+}
+
+// ── Turn-log wording (the game review) ───────────────────────────────────────
+
+/** Equity a turn gave away, to the tenth the review is rounded to. */
+function equityLoss(turn) {
+  return Math.max(0, Math.round((turn.equity.best - turn.equity.played) * 10) / 10);
+}
+
+function turnLabel(t) {
+  switch (t.action) {
+    case 'play': return `<strong>${escapeHtml(t.word.toUpperCase())}</strong>`;
+    case 'exchange': return `wymiana (${t.tiles})`;
+    case 'resign': return 'poddanie';
+    default: return 'pas';
+  }
+}
+
+function lossLabel(t) {
+  if (t.equity) {
+    const loss = equityLoss(t);
+    return loss > 0 ? loss.toFixed(1) : '—';
+  }
+  if (t.endgame) {
+    const loss = t.endgame.best - t.endgame.played;
+    return loss > 0 ? `${loss} <span class="review-note">końcówka</span>` : '—';
+  }
+  return '';
+}
+
+function playLabel(p) {
+  return `${escapeHtml(p.word.toUpperCase())} ${p.score}`;
+}
+
+/** The turn worth more than the one taken: by equity where the turn was so
+ * valued, by the endgame search once the bag was empty, else (no leave net)
+ * the highest-scoring play. */
+function betterTurnLabel(t) {
+  if (t.equity) {
+    if (t.equity.best_play) return playLabel(t.equity.best_play);
+    if (t.equity.best_exchange) return `wymiana ${escapeHtml(t.equity.best_exchange.toUpperCase())}`;
+    return '';
+  }
+  if (t.endgame) {
+    if (t.endgame.best <= t.endgame.played) return '';
+    return t.endgame.best_play ? playLabel(t.endgame.best_play) : 'pas';
+  }
+  if (t.rating != null && t.rating < 100 && t.best) return playLabel(t.best);
+  return '';
 }

@@ -113,6 +113,12 @@ class ApiClient {
     return this._request('POST', '/board/next-move');
   }
 
+  /** The shared leaderboard; `enabled` is false where the server keeps none. */
+  getLeaderboard(language = null) {
+    const q = language ? `?language=${encodeURIComponent(language)}` : '';
+    return this._request('GET', `/leaderboard${q}`);
+  }
+
   /** @param {{name:string,difficulty:number,strength:number}[]} players */
   startBenchmark(players, games, language = null) {
     return this._request('POST', '/benchmark/start', { players, games, language });

@@ -2087,3 +2087,45 @@ input:focus-visible, select:focus-visible { outline: 2px solid var(--color-prima
 .player-advanced .advanced-options { padding: 0.75rem; border: 1px solid var(--color-border); border-radius: var(--radius); }
 .player-strength { width: 100%; accent-color: var(--color-primary); cursor: pointer; }
 .player-defaults { justify-self: start; }
+
+/* ── Unseen tiles (competitive): the bag and the computer's rack ──────────── */
+.unseen-panel { width: 100%; max-width: 664px; font-size: 0.8rem; color: var(--color-muted); }
+.unseen-panel summary { cursor: pointer; width: fit-content; }
+.unseen-tiles { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 0.6rem; }
+.unseen-tile {
+  display: inline-flex; align-items: baseline; justify-content: center; gap: 2px;
+  min-width: 2.1rem; padding: 0.2rem 0.35rem;
+  border: 1px solid var(--color-border); border-radius: 4px;
+  background: var(--color-surface); color: var(--color-text);
+}
+.unseen-tile .tile-letter { font-weight: 600; }
+.unseen-count { font-size: 0.7rem; color: var(--color-muted); }
+.unseen-tile--gone { opacity: 0.35; }
+
+/* ── Game over: the player's summary and the game move by move ────────────── */
+.game-over-wrap { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 1rem; }
+.game-over-review { list-style: none; display: grid; gap: 0.3rem; font-size: 0.85rem; text-align: left; }
+.game-over-actions { justify-content: center; }
+.game-review { width: 100%; max-width: 664px; font-size: 0.85rem; }
+.game-review summary { cursor: pointer; width: fit-content; font-weight: 500; }
+.review-scroll { overflow-x: auto; margin-top: 0.6rem; }
+.review-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.review-table th, .review-table td {
+  padding: 0.3rem 0.45rem; text-align: left; white-space: nowrap;
+  border-bottom: 1px solid var(--color-border);
+}
+.review-table th { font-weight: 500; color: var(--color-muted); }
+.review-row-play { cursor: pointer; }
+.review-row-play:hover, .review-row-play.active { background: var(--color-highlight-new); }
+.review-note { color: var(--color-muted); font-size: 0.7rem; }
+
+/* ── Ranking dialog ───────────────────────────────────────────────────────── */
+.dialog-ranking { max-width: 640px; width: calc(100% - 2rem); }
+.ranking-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+.ranking-header h2 { margin: 0; }
+#ranking-language { margin-bottom: 0.75rem; }
+.ranking-table .rk-name { font-weight: 500; }
+#ranking-top-wrap { margin-top: 1rem; }
+.ranking-top { margin: 0.5rem 0 0; padding-left: 1.4rem; display: grid; gap: 0.35rem; font-size: 0.85rem; }
+.ranking-top .rk-score { font-weight: 600; margin-right: 0.35rem; }
+.ranking-top .rk-detail { color: var(--color-muted); font-size: 0.75rem; }

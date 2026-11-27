@@ -51,6 +51,14 @@ function initSegmented(el) {
   return el;
 }
 
+/** The Polish form of a noun for `n`: `one` for 1, `few` for 2-4 (but not
+ * 12-14), `many` otherwise -- 1 ruch, 3 ruchy, 12 ruchów, 22 ruchy. */
+function plural(n, one, few, many) {
+  if (n === 1) return one;
+  const units = n % 10, tens = n % 100;
+  return units >= 2 && units <= 4 && (tens < 12 || tens > 14) ? few : many;
+}
+
 /** Upgrade every segmented control in the document (or a subtree). */
 function initAllSegmented(root = document) {
   root.querySelectorAll('.segmented').forEach(initSegmented);

@@ -141,6 +141,33 @@ def test_competitive_renders_a_rack_with_point_values(page):
     assert page.locator("#tile-rack .tile-val").count() == tiles - blanks
 
 
+def test_a_game_tracks_tiles_and_ends_with_its_review(page):
+    """The turn log's three faces: the unseen tiles during a game, the review
+    once it ends, and the name the player typed, kept for the next one."""
+    _open_setup(page)
+    page.click('.mode-card[data-mode="competitive"]')
+    page.fill("#setup-player-name", "Zosia")
+    page.click("#btn-start-game")
+    page.wait_for_selector("#tile-rack .rack-tile", timeout=60000)
+    page.wait_for_selector("#unseen-panel:not([hidden])", timeout=15000)
+    # A full bag less the rack and the board: a number, not a placeholder.
+    assert "Pozostałe płytki: " in page.inner_text("#unseen-summary")
+    assert page.locator("#unseen-tiles .unseen-tile").count() > 20
+
+    page.once("dialog", lambda d: d.accept())
+    page.click("#btn-pass-human")
+    page.wait_for_selector(".game-review", timeout=15000)
+    assert page.locator(".review-table tbody tr").count() >= 1
+    assert page.locator("#unseen-panel").is_hidden()
+    assert not _errors(page), _errors(page)
+
+    page.reload()
+    page.wait_for_selector("#game-over-panel", timeout=15000)
+    _open_setup(page)
+    assert page.input_value("#setup-player-name") == "Zosia"
+    assert not _errors(page), _errors(page)
+
+
 def test_switching_language_still_renders(page):
     _open_setup(page)
     picker = page.locator("#setup-language")
